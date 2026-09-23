@@ -4,10 +4,33 @@
   "description": "Аудит и правка русских текстов от ИИ-стиля: канцелярит, кальки, шаблонная структура. Под-скилл antiplagiat — оценка по фрагментам в духе модуля ИИ-детекции «Антиплагиата».",
   "author": {
     "name": "Ilya Lubenets",
+    "email": "lubenets.ilya.igorevich@gmail.com",
     "url": "https://github.com/ormeilu"
   },
   "homepage": "https://github.com/ormeilu/avoid-ai-writing-russian",
   "repository": "https://github.com/ormeilu/avoid-ai-writing-russian",
   "license": "MIT",
-  "keywords": ["russian", "writing", "editing", "ai-detection", "antiplagiat", "канцелярит"]
+  "keywords": [
+    "russian",
+    "русский язык",
+    "writing",
+    "editing",
+    "style",
+    "ai-detection",
+    "ai-writing",
+    "humanize",
+    "antiplagiat",
+    "антиплагиат",
+    "канцелярит",
+    "kantselyarit",
+    "calques",
+    "typography",
+    "academic",
+    "vak",
+    "claude-code",
+    "codex",
+    "agent-skills",
+    "bun",
+    "typescript"
+  ]
 }

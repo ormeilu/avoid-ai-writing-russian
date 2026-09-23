@@ -1,9 +1,10 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "avoid-ai-writing-russian",
-  "description": "Русская адаптация avoid-ai-writing: чистка ИИ-стиля и подготовка к «Антиплагиату».",
   "owner": {
-    "name": "Ilya Lubenets"
+    "name": "Ilya Lubenets",
+    "email": "lubenets.ilya.igorevich@gmail.com",
+    "url": "https://github.com/ormeilu"
   },
   "plugins": [
     {
@@ -11,7 +12,43 @@
       "source": "./",
       "description": "Аудит и правка русских текстов от ИИ-стиля; под-скилл antiplagiat.",
       "category": "productivity",
-      "keywords": ["russian", "writing", "editing", "ai-detection", "antiplagiat"]
+      "keywords": [
+        "russian",
+        "русский язык",
+        "writing",
+        "editing",
+        "style",
+        "ai-detection",
+        "ai-writing",
+        "humanize",
+        "antiplagiat",
+        "антиплагиат",
+        "канцелярит",
+        "kantselyarit",
+        "calques",
+        "typography",
+        "academic",
+        "vak",
+        "claude-code",
+        "codex",
+        "agent-skills",
+        "bun",
+        "typescript"
+      ],
+      "version": "0.1.0",
+      "author": {
+        "name": "Ilya Lubenets",
+        "email": "lubenets.ilya.igorevich@gmail.com",
+        "url": "https://github.com/ormeilu"
+      },
+      "homepage": "https://github.com/ormeilu/avoid-ai-writing-russian",
+      "repository": "https://github.com/ormeilu/avoid-ai-writing-russian",
+      "license": "MIT",
+      "tags": ["russian", "writing", "antiplagiat", "academic"]
     }
-  ]
+  ],
+  "metadata": {
+    "description": "Русская адаптация avoid-ai-writing: чистка ИИ-стиля и подготовка к «Антиплагиату».",
+    "version": "0.1.0"
+  }
 }

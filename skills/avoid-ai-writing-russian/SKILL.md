@@ -1,14 +1,31 @@
 ---
 name: avoid-ai-writing-russian
-description: Аудит и правка русских текстов от признаков ИИ-генерации («ИИ-стиль», канцелярит, кальки с английского, шаблонная структура). Используй, когда просят «убрать ИИ-стиль», «очеловечить текст», «почистить от нейросетевых штампов», «проверить, не звучит ли как ChatGPT», «вычистить канцелярит», а также на английские запросы вида "remove AI-isms" для текста на русском. Режимы: правка (по умолчанию), только поиск, правка файла на месте. Профили контекста (ВАК/научный, документация, блог, Telegram, деловое письмо, переписка) и голоса (разговорный, деловой, технический, тёплый, прямой).
+description: >-
+  Аудит и правка русских текстов от признаков ИИ-генерации («ИИ-стиль», канцелярит, кальки с
+  английского, шаблонная структура). Используй, когда просят «убрать ИИ-стиль», «очеловечить текст»,
+  «почистить от нейросетевых штампов», «проверить, не звучит ли как ChatGPT», «вычистить канцелярит»,
+  а также на английские запросы вида "remove AI-isms" для текста на русском. Режимы: правка (по
+  умолчанию), только поиск, правка файла на месте. Профили контекста (ВАК/научный, документация, блог,
+  Telegram, деловое письмо, переписка) и голоса (разговорный, деловой, технический, тёплый, прямой).
 version: 0.1.0
 license: MIT
-compatibility: Любой агент с поддержкой формата agentskills.io SKILL.md (Claude Code, Codex, Cursor, OpenCode и др.). Детектор опционален, нужен Bun 1.1+.
+compatibility: >-
+  Любой агент с поддержкой формата agentskills.io SKILL.md (Claude Code, Codex, Cursor, OpenCode и др.). Детектор необязателен, для него нужен Bun 1.1+.
 metadata:
   author: Ilya Lubenets
-  upstream: https://github.com/conorbronsdon/avoid-ai-writing
+  author_url: https://github.com/ormeilu
+  homepage: https://github.com/ormeilu/avoid-ai-writing-russian
   repository: https://github.com/ormeilu/avoid-ai-writing-russian
-  tags: writing editing russian style quality
+  issues: https://github.com/ormeilu/avoid-ai-writing-russian/issues
+  changelog: https://github.com/ormeilu/avoid-ai-writing-russian/blob/master/CHANGELOG.md
+  upstream: https://github.com/conorbronsdon/avoid-ai-writing
+  upstream_version: 3.36.0
+  upstream_author: Conor Bronsdon
+  language: ru
+  tags: russian writing editing style ai-detection kantselyarit calques typography academic vak
+  related_skills: antiplagiat
+  openclaw:
+    emoji: "✍️"
   agentskills_spec: "1.0"
 ---
 

@@ -1,0 +1,50 @@
+name: Выпуск
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: Тег совпадает с версией
+        run: |
+          version="$(jq -r .version package.json)"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "Тег ${GITHUB_REF_NAME} не совпадает с версией ${version} в package.json" >&2
+            exit 1
+          fi
+      - run: bun scripts/check-versions.ts
+      - run: bun run lint
+      - run: bun run typecheck
+      - run: bun test
+      - run: bun run selfscan
+      - name: Бинарники
+        run: |
+          mkdir -p dist
+          for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64 windows-x64; do
+            ext=""; [ "$target" = "windows-x64" ] && ext=".exe"
+            bun build src/cli.ts --compile --minify --target="bun-${target}" --outfile "dist/aiw-ru-${target}${ext}"
+          done
+      - name: Архив скиллов
+        run: |
+          zip -r "dist/avoid-ai-writing-russian-${GITHUB_REF_NAME}.zip" \
+            skills src examples package.json README.md LICENSE NOTICE.md CHANGELOG.md
+      - name: Контрольные суммы
+        run: cd dist && sha256sum * > SHA256SUMS
+      - name: Заметки к выпуску
+        run: bun scripts/release-notes.ts "${GITHUB_REF_NAME}" > dist/NOTES.md
+      - name: Публикация
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file dist/NOTES.md \
+            dist/aiw-ru-* dist/*.zip dist/SHA256SUMS

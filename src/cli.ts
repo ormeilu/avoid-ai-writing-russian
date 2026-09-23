@@ -17,15 +17,15 @@ import { join } from "node:path";
 import {
   antiplagiat,
   balancedAccuracy,
+  type CalibrationFile,
   DEFAULT_MODEL,
   FEATURE_NAMES,
   fit,
   labelFragments,
-  type CalibrationFile,
   type Model,
 } from "./antiplagiat.ts";
 import { analyze, TYPE_LABELS } from "./detect.ts";
-import { CONTEXT_MODES, PROFILE_TO_MODE, type ContextMode, type Severity } from "./types.ts";
+import { CONTEXT_MODES, type ContextMode, PROFILE_TO_MODE, type Severity } from "./types.ts";
 import { validate } from "./validate.ts";
 
 const USAGE = `aiw-ru — приметы ИИ-стиля в русском тексте
@@ -128,7 +128,9 @@ function cmdScan(a: Args): number {
     if (a.failAbove !== undefined && r.score > a.failAbove) fail = true;
     if (a.json) continue;
     const shown = r.issues.filter((i) => RANK[i.severity] <= RANK[a.min]);
-    out(`${r.file === "-" ? "stdin" : r.file}: ${r.score}/100 — ${r.label} (${r.stats.words} слов, режим ${r.stats.contextMode})`);
+    out(
+      `${r.file === "-" ? "stdin" : r.file}: ${r.score}/100 — ${r.label} (${r.stats.words} слов, режим ${r.stats.contextMode})`,
+    );
     if (r.suspicious) out("  ⚠ документ выглядит подозрительным: невидимые символы или подмена букв");
     for (const sev of ["P0", "P1", "P2"] as Severity[]) {
       const group = shown.filter((i) => i.severity === sev);
@@ -139,7 +141,9 @@ function cmdScan(a: Args): number {
         out(`    ${i.line}:${i.column}  ${TYPE_LABELS[i.type] ?? i.type}: «${i.text}» → ${i.hint}${tag}`);
       }
     }
-    out(`  ритм: средняя длина предложения ${r.stats.meanSentenceLength}, вариация ${r.stats.sentenceLengthCV}; MATTR ${r.stats.mattr}`);
+    out(
+      `  ритм: средняя длина предложения ${r.stats.meanSentenceLength}, вариация ${r.stats.sentenceLengthCV}; MATTR ${r.stats.mattr}`,
+    );
   }
   return fail ? 1 : 0;
 }
@@ -173,8 +177,13 @@ function cmdAntiplagiat(a: Args): number {
     return 0;
   }
   out(`Оценка доли ИИ-текста: ${report.aiShare.toString().replace(".", ",")} %`);
-  out(`Модель: ${report.model === "calibrated" ? "откалибрована по вашим отчётам" : "по умолчанию (не калибрована)"}, порог ${report.threshold}`);
-  if (report.suspicious) out(`⚠ Подозрительный документ: ${report.suspiciousReasons.join("; ")}. Системы проверки такое замечают — удалите эти символы.`);
+  out(
+    `Модель: ${report.model === "calibrated" ? "откалибрована по вашим отчётам" : "по умолчанию (не калибрована)"}, порог ${report.threshold}`,
+  );
+  if (report.suspicious)
+    out(
+      `⚠ Подозрительный документ: ${report.suspiciousReasons.join("; ")}. Системы проверки такое замечают — удалите эти символы.`,
+    );
   out("");
   for (const f of report.fragments) {
     const mark = f.ai ? "ИИ " : "   ";
@@ -183,7 +192,9 @@ function cmdAntiplagiat(a: Args): number {
     out(`${mark} ${String(pct).padStart(3)} %  строки ${f.line}–${f.endLine}, ${f.words} сл.  ${f.preview}…${why}`);
   }
   out("");
-  out("Это приближение: настоящий классификатор системы закрыт. Для точности откалибруйте модель на своих отчётах (aiw-ru calibrate).");
+  out(
+    "Это приближение: настоящий классификатор системы закрыт. Для точности откалибруйте модель на своих отчётах (aiw-ru calibrate).",
+  );
   return 0;
 }
 
@@ -219,7 +230,10 @@ function cmdCalibrate(a: Args): number {
     const labeled = labelFragments(doc, marked);
     const pos = labeled.filter((s) => s.y === 1).length;
     out(`${a.docs[i]}: ${labeled.length} фрагментов, из них подсвечено системой ${pos}`);
-    if (marked.length && pos === 0) out("  ⚠ ни один подсвеченный кусок не найден в документе — проверьте, что текст скопирован из отчёта без правок");
+    if (marked.length && pos === 0)
+      out(
+        "  ⚠ ни один подсвеченный кусок не найден в документе — проверьте, что текст скопирован из отчёта без правок",
+      );
     samples.push(...labeled);
   }
   const before = balancedAccuracy(DEFAULT_MODEL, samples);
@@ -227,10 +241,15 @@ function cmdCalibrate(a: Args): number {
   const after = balancedAccuracy(model, samples);
   const data: CalibrationFile = { version: 1, model, samples };
   writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`);
-  const fmt = (x: number): string => (Number.isNaN(x) ? "н/д (нужны и ИИ-, и человеческие фрагменты)" : `${(x * 100).toFixed(1)} %`);
+  const fmt = (x: number): string =>
+    Number.isNaN(x) ? "н/д (нужны и ИИ-, и человеческие фрагменты)" : `${(x * 100).toFixed(1)} %`;
   out(`Образцов всего: ${samples.length}`);
-  out(`Сбалансированная точность: по умолчанию ${fmt(before)} → после калибровки ${fmt(after)} (на тех же данных; для честной оценки держите часть отчётов отдельно)`);
-  out(`Веса: ${model.weights.map((w, k) => `${FEATURE_NAMES[k]} ${w.toFixed(2)}`).join("; ")}; порог ${model.threshold}`);
+  out(
+    `Сбалансированная точность: по умолчанию ${fmt(before)} → после калибровки ${fmt(after)} (на тех же данных; для честной оценки держите часть отчётов отдельно)`,
+  );
+  out(
+    `Веса: ${model.weights.map((w, k) => `${FEATURE_NAMES[k]} ${w.toFixed(2)}`).join("; ")}; порог ${model.threshold}`,
+  );
   out(`Сохранено в ${path}`);
   return 0;
 }

@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "Если используете проект в работе, сошлитесь на него так."
+title: "avoid-ai-writing-russian: аудит и правка русских текстов от ИИ-стиля"
+abstract: >-
+  Скилл для ИИ-агентов и детектор на TypeScript, которые находят в русских
+  текстах приметы машинной генерации (канцелярит, кальки, шаблонную структуру)
+  и помогают подготовить текст к проверке системой «Антиплагиат».
+type: software
+authors:
+  - family-names: Lubenets
+    given-names: Ilya
+    email: lubenets.ilya.igorevich@gmail.com
+license: MIT
+version: 0.1.0
+date-released: "2026-09-23"
+repository-code: "https://github.com/ormeilu/avoid-ai-writing-russian"
+url: "https://github.com/ormeilu/avoid-ai-writing-russian"
+keywords:
+  - русский язык
+  - ИИ-стиль
+  - канцелярит
+  - антиплагиат
+  - редактура
+references:
+  - type: software
+    title: avoid-ai-writing
+    authors:
+      - family-names: Bronsdon
+        given-names: Conor
+    repository-code: "https://github.com/conorbronsdon/avoid-ai-writing"
+    license: MIT

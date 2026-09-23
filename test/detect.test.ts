@@ -2,17 +2,18 @@ import { describe, expect, test } from "bun:test";
 import { analyze } from "../src/index.ts";
 
 const fixture = (name: string): Promise<string> => Bun.file(new URL(`./fixtures/${name}`, import.meta.url)).text();
-const types = (text: string, context?: Parameters<typeof analyze>[1]): string[] => analyze(text, context).issues.map((i) => i.type);
+const types = (text: string, context?: Parameters<typeof analyze>[1]): string[] =>
+  analyze(text, context).issues.map((i) => i.type);
 
 describe("оценка", () => {
   test("шаблонный ИИ-текст получает высокую оценку", async () => {
-    const r = analyze(await fixture("ai.md"));
+    const r = analyze(await fixture("corpus/ai/blog.md"));
     expect(r.score).toBeGreaterThanOrEqual(70);
     expect(r.label).toBe("сильный ИИ-стиль");
   });
 
   test("живая проза остаётся чистой", async () => {
-    const r = analyze(await fixture("human.md"));
+    const r = analyze(await fixture("corpus/human/blog.md"));
     expect(r.score).toBeLessThan(15);
     expect(r.issues.filter((i) => i.severity !== "P2")).toHaveLength(0);
   });
@@ -91,7 +92,8 @@ describe("защищённое содержимое", () => {
 describe("технические отпечатки", () => {
   test("невидимые символы и подмена букв", () => {
     const zw = String.fromCharCode(0x200b);
-    const r = analyze(`Ра${zw}бота и рaбота с латинской a.`);
+    const latinA = String.fromCharCode(0x61);
+    const r = analyze(`Ра${zw}бота и р${latinA}бота с латинской a.`);
     expect(r.suspicious).toBe(true);
     expect(r.issues.map((i) => i.type)).toEqual(expect.arrayContaining(["invisible-chars", "homoglyph"]));
   });
@@ -144,7 +146,9 @@ describe("структура", () => {
   });
 
   test("цепочка отглагольных существительных", () => {
-    expect(types("Цель — обеспечение повышения эффективности проведения мониторинга состояния машиниста.")).toContain("genitive-chain");
+    expect(types("Цель — обеспечение повышения эффективности проведения мониторинга состояния машиниста.")).toContain(
+      "genitive-chain",
+    );
   });
 
   test("переходы в начале абзацев подряд", () => {
@@ -153,12 +157,22 @@ describe("структура", () => {
   });
 
   test("список из голых именных групп", () => {
-    const list = ["- Высокая точность", "- Низкая задержка", "- Надёжная работа", "- Удобный интерфейс", "- Гибкая настройка"].join("\n");
+    const list = [
+      "- Высокая точность",
+      "- Низкая задержка",
+      "- Надёжная работа",
+      "- Удобный интерфейс",
+      "- Гибкая настройка",
+    ].join("\n");
     expect(types(list)).toContain("bullet-np-list");
   });
 
   test("рубленые фрагменты", () => {
-    expect(types("Никаких предпочтений. Никакой эстетики. Ноль ностальгии. Старые правила исчезли навсегда, и это было заметно.")).toContain("staccato");
+    expect(
+      types(
+        "Никаких предпочтений. Никакой эстетики. Ноль ностальгии. Старые правила исчезли навсегда, и это было заметно.",
+      ),
+    ).toContain("staccato");
   });
 });
 
@@ -169,7 +183,9 @@ describe("режимы", () => {
   });
 
   test("chat оставляет только P0 и кальки", () => {
-    const r = analyze('Кстати, "это" играет ключевую роль, но это имеет смысл. Надеюсь, это поможет!', { context: "chat" });
+    const r = analyze('Кстати, "это" играет ключевую роль, но это имеет смысл. Надеюсь, это поможет!', {
+      context: "chat",
+    });
     expect(r.issues.every((i) => i.severity === "P0" || i.type === "calque")).toBe(true);
   });
 

@@ -5,12 +5,12 @@ const fixture = (name: string): Promise<string> => Bun.file(new URL(`./fixtures/
 
 describe("antiplagiat", () => {
   test("ИИ-текст получает большую долю, живой — нулевую", async () => {
-    expect((await antiplagiat(await fixture("ai.md"))).aiShare).toBeGreaterThan(50);
-    expect((await antiplagiat(await fixture("human.md"))).aiShare).toBe(0);
+    expect((await antiplagiat(await fixture("corpus/ai/blog.md"))).aiShare).toBeGreaterThan(50);
+    expect((await antiplagiat(await fixture("corpus/human/blog.md"))).aiShare).toBe(0);
   });
 
   test("фрагменты покрывают прозу и указывают строки", async () => {
-    const r = antiplagiat(await fixture("ai.md"));
+    const r = antiplagiat(await fixture("corpus/ai/blog.md"));
     expect(r.fragments.length).toBeGreaterThan(0);
     for (const f of r.fragments) {
       expect(f.line).toBeGreaterThan(0);
@@ -26,8 +26,10 @@ describe("antiplagiat", () => {
   });
 
   test("разметка по подсвеченным кускам", async () => {
-    const doc = `${await fixture("ai.md")}\n\n${await fixture("human.md")}`;
-    const marked = ["Более того, использование ИИ способствует оптимизации процессов и повышению эффективности работы медицинских учреждений."];
+    const doc = `${await fixture("corpus/ai/blog.md")}\n\n${await fixture("corpus/human/blog.md")}`;
+    const marked = [
+      "Более того, использование ИИ способствует оптимизации процессов и повышению эффективности работы медицинских учреждений.",
+    ];
     const samples = labelFragments(doc, marked);
     expect(samples.filter((s) => s.y === 1)).toHaveLength(1);
   });

@@ -9,27 +9,19 @@
  * примет не набирал бесконечно.
  */
 
+import { ACADEMIC_FORMULAS, ALL_LEXICON, type LexEntry, PHRASE3, TECHNICAL_TERMS, TIER2, TIER3 } from "./lexicon.ts";
 import {
-  ACADEMIC_FORMULAS,
-  ALL_LEXICON,
-  TECHNICAL_TERMS,
-  TIER2,
-  TIER3,
-  PHRASE3,
-  type LexEntry,
-} from "./lexicon.ts";
-import {
+  type Block,
   blocks,
   cv,
   lineCol,
   mattr,
   mean,
+  type Prepared,
   prepare,
+  type Sentence,
   sentences,
   words,
-  type Block,
-  type Prepared,
-  type Sentence,
 } from "./text.ts";
 import type { AnalysisResult, AnalyzeOptions, ContextMode, Issue, Severity } from "./types.ts";
 
@@ -164,10 +156,26 @@ export const TYPE_LABELS: Record<string, string> = {
 };
 
 const SKIP_IN_CHAT = new Set([
-  "straight-quotes", "english-quotes", "decimal-point", "hyphen-dash", "em-dash-splice", "title-case",
-  "bold-overuse", "genitive-chain", "passive-run", "uniform-sentences", "uniform-paragraphs",
-  "low-diversity", "same-opener", "staccato", "bullet-np-list", "tier3", "phrase3", "tier2",
-  "tier2-cluster", "transition-run",
+  "straight-quotes",
+  "english-quotes",
+  "decimal-point",
+  "hyphen-dash",
+  "em-dash-splice",
+  "title-case",
+  "bold-overuse",
+  "genitive-chain",
+  "passive-run",
+  "uniform-sentences",
+  "uniform-paragraphs",
+  "low-diversity",
+  "same-opener",
+  "staccato",
+  "bullet-np-list",
+  "tier3",
+  "phrase3",
+  "tier2",
+  "tier2-cluster",
+  "transition-run",
 ]);
 
 interface Ctx {
@@ -177,7 +185,16 @@ interface Ctx {
   issues: Issue[];
 }
 
-function add(ctx: Ctx, type: string, rule: string, severity: Severity, index: number, text: string, hint: string, styleOnly = false): void {
+function add(
+  ctx: Ctx,
+  type: string,
+  rule: string,
+  severity: Severity,
+  index: number,
+  text: string,
+  hint: string,
+  styleOnly = false,
+): void {
   if (ctx.mode === "chat" && SKIP_IN_CHAT.has(type)) return;
   const src = ctx.p.toSource[index] ?? index;
   const { line, column } = lineCol(ctx.p.lineStarts, src);
@@ -190,13 +207,23 @@ function applies(e: LexEntry, mode: ContextMode): boolean {
   return !e.skip?.includes(mode);
 }
 
-function overlaps(re: RegExp, text: string, index: number, length: number): boolean {
+/** Отрезки, где совпадает `re`; строится один раз на текст. */
+function ranges(re: RegExp, text: string): [number, number][] {
   re.lastIndex = 0;
-  for (const m of text.matchAll(re)) {
-    const s = m.index ?? 0;
-    if (s < index + length && index < s + m[0].length) return true;
+  return [...text.matchAll(re)].map((m) => [m.index ?? 0, (m.index ?? 0) + m[0].length]);
+}
+
+/** Пересекает ли [index, index+length) хотя бы один отрезок (отрезки отсортированы). */
+function hitsRange(rs: [number, number][], index: number, length: number): boolean {
+  let lo = 0;
+  let hi = rs.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if ((rs[mid]?.[1] ?? 0) <= index) lo = mid + 1;
+    else hi = mid;
   }
-  return false;
+  const r = rs[lo];
+  return r !== undefined && r[0] < index + length;
 }
 
 // ─── Словарные правила ──────────────────────────────────────────────────
@@ -204,6 +231,12 @@ function detectLexicon(ctx: Ctx, bs: Block[]): void {
   const { p, mode } = ctx;
   const per1000 = (n: number): number => (ctx.wordCount ? (n * 1000) / ctx.wordCount : 0);
   const clusterOnly = new Set<LexEntry>([...TIER2, ...TIER3, ...PHRASE3]);
+  const exempt =
+    mode === "academic"
+      ? ranges(ACADEMIC_FORMULAS, p.prose)
+      : mode === "technical"
+        ? ranges(TECHNICAL_TERMS, p.prose)
+        : [];
   for (const e of ALL_LEXICON) {
     if (clusterOnly.has(e) || !applies(e, mode)) continue;
     if (mode === "chat" && e.severity !== "P0" && e.type !== "calque") continue;
@@ -214,8 +247,7 @@ function detectLexicon(ctx: Ctx, bs: Block[]): void {
     if (threshold !== undefined && per1000(hits.length) < threshold) continue;
     for (const m of hits) {
       const idx = m.index ?? 0;
-      if (mode === "academic" && overlaps(ACADEMIC_FORMULAS, p.prose, idx, m[0].length)) continue;
-      if (mode === "technical" && overlaps(TECHNICAL_TERMS, p.prose, idx, m[0].length)) continue;
+      if (hitsRange(exempt, idx, m[0].length)) continue;
       add(ctx, e.type, e.id, e.severity, idx, m[0], e.hint, e.styleOnly);
     }
   }
@@ -229,14 +261,21 @@ function detectLexicon(ctx: Ctx, bs: Block[]): void {
         e.re.lastIndex = 0;
         const m = e.re.exec(b.text);
         if (m && !found.has(e.id)) {
-          if (mode === "technical" && overlaps(TECHNICAL_TERMS, b.text, m.index, m[0].length)) continue;
-          if (mode === "academic" && overlaps(ACADEMIC_FORMULAS, b.text, m.index, m[0].length)) continue;
+          if (hitsRange(exempt, b.start + m.index, m[0].length)) continue;
           found.set(e.id, { idx: b.start + m.index, text: m[0] });
         }
       }
       if (found.size >= 2) {
         const list = [...found.values()];
-        add(ctx, "tier2-cluster", "tier2", "P2", list[0]?.idx ?? b.start, list.map((x) => x.text).join(", "), "перефразировать проще, оставить одно слово или дать конкретику");
+        add(
+          ctx,
+          "tier2-cluster",
+          "tier2",
+          "P2",
+          list[0]?.idx ?? b.start,
+          list.map((x) => x.text).join(", "),
+          "перефразировать проще, оставить одно слово или дать конкретику",
+        );
       }
     }
   }
@@ -254,7 +293,15 @@ function detectLexicon(ctx: Ctx, bs: Block[]): void {
     }
   }
   if (ctx.wordCount >= 150 && t3 / ctx.wordCount >= 0.03) {
-    add(ctx, "tier3", "density", "P2", Math.max(firstT3, 0), t3words.join(", "), `перегруженные оценочные слова: ${t3} на ${ctx.wordCount} слов — заменить часть числами и примерами`);
+    add(
+      ctx,
+      "tier3",
+      "density",
+      "P2",
+      Math.max(firstT3, 0),
+      t3words.join(", "),
+      `перегруженные оценочные слова: ${t3} на ${ctx.wordCount} слов — заменить часть числами и примерами`,
+    );
   }
 
   // Фразовые штампы: одна фраза 2+ раза или 3+ разных.
@@ -272,7 +319,15 @@ function detectLexicon(ctx: Ctx, bs: Block[]): void {
   }
   if (phraseHits.size >= 3) {
     const first = [...phraseHits.values()].sort((a, b) => a.idx - b.idx)[0];
-    add(ctx, "phrase3-cluster", "cluster", "P1", first?.idx ?? 0, [...phraseHits.values()].map((h) => h.text).join(", "), "три и больше разных штампов — так варьирует шаблоны модель");
+    add(
+      ctx,
+      "phrase3-cluster",
+      "cluster",
+      "P1",
+      first?.idx ?? 0,
+      [...phraseHits.values()].map((h) => h.text).join(", "),
+      "три и больше разных штампов — так варьирует шаблоны модель",
+    );
   }
 }
 
@@ -284,23 +339,50 @@ function detectFingerprints(ctx: Ctx): void {
     const idx = first?.index ?? 0;
     const { line, column } = lineCol(p.lineStarts, idx);
     ctx.issues.push({
-      type: "invisible-chars", rule: "zero-width", severity: "P0", text: `${p.invisible.length} невидимых символов`,
-      index: idx, line, column, hint: "удалить; такие документы системы проверки помечают как подозрительные",
+      type: "invisible-chars",
+      rule: "zero-width",
+      severity: "P0",
+      text: `${p.invisible.length} невидимых символов`,
+      index: idx,
+      line,
+      column,
+      hint: "удалить; такие документы системы проверки помечают как подозрительные",
     });
   }
   for (const h of p.homoglyphs) {
     const { line, column } = lineCol(p.lineStarts, h.index);
     ctx.issues.push({
-      type: "homoglyph", rule: "latin-in-cyrillic", severity: "P0", text: h.word, index: h.index, line, column,
+      type: "homoglyph",
+      rule: "latin-in-cyrillic",
+      severity: "P0",
+      text: h.word,
+      index: h.index,
+      line,
+      column,
       hint: "латинские буквы внутри русского слова; заменить на кириллицу",
     });
   }
   const scan = (type: string, re: RegExp, sev: Severity, hint: string, text = p.noCode): void => {
     for (const m of text.matchAll(re)) add(ctx, type, type, sev, m.index ?? 0, m[0], hint);
   };
-  scan("chat-markup", /citeturn\d+\w*|contentReference\[oaicite:\d+\](?:\{index=\d+\})?|oai_citation|\[attached_file:\d+\]|grok_card/g, "P0", "удалить; если ссылка нужна — заменить настоящей");
-  scan("ai-url", /[?&](?:utm_source=(?:chatgpt\.com|openai|copilot\.com|claude\.ai|perplexity\.ai|perplexity|gemini\.google\.com|deepseek\.com)|referrer=grok\.com)/gi, "P0", "удалить только этот параметр");
-  scan("placeholder", /\[(?:Ваш[аеи]?|Вставьте|Укажите|Добавьте|Введите|Опишите|Название|Имя|Фамилия|Дата|ДАТА|Источник|Ссылка|Your|Insert|Add|Enter)[^\]\n]{0,60}\]|\b(?:19|20)XX\b|\b\d{4}-XX-XX\b|<!--\s*(?:добавь|добавьте|вставь|вставьте|todo|TODO|заполни|укажите|add|insert)[^>]*-->/g, "P0", "заполнить реальным содержимым или удалить предложение");
+  scan(
+    "chat-markup",
+    /citeturn\d+\w*|contentReference\[oaicite:\d+\](?:\{index=\d+\})?|oai_citation|\[attached_file:\d+\]|grok_card/g,
+    "P0",
+    "удалить; если ссылка нужна — заменить настоящей",
+  );
+  scan(
+    "ai-url",
+    /[?&](?:utm_source=(?:chatgpt\.com|openai|copilot\.com|claude\.ai|perplexity\.ai|perplexity|gemini\.google\.com|deepseek\.com)|referrer=grok\.com)/gi,
+    "P0",
+    "удалить только этот параметр",
+  );
+  scan(
+    "placeholder",
+    /\[(?:Ваш[аеи]?|Вставьте|Укажите|Добавьте|Введите|Опишите|Название|Имя|Фамилия|Дата|ДАТА|Источник|Ссылка|Your|Insert|Add|Enter)[^\]\n]{0,60}\]|\b(?:19|20)XX\b|\b\d{4}-XX-XX\b|<!--\s*(?:добавь|добавьте|вставь|вставьте|todo|TODO|заполни|укажите|add|insert)[^>]*-->/g,
+    "P0",
+    "заполнить реальным содержимым или удалить предложение",
+  );
 }
 
 // ─── Типографика ────────────────────────────────────────────────────────
@@ -311,28 +393,51 @@ function detectTypography(ctx: Ctx, bs: Block[]): void {
   if (mode === "chat") return;
   // Кавычки считаем по тексту без кода (в prose они замаскированы как цитаты).
   for (const m of p.noCode.matchAll(/"([^"\n]{1,200})"/g)) {
-    if (CYR.test(m[1] ?? "")) add(ctx, "straight-quotes", "straight", "P2", m.index ?? 0, m[0], "«ёлочки» вместо прямых кавычек");
+    if (CYR.test(m[1] ?? ""))
+      add(ctx, "straight-quotes", "straight", "P2", m.index ?? 0, m[0], "«ёлочки» вместо прямых кавычек");
   }
   for (const m of p.noCode.matchAll(/“([^”\n]{1,200})”/g)) {
-    if (CYR.test(m[1] ?? "")) add(ctx, "english-quotes", "english", "P1", m.index ?? 0, m[0], "«ёлочки»; английские кавычки в русском тексте — след машинного перевода");
+    if (CYR.test(m[1] ?? ""))
+      add(
+        ctx,
+        "english-quotes",
+        "english",
+        "P1",
+        m.index ?? 0,
+        m[0],
+        "«ёлочки»; английские кавычки в русском тексте — след машинного перевода",
+      );
   }
   for (const m of p.prose.matchAll(/(?<=\p{L}) - (?=\p{L})| -- /gu)) {
     add(ctx, "hyphen-dash", "hyphen", "P2", m.index ?? 0, m[0], "длинное тире с пробелами: « — »", true);
   }
-  for (const m of p.prose.matchAll(/(?:(?:равн\p{L}*|составля\p{L}*|составил\p{L}*|достига\p{L}*|достиг\p{L}*|точност\p{L}*|значени\p{L}*|около|до|от|≈|=)\s*)(\d+\.\d+)(?!\.\d)|(?<![\d.])(\d+\.\d+)(?=\s*(?:%|мс|с\b|кг|м\b|км|Гц|ГБ|МБ|раз))/gu)) {
+  for (const m of p.prose.matchAll(
+    /(?:(?:равн\p{L}*|составля\p{L}*|составил\p{L}*|достига\p{L}*|достиг\p{L}*|точност\p{L}*|значени\p{L}*|около|до|от|≈|=)\s*)(\d+\.\d+)(?!\.\d)|(?<![\d.])(\d+\.\d+)(?=\s*(?:%|мс|с\b|кг|м\b|км|Гц|ГБ|МБ|раз))/gu,
+  )) {
     add(ctx, "decimal-point", "decimal", "P2", m.index ?? 0, m[0], "десятичная запятая: 0,93");
   }
   // Тире-связка: тире перед союзом или частицей, подающими «эффект».
   let splices = 0;
   const spliceHits: { idx: number; text: string }[] = [];
-  for (const m of p.prose.matchAll(/[\p{L}\d)»,] — (?:и (?:это|все|всё|именно|тут|вот)|и\s+\p{L}+ (?:меня|нас|всех)|это (?:меняет|и есть|главное|ключ)|вот (?:что|почему|где|в чем)|именно (?:это|так|поэтому)|но (?:это|не|именно)|причем|а (?:это|значит|главное))/gu)) {
+  for (const m of p.prose.matchAll(
+    /[\p{L}\d)»,] — (?:и (?:это|все|всё|именно|тут|вот)|и\s+\p{L}+ (?:меня|нас|всех)|это (?:меняет|и есть|главное|ключ)|вот (?:что|почему|где|в чем)|именно (?:это|так|поэтому)|но (?:это|не|именно)|причем|а (?:это|значит|главное))/gu,
+  )) {
     splices += 1;
     spliceHits.push({ idx: (m.index ?? 0) + 1, text: m[0] });
   }
   const limit = mode === "social" ? 2 : 1;
   const per500 = ctx.wordCount ? (splices * 500) / ctx.wordCount : 0;
   if (splices > limit || (splices >= 1 && per500 > 1 && mode !== "social")) {
-    for (const h of spliceHits) add(ctx, "em-dash-splice", "splice", "P1", h.idx, h.text, "точка, двоеточие или союз вместо тире-связки; грамматическое тире не трогать");
+    for (const h of spliceHits)
+      add(
+        ctx,
+        "em-dash-splice",
+        "splice",
+        "P1",
+        h.idx,
+        h.text,
+        "точка, двоеточие или союз вместо тире-связки; грамматическое тире не трогать",
+      );
   }
   // Заголовки: Title Case, эмодзи.
   for (const b of bs) {
@@ -351,7 +456,18 @@ function detectTypography(ctx: Ctx, bs: Block[]): void {
   let bold: { idx: number; text: string }[] = [];
   const flushBold = (): void => {
     if (bold.length > 3 && mode !== "technical") {
-      add(ctx, "bold-overuse", "bold", "P1", bold[0]?.idx ?? sectionStart, bold.map((b) => b.text).slice(0, 4).join(" "), "не больше одного выделения на раздел");
+      add(
+        ctx,
+        "bold-overuse",
+        "bold",
+        "P1",
+        bold[0]?.idx ?? sectionStart,
+        bold
+          .map((b) => b.text)
+          .slice(0, 4)
+          .join(" "),
+        "не больше одного выделения на раздел",
+      );
     }
     bold = [];
   };
@@ -377,20 +493,27 @@ function detectTypography(ctx: Ctx, bs: Block[]): void {
 
 // ─── Структура ──────────────────────────────────────────────────────────
 // Грубый признак глагольной формы; существительные на -ость исключены отдельно.
-const VERB_HINT = /(?:ет|ют|ит|ят|ем|им|ешь|ишь|ал|ял|ил|ыл|ул|ла|ли|ло|ать|ять|ить|еть|уть|ыть|оть|ться|ется|ются|ится|ятся|ся|сь|ут|ат)$/u;
+const VERB_HINT =
+  /(?:ет|ют|ит|ят|ем|им|ешь|ишь|ал|ял|ил|ыл|ул|ла|ли|ло|ать|ять|ить|еть|уть|ыть|оть|ться|ется|ются|ится|ятся|ся|сь|ут|ат)$/u;
 const NOT_VERB = /(?:ость|есть|асть)$/u;
-const GENITIVE_NOUN = /(?:ени[яюейи]|ани[яюейи]|овани[яюейи]|ции|цию|ция|ости|ость|ств[ауео]|изаци[ияю]|ировани[яюе]|ени|ани)$/u;
-const PASSIVE = /(?:^|\s)(?:был[аио]?|были|будет|будут)\s+\p{L}+(?:ан|ян|ен|ён|т)[аоы]?(?=[\s,.;:!?]|$)|\p{L}{3,}(?:ано|ено|ены|аны|ана|ена|ято|ыто|иты|ата)(?=[\s,.;:!?]|$)|\p{L}{3,}(?:ется|ются|ится|ятся)(?=[\s,.;:!?]|$)/iu;
+const GENITIVE_NOUN =
+  /(?:ени[яюейи]|ани[яюейи]|овани[яюейи]|ции|цию|ция|ости|ость|ств[ауео]|изаци[ияю]|ировани[яюе]|ени|ани)$/u;
+const PASSIVE =
+  /(?:^|\s)(?:был[аио]?|были|будет|будут)\s+\p{L}+(?:ан|ян|ен|ён|т)[аоы]?(?=[\s,.;:!?]|$)|\p{L}{3,}(?:ано|ено|ены|аны|ана|ена|ято|ыто|иты|ата)(?=[\s,.;:!?]|$)|\p{L}{3,}(?:ется|ются|ится|ятся)(?=[\s,.;:!?]|$)/iu;
 const ACTOR = /(?:^|\s)(?:мы|я|нами|автор\p{L}*|авторы|нами)(?=[\s,.;:!?]|$)/iu;
 
 function detectStructure(ctx: Ctx, bs: Block[], proseSentences: Sentence[][]): void {
   const { mode } = ctx;
 
   // «Не X, а Y», «это не X — это Y», «не просто X, а Y», разнесённая форма.
-  const nxy = /(?<![\p{L}])(?:(?:это|речь|дело|вопрос|суть|главное)\s+не\s+(?:просто\s+|только\s+|в\s+|о\s+|про\s+)?[^.!?\n]{1,50}?(?:,|\s—)\s*(?:а|это|но)\s)|(?<![\p{L}])не\s+просто\s+[^.!?\n]{1,50}?,\s*(?:а|но и|это)\s/giu;
-  for (const m of ctx.p.prose.matchAll(nxy)) add(ctx, "not-x-but-y", "joined", "P1", m.index ?? 0, m[0], "прямое утверждение без противопоставления");
-  const split = /(?<![\p{L}])(?:главное|дело|суть|проблема|секрет)\s+(?:здесь\s+|тут\s+)?не\s+в\s+[^.!?\n]{1,40}\.\s+(?:главное|дело|суть|настоящ\p{L}*|все\s+дело|всё\s+дело)\s/giu;
-  for (const m of ctx.p.prose.matchAll(split)) add(ctx, "not-x-but-y", "split", "P1", m.index ?? 0, m[0], "разнесённое «не X. Y» — сказать Y прямо");
+  const nxy =
+    /(?<![\p{L}])(?:(?:это|речь|дело|вопрос|суть|главное)\s+не\s+(?:просто\s+|только\s+|в\s+|о\s+|про\s+)?[^.!?\n]{1,50}?(?:,|\s—)\s*(?:а|это|но)\s)|(?<![\p{L}])не\s+просто\s+[^.!?\n]{1,50}?,\s*(?:а|но и|это)\s/giu;
+  for (const m of ctx.p.prose.matchAll(nxy))
+    add(ctx, "not-x-but-y", "joined", "P1", m.index ?? 0, m[0], "прямое утверждение без противопоставления");
+  const split =
+    /(?<![\p{L}])(?:главное|дело|суть|проблема|секрет)\s+(?:здесь\s+|тут\s+)?не\s+в\s+[^.!?\n]{1,40}\.\s+(?:главное|дело|суть|настоящ\p{L}*|все\s+дело|всё\s+дело)\s/giu;
+  for (const m of ctx.p.prose.matchAll(split))
+    add(ctx, "not-x-but-y", "split", "P1", m.index ?? 0, m[0], "разнесённое «не X. Y» — сказать Y прямо");
 
   // Цепочки отглагольных существительных: 4+ подряд.
   if (mode !== "chat") {
@@ -404,7 +527,15 @@ function detectStructure(ctx: Ctx, bs: Block[], proseSentences: Sentence[][]): v
           const s = run[0]?.index ?? 0;
           const last = run[run.length - 1];
           const e = (last?.index ?? 0) + (last?.[0].length ?? 0);
-          add(ctx, "genitive-chain", "chain", "P1", b.start + s, b.text.slice(s, e), "переписать через глагол: «обеспечение повышения эффективности…» → «чтобы точнее…»");
+          add(
+            ctx,
+            "genitive-chain",
+            "chain",
+            "P1",
+            b.start + s,
+            b.text.slice(s, e),
+            "переписать через глагол: «обеспечение повышения эффективности…» → «чтобы точнее…»",
+          );
         }
         run = [];
       };
@@ -430,7 +561,19 @@ function detectStructure(ctx: Ctx, bs: Block[], proseSentences: Sentence[][]): v
     for (const ss of proseSentences) {
       let run: Sentence[] = [];
       const flush = (): void => {
-        if (run.length >= need) add(ctx, "passive-run", "passive", "P2", run[0]?.start ?? 0, run.map((s) => s.text).join(" ").slice(0, 160), "назвать деятеля, если источник его называет, или перемешать с активными конструкциями");
+        if (run.length >= need)
+          add(
+            ctx,
+            "passive-run",
+            "passive",
+            "P2",
+            run[0]?.start ?? 0,
+            run
+              .map((s) => s.text)
+              .join(" ")
+              .slice(0, 160),
+            "назвать деятеля, если источник его называет, или перемешать с активными конструкциями",
+          );
         run = [];
       };
       for (const s of ss) {
@@ -443,10 +586,20 @@ function detectStructure(ctx: Ctx, bs: Block[], proseSentences: Sentence[][]): v
 
   // Переходы в начале абзацев подряд.
   if (mode !== "chat" && mode !== "social") {
-    const opener = /^\s*(?:кроме того|помимо этого|более того|к тому же|также|таким образом|в свою очередь|однако|при этом|вместе с тем|следовательно|в то же время|в целом)[,\s]/iu;
+    const opener =
+      /^\s*(?:кроме того|помимо этого|более того|к тому же|также|таким образом|в свою очередь|однако|при этом|вместе с тем|следовательно|в то же время|в целом)[,\s]/iu;
     let run: Block[] = [];
     const flush = (): void => {
-      if (run.length >= 3) add(ctx, "transition-run", "openers", "P1", run[0]?.start ?? 0, run.map((b) => b.text.trim().split(/\s+/).slice(0, 2).join(" ")).join(" / "), "связь должна быть видна из содержания, а не из союза в начале каждого абзаца");
+      if (run.length >= 3)
+        add(
+          ctx,
+          "transition-run",
+          "openers",
+          "P1",
+          run[0]?.start ?? 0,
+          run.map((b) => b.text.trim().split(/\s+/).slice(0, 2).join(" ")).join(" / "),
+          "связь должна быть видна из содержания, а не из союза в начале каждого абзаца",
+        );
       run = [];
     };
     for (const b of bs) {
@@ -462,8 +615,22 @@ function detectStructure(ctx: Ctx, bs: Block[], proseSentences: Sentence[][]): v
     for (let i = 0; i + 2 < ss.length; i += 1) {
       const first = (s: Sentence | undefined): string => (s ? (words(s.text)[0] ?? "").toLowerCase() : "");
       const a = first(ss[i]);
-      if (a && a.length > 1 && !["он", "она", "они", "я", "мы", "оно"].includes(a) && a === first(ss[i + 1]) && a === first(ss[i + 2])) {
-        add(ctx, "same-opener", a, "P2", ss[i]?.start ?? 0, `${ss[i]?.text ?? ""} ${ss[i + 1]?.text ?? ""}`, "оставить первое, остальные перестроить");
+      if (
+        a &&
+        a.length > 1 &&
+        !["он", "она", "они", "я", "мы", "оно"].includes(a) &&
+        a === first(ss[i + 1]) &&
+        a === first(ss[i + 2])
+      ) {
+        add(
+          ctx,
+          "same-opener",
+          a,
+          "P2",
+          ss[i]?.start ?? 0,
+          `${ss[i]?.text ?? ""} ${ss[i + 1]?.text ?? ""}`,
+          "оставить первое, остальные перестроить",
+        );
         i += 2;
       }
     }
@@ -471,7 +638,16 @@ function detectStructure(ctx: Ctx, bs: Block[], proseSentences: Sentence[][]): v
     if (mode !== "social") {
       let run: Sentence[] = [];
       const flush = (): void => {
-        if (run.length >= 3) add(ctx, "staccato", "fragments", "P2", run[0]?.start ?? 0, run.map((s) => s.text).join(" "), "оставить один акцентный фрагмент, остальное собрать в предложения");
+        if (run.length >= 3)
+          add(
+            ctx,
+            "staccato",
+            "fragments",
+            "P2",
+            run[0]?.start ?? 0,
+            run.map((s) => s.text).join(" "),
+            "оставить один акцентный фрагмент, остальное собрать в предложения",
+          );
         run = [];
       };
       for (const s of ss) {
@@ -483,7 +659,16 @@ function detectStructure(ctx: Ctx, bs: Block[], proseSentences: Sentence[][]): v
     // Стопка вопросов: 3+ вопросительных предложения подряд.
     let q: Sentence[] = [];
     const flushQ = (): void => {
-      if (q.length >= 3) add(ctx, "stacked-questions", "questions", "P2", q[0]?.start ?? 0, q.map((s) => s.text).join(" "), "оставить не больше одного вопроса и ответить");
+      if (q.length >= 3)
+        add(
+          ctx,
+          "stacked-questions",
+          "questions",
+          "P2",
+          q[0]?.start ?? 0,
+          q.map((s) => s.text).join(" "),
+          "оставить не больше одного вопроса и ответить",
+        );
       q = [];
     };
     for (const s of ss) {
@@ -494,33 +679,81 @@ function detectStructure(ctx: Ctx, bs: Block[], proseSentences: Sentence[][]): v
   }
 
   // Цепочка отрицаний: «Без X, без Y, без Z.» / «Никаких X. Никаких Y.»
-  for (const m of ctx.p.prose.matchAll(/(?<![\p{L}])(?:без\s+[^,.!?\n]{1,30},\s*){2,}без\s+[^,.!?\n]{1,30}[.!]|(?:(?<![\p{L}])никак\p{L}+\s+[^.!?\n]{1,30}[.!]\s*){3,}/giu)) {
-    add(ctx, "negation-chain", "negations", "P2", m.index ?? 0, m[0], "сказать, что это есть, а не чем оно не является");
+  for (const m of ctx.p.prose.matchAll(
+    /(?<![\p{L}])(?:без\s+[^,.!?\n]{1,30},\s*){2,}без\s+[^,.!?\n]{1,30}[.!]|(?:(?<![\p{L}])никак\p{L}+\s+[^.!?\n]{1,30}[.!]\s*){3,}/giu,
+  )) {
+    add(
+      ctx,
+      "negation-chain",
+      "negations",
+      "P2",
+      m.index ?? 0,
+      m[0],
+      "сказать, что это есть, а не чем оно не является",
+    );
   }
 
   // Списки из голых именных групп: 5+ коротких пунктов без глаголов.
   if (mode !== "chat" && mode !== "technical") {
     for (const b of bs) {
       if (b.kind !== "list") continue;
-      const items = b.text.split("\n").map((l) => l.replace(/^\s*(?:[-*+•]|\d+[.)])\s+/, "").replace(/\*\*/g, "").trim()).filter(Boolean);
+      const items = b.text
+        .split("\n")
+        .map((l) =>
+          l
+            .replace(/^\s*(?:[-*+•]|\d+[.)])\s+/, "")
+            .replace(/\*\*/g, "")
+            .trim(),
+        )
+        .filter(Boolean);
       if (items.length < 5) continue;
       const bare = items.filter((it) => {
         const ws = words(it);
-        return ws.length > 0 && ws.length <= 6 && !ws.some((w) => w.length > 3 && VERB_HINT.test(w.toLowerCase()) && !NOT_VERB.test(w.toLowerCase()));
+        return (
+          ws.length > 0 &&
+          ws.length <= 6 &&
+          !ws.some((w) => w.length > 3 && VERB_HINT.test(w.toLowerCase()) && !NOT_VERB.test(w.toLowerCase()))
+        );
       });
       if (bare.length >= 5 && bare.length / items.length >= 0.8) {
-        add(ctx, "bullet-np-list", "np-list", "P1", b.start, items.slice(0, 3).join(" / "), "полные утверждения с данными из источника или проза");
+        add(
+          ctx,
+          "bullet-np-list",
+          "np-list",
+          "P1",
+          b.start,
+          items.slice(0, 3).join(" / "),
+          "полные утверждения с данными из источника или проза",
+        );
       }
     }
   }
 
   // Хэштеги: 6+ (без номеров задач и цветов).
-  const tags = [...ctx.p.prose.matchAll(/(?<![\p{L}\d&/])#(?=[\p{L}_]*\p{L})[\p{L}\d_]{2,}/gu)].filter((m) => !/^#[0-9a-f]{6}$|^#[0-9a-f]{3}$/i.test(m[0]) || !/\d/.test(m[0]));
-  if (tags.length >= 6) add(ctx, "hashtag-stuffing", "hashtags", mode === "social" ? "P1" : "P0", tags[0]?.index ?? 0, tags.slice(0, 8).map((m) => m[0]).join(" "), "два-три конкретных тега или ни одного");
+  const tags = [...ctx.p.prose.matchAll(/(?<![\p{L}\d&/])#(?=[\p{L}_]*\p{L})[\p{L}\d_]{2,}/gu)].filter(
+    (m) => !/^#[0-9a-f]{6}$|^#[0-9a-f]{3}$/i.test(m[0]) || !/\d/.test(m[0]),
+  );
+  if (tags.length >= 6)
+    add(
+      ctx,
+      "hashtag-stuffing",
+      "hashtags",
+      mode === "social" ? "P1" : "P0",
+      tags[0]?.index ?? 0,
+      tags
+        .slice(0, 8)
+        .map((m) => m[0])
+        .join(" "),
+      "два-три конкретных тега или ни одного",
+    );
 }
 
 // ─── Стилометрия ────────────────────────────────────────────────────────
-function detectStylometry(ctx: Ctx, bs: Block[], proseSentences: Sentence[][]): { sentCV: number; paraCV: number; meanLen: number; mattr: number } {
+function detectStylometry(
+  ctx: Ctx,
+  bs: Block[],
+  proseSentences: Sentence[][],
+): { sentCV: number; paraCV: number; meanLen: number; mattr: number } {
   const all = proseSentences.flat().filter((s) => s.words >= 3);
   const lengths = all.map((s) => s.words);
   const sentCV = cv(lengths);
@@ -533,13 +766,37 @@ function detectStylometry(ctx: Ctx, bs: Block[], proseSentences: Sentence[][]): 
 
   if (ctx.mode !== "chat" && ctx.mode !== "social") {
     if (lengths.length >= 10 && sentCV < 0.33 && meanLen >= 10) {
-      add(ctx, "uniform-sentences", "sentence-cv", "P1", all[0]?.start ?? 0, `коэффициент вариации длины предложений ${sentCV.toFixed(2)} при средней длине ${meanLen.toFixed(1)} слова`, "текст метрономичен: смешать короткие и длинные предложения там, где позволяет содержание");
+      add(
+        ctx,
+        "uniform-sentences",
+        "sentence-cv",
+        "P1",
+        all[0]?.start ?? 0,
+        `коэффициент вариации длины предложений ${sentCV.toFixed(2)} при средней длине ${meanLen.toFixed(1)} слова`,
+        "текст метрономичен: смешать короткие и длинные предложения там, где позволяет содержание",
+      );
     }
     if (paraLens.length >= 5 && paraCV < 0.2) {
-      add(ctx, "uniform-paragraphs", "paragraph-cv", "P2", paras[0]?.start ?? 0, `коэффициент вариации длины абзацев ${paraCV.toFixed(2)} на ${paraLens.length} абзацах`, "границы абзацев по смыслу, а не по размеру");
+      add(
+        ctx,
+        "uniform-paragraphs",
+        "paragraph-cv",
+        "P2",
+        paras[0]?.start ?? 0,
+        `коэффициент вариации длины абзацев ${paraCV.toFixed(2)} на ${paraLens.length} абзацах`,
+        "границы абзацев по смыслу, а не по размеру",
+      );
     }
     if (tokens.length >= 300 && diversity < 0.62 && ctx.mode !== "technical") {
-      add(ctx, "low-diversity", "mattr", "P2", 0, `MATTR ${diversity.toFixed(2)}`, "словарь беден для русской прозы: больше конкретики вместо повторяющихся абстракций");
+      add(
+        ctx,
+        "low-diversity",
+        "mattr",
+        "P2",
+        0,
+        `MATTR ${diversity.toFixed(2)}`,
+        "словарь беден для русской прозы: больше конкретики вместо повторяющихся абстракций",
+      );
     }
   }
   return { sentCV, paraCV, meanLen, mattr: diversity };
@@ -547,8 +804,15 @@ function detectStylometry(ctx: Ctx, bs: Block[], proseSentences: Sentence[][]): 
 
 /** Находки, которые описывают весь текст или абзац, а не конкретную фразу. */
 const AGGREGATE = new Set([
-  "uniform-sentences", "uniform-paragraphs", "low-diversity", "transition-run", "passive-run",
-  "tier2-cluster", "phrase3-cluster", "tier3", "invisible-chars",
+  "uniform-sentences",
+  "uniform-paragraphs",
+  "low-diversity",
+  "transition-run",
+  "passive-run",
+  "tier2-cluster",
+  "phrase3-cluster",
+  "tier3",
+  "invisible-chars",
 ]);
 
 /**
@@ -567,7 +831,8 @@ function dedupe(issues: Issue[]): Issue[] {
       const end = i.index + i.text.length;
       const w = WEIGHTS[i.type] ?? 1;
       const covering = kept.find(
-        (k) => !AGGREGATE.has(k.type) && k.index <= i.index && k.index + k.text.length >= end && (WEIGHTS[k.type] ?? 1) >= w,
+        (k) =>
+          !AGGREGATE.has(k.type) && k.index <= i.index && k.index + k.text.length >= end && (WEIGHTS[k.type] ?? 1) >= w,
       );
       if (covering) continue;
     }
@@ -597,7 +862,10 @@ export interface Internals {
   sentences: Sentence[][];
 }
 
-export function analyzeInternal(source: string, options: AnalyzeOptions = {}): { result: AnalysisResult; internals: Internals } {
+export function analyzeInternal(
+  source: string,
+  options: AnalyzeOptions = {},
+): { result: AnalysisResult; internals: Internals } {
   const mode = options.context ?? "general";
   const p = prepare(source);
   const bs = blocks(p);

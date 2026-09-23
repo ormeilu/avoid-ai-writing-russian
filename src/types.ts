@@ -1,13 +1,7 @@
 /** Режим анализа. Соответствие профилям скилла — в references/patterns.md. */
 export type ContextMode = "general" | "academic" | "technical" | "social" | "chat";
 
-export const CONTEXT_MODES: readonly ContextMode[] = [
-  "general",
-  "academic",
-  "technical",
-  "social",
-  "chat",
-];
+export const CONTEXT_MODES: readonly ContextMode[] = ["general", "academic", "technical", "social", "chat"];
 
 /** Профили скилла (`--context` в SKILL.md) и их режимы детектора. */
 export const PROFILE_TO_MODE: Readonly<Record<string, ContextMode>> = {

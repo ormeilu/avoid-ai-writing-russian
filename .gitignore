@@ -3,3 +3,4 @@ dist/
 .aiw-ru.json
 *.log
 .DS_Store
+evals/results/

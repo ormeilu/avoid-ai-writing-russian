@@ -170,7 +170,10 @@ export function antiplagiat(source: string, options: AnalyzeOptions & { model?: 
       probability: Number(prob.toFixed(3)),
       ai,
       reasons: reasonsFor(model, f),
-      preview: p.source.slice(s, Math.min(e, s + 90)).replace(/\s+/g, " ").trim(),
+      preview: p.source
+        .slice(s, Math.min(e, s + 90))
+        .replace(/\s+/g, " ")
+        .trim(),
     };
   });
 
@@ -218,7 +221,10 @@ function norm(s: string): string {
 export function labelFragments(source: string, marked: string[]): Sample[] {
   const { internals, result } = analyzeInternal(source, { context: "academic" });
   const p = internals.prepared;
-  const keys = marked.map(norm).filter((m) => m.length >= 30).map((m) => m.slice(0, 60));
+  const keys = marked
+    .map(norm)
+    .filter((m) => m.length >= 30)
+    .map((m) => m.slice(0, 60));
   return fragmentsOf(internals).map((r) => {
     const s = p.toSource[r.start] ?? r.start;
     const e = p.toSource[r.end] ?? r.end;

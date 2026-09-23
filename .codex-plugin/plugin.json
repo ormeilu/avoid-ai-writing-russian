@@ -4,11 +4,57 @@
   "description": "Аудит и правка русских текстов от ИИ-стиля; под-скилл antiplagiat для подготовки к проверке «Антиплагиатом».",
   "author": {
     "name": "Ilya Lubenets",
+    "email": "lubenets.ilya.igorevich@gmail.com",
     "url": "https://github.com/ormeilu/avoid-ai-writing-russian"
   },
   "license": "MIT",
-  "keywords": ["russian", "writing", "editing", "ai-detection", "antiplagiat"],
+  "keywords": [
+    "russian",
+    "русский язык",
+    "writing",
+    "editing",
+    "style",
+    "ai-detection",
+    "ai-writing",
+    "humanize",
+    "antiplagiat",
+    "антиплагиат",
+    "канцелярит",
+    "kantselyarit",
+    "calques",
+    "typography",
+    "academic",
+    "vak",
+    "claude-code",
+    "codex",
+    "agent-skills",
+    "bun",
+    "typescript"
+  ],
   "skills": "./skills/",
   "homepage": "https://github.com/ormeilu/avoid-ai-writing-russian",
-  "repository": "https://github.com/ormeilu/avoid-ai-writing-russian"
+  "repository": "https://github.com/ormeilu/avoid-ai-writing-russian",
+  "interface": {
+    "displayName": "Русский текст без ИИ-стиля",
+    "shortDescription": "Канцелярит, кальки и ИИ-штампы в русских текстах",
+    "longDescription": "Аудит и правка русских текстов: находит приметы машинной генерации (канцелярит, кальки с английского, «не просто X, а Y», тире-связки, одинаковый ритм), правит только обоснованные фрагменты, сохраняет цитаты, код, формулы, числа и ссылки на литературу и не выдумывает фактов. Под-скилл antiplagiat готовит текст к проверке системой «Антиплагиат»: оценка доли ИИ-текста по фрагментам, чистка технических артефактов, оформление заимствований как цитирований. Находки — сигналы о качестве текста, а не доказательство авторства.",
+    "developerName": "Ilya Lubenets",
+    "category": "Productivity",
+    "capabilities": [
+      "Аудит ИИ-стиля",
+      "Правка с сохранением голоса",
+      "Правка файла на месте",
+      "Проверка сохранности",
+      "Профиль для диссертаций и статей ВАК",
+      "Подготовка к «Антиплагиату»"
+    ],
+    "websiteURL": "https://github.com/ormeilu/avoid-ai-writing-russian",
+    "supportURL": "https://github.com/ormeilu/avoid-ai-writing-russian/issues",
+    "defaultPrompt": [
+      "Просканируй этот текст на ИИ-стиль, ничего не переписывай.",
+      "Убери ИИ-стиль, сохрани мой голос и все факты.",
+      "Подготовь главу диссертации к проверке «Антиплагиатом»."
+    ],
+    "brandColor": "#1F3A5F"
+  }
 }

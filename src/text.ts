@@ -17,8 +17,30 @@ const LATIN_RE = /\p{Script=Latin}/u;
 
 /** Латинские буквы, неотличимые от кириллических. */
 const LATIN_TO_CYRILLIC: Record<string, string> = {
-  a: "а", e: "е", o: "о", p: "р", c: "с", x: "х", y: "у", k: "к", m: "м", t: "т", h: "н", b: "в",
-  A: "А", E: "Е", O: "О", P: "Р", C: "С", X: "Х", Y: "У", K: "К", M: "М", T: "Т", H: "Н", B: "В",
+  a: "а",
+  e: "е",
+  o: "о",
+  p: "р",
+  c: "с",
+  x: "х",
+  y: "у",
+  k: "к",
+  m: "м",
+  t: "т",
+  h: "н",
+  b: "в",
+  A: "А",
+  E: "Е",
+  O: "О",
+  P: "Р",
+  C: "С",
+  X: "Х",
+  Y: "У",
+  K: "К",
+  M: "М",
+  T: "Т",
+  H: "Н",
+  B: "В",
 };
 const INVISIBLE_RE = /[\u200B-\u200D\u2060\uFEFF\u00AD]/gu;
 
@@ -125,9 +147,7 @@ export function prepare(source: string): Prepared {
     const word = m[0];
     if (!CYRILLIC_RE.test(word) || !LATIN_RE.test(word)) continue;
     const start = m.index ?? 0;
-    const latinOnlyLookalikes = [...word].every(
-      (c) => !LATIN_RE.test(c) || c in LATIN_TO_CYRILLIC,
-    );
+    const latinOnlyLookalikes = [...word].every((c) => !LATIN_RE.test(c) || c in LATIN_TO_CYRILLIC);
     if (!latinOnlyLookalikes) continue; // «Wi-Fi-роутер», «IT-отдел» — законная смесь
     homoglyphs.push({ index: toSource[start] ?? start, word });
     for (let k = 0; k < word.length; k += 1) {
@@ -216,10 +236,62 @@ export interface Sentence {
 }
 
 const ABBREVIATIONS = new Set([
-  "т", "е", "д", "п", "г", "гг", "в", "вв", "с", "см", "рис", "табл", "др", "им", "ул", "проф",
-  "акад", "вып", "стр", "ст", "н", "э", "тыс", "млн", "млрд", "руб", "коп", "мин", "сек", "ч",
-  "кв", "обл", "ред", "изд", "пер", "сб", "т.е", "т.д", "т.п", "т.к", "etc", "et", "al", "no",
-  "vol", "pp", "fig", "eq", "doi", "проч", "напр", "прим", "ср", "англ", "лат", "гл",
+  "т",
+  "е",
+  "д",
+  "п",
+  "г",
+  "гг",
+  "в",
+  "вв",
+  "с",
+  "см",
+  "рис",
+  "табл",
+  "др",
+  "им",
+  "ул",
+  "проф",
+  "акад",
+  "вып",
+  "стр",
+  "ст",
+  "н",
+  "э",
+  "тыс",
+  "млн",
+  "млрд",
+  "руб",
+  "коп",
+  "мин",
+  "сек",
+  "ч",
+  "кв",
+  "обл",
+  "ред",
+  "изд",
+  "пер",
+  "сб",
+  "т.е",
+  "т.д",
+  "т.п",
+  "т.к",
+  "etc",
+  "et",
+  "al",
+  "no",
+  "vol",
+  "pp",
+  "fig",
+  "eq",
+  "doi",
+  "проч",
+  "напр",
+  "прим",
+  "ср",
+  "англ",
+  "лат",
+  "гл",
 ]);
 
 /** Разбивает фрагмент на предложения с учётом сокращений и инициалов. */

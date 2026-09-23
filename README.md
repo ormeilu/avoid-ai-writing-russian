@@ -1,7 +1,12 @@
 # avoid-ai-writing-russian
 
 [![CI](https://github.com/ormeilu/avoid-ai-writing-russian/actions/workflows/ci.yml/badge.svg)](https://github.com/ormeilu/avoid-ai-writing-russian/actions/workflows/ci.yml)
+[![Выпуск](https://img.shields.io/github/v/release/ormeilu/avoid-ai-writing-russian?label=выпуск)](https://github.com/ormeilu/avoid-ai-writing-russian/releases)
 [![Лицензия: MIT](https://img.shields.io/badge/лицензия-MIT-blue.svg)](LICENSE)
+[![Bun](https://img.shields.io/badge/Bun-1.1%2B-black?logo=bun)](https://bun.sh)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
+[![prek](https://img.shields.io/badge/хуки-prek-orange)](https://prek.j178.dev)
+[![Апстрим](https://img.shields.io/badge/апстрим-avoid--ai--writing-555)](https://github.com/conorbronsdon/avoid-ai-writing)
 
 Скилл для ИИ-агентов (Claude Code, Codex, Cursor и других), который находит и убирает из русских текстов приметы машинной генерации: канцелярит, кальки с английского, «не просто X, а Y», тире-связки, одинаковый ритм предложений. К нему прилагается детектор на TypeScript для Bun и под-скилл `antiplagiat`, который оценивает текст по фрагментам в духе модуля ИИ-детекции системы «Антиплагиат».
 
@@ -18,6 +23,8 @@
 - [Что ловит каталог](#что-ловит-каталог)
 - [Ограничения](#ограничения)
 - [Разработка](#разработка)
+- [Выпуски](#выпуски)
+- [Как сослаться](#как-сослаться)
 - [Благодарности](#благодарности)
 - [Лицензия](#лицензия)
 
@@ -189,18 +196,34 @@ bun install
 ```
 
 ```bash
-bun test
+prek install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push
 ```
 
 ```bash
-bun run typecheck
+bun run check
+```
+
+`bun run check` прогоняет линтер и форматтер (Biome), проверку типов, тесты, самопроверку документации детектором и синхронность версий. Тесты покрывают разбор текста, каждое правило детектора, корпус живых и шаблонных текстов шести жанров, CLI, скрипты выпуска и сами скиллы: шапки SKILL.md, ссылки, связь разделов каталога с типами находок детектора, примеры из каталога.
+
+Поведение скилла на живом агенте проверяет `bun run eval`: двенадцать случаев (защищённые цитаты, попытка внедрить инструкцию в текст, ловушка на выдуманные числа, режим только поиска и другие) с автоматической оценкой ответа. В CI этот прогон не входит.
+
+Хуки prek перед коммитом проверяют гигиену файлов, секреты, формат, типы, невидимые символы и сообщение коммита (на русском); перед отправкой запускают тесты. Правила участия — в [CONTRIBUTING.md](CONTRIBUTING.md), история изменений — в [CHANGELOG.md](CHANGELOG.md).
+
+## Выпуски
+
+```bash
+bun run release patch
 ```
 
 ```bash
-bun run selfscan
+git push --follow-tags
 ```
 
-`selfscan` прогоняет детектор по документации самого проекта. Правила участия, формат новых примет и порядок выпуска описаны в [CONTRIBUTING.md](CONTRIBUTING.md), история изменений — в [CHANGELOG.md](CHANGELOG.md).
+Скрипт переносит раздел «Не выпущено» из CHANGELOG в новую версию, обновляет версию во всех манифестах, скиллах и `CITATION.cff`, делает коммит и тег. По тегу GitHub Actions собирает бинарники `aiw-ru` под Linux, macOS и Windows, архив скиллов с контрольными суммами и публикует [выпуск](https://github.com/ormeilu/avoid-ai-writing-russian/releases) с заметками из CHANGELOG.
+
+## Как сослаться
+
+Если проект пригодился в исследовании, данные для ссылки лежат в [CITATION.cff](CITATION.cff); GitHub показывает их кнопкой «Cite this repository».
 
 ## Благодарности
 

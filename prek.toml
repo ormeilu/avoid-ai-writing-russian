@@ -1,0 +1,105 @@
+# Конфигурация prek (https://prek.j178.dev) — быстрой замены pre-commit на Rust.
+#:schema https://www.schemastore.org/prek.json
+#
+# Установка хуков один раз после клонирования:
+#   prek install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push
+#
+# Порядок задан приоритетами: сначала дешёвые проверки файлов и секретов
+# (0–10), потом форматирование и линтер (20), потом типы и проектные
+# проверки (30), тесты — только перед отправкой (pre-push).
+
+[[repos]]
+repo = "https://github.com/pre-commit/pre-commit-hooks"
+rev = "v6.0.0"
+hooks = [
+  { id = "check-added-large-files", args = ["--maxkb=512"], priority = 0, fail_fast = true },
+  { id = "detect-private-key", priority = 0, fail_fast = true },
+  { id = "check-merge-conflict", priority = 0 },
+  { id = "check-case-conflict", priority = 0 },
+  { id = "check-yaml", priority = 10 },
+  { id = "check-toml", priority = 10 },
+  { id = "check-json", priority = 10 },
+  { id = "end-of-file-fixer", priority = 10 },
+  # В Markdown два пробела в конце строки — перенос; их не трогаем.
+  { id = "trailing-whitespace", args = ["--markdown-linebreak-ext=md"], priority = 10 },
+  { id = "mixed-line-ending", args = ["--fix=lf"], priority = 10 },
+]
+
+[[repos]]
+repo = "https://github.com/gitleaks/gitleaks"
+rev = "v8.30.1"
+hooks = [
+  { id = "gitleaks", priority = 0, fail_fast = true },
+]
+
+[[repos]]
+repo = "https://github.com/google/yamlfmt"
+rev = "v0.21.0"
+hooks = [
+  { id = "yamlfmt", priority = 10 },
+]
+
+# Проектные хуки: Bun и сам детектор.
+[[repos]]
+repo = "local"
+hooks = [
+  {
+    id = "invisible-chars",
+    name = "нет невидимых символов и латиницы внутри русских слов",
+    entry = "bun scripts/check-invisible.ts",
+    language = "system",
+    types_or = ["ts", "markdown", "json", "yaml"],
+    priority = 5,
+  },
+  {
+    id = "biome",
+    name = "Biome: формат и линтер",
+    entry = "bunx biome check --write --no-errors-on-unmatched --files-ignore-unknown=true",
+    language = "system",
+    types_or = ["ts", "json"],
+    exclude = '^bun\.lock$',
+    priority = 20,
+  },
+  {
+    id = "typecheck",
+    name = "TypeScript: проверка типов",
+    entry = "bunx tsc --noEmit",
+    language = "system",
+    types = ["ts"],
+    pass_filenames = false,
+    priority = 30,
+  },
+  {
+    id = "versions",
+    name = "версия одинакова во всех файлах",
+    entry = "bun scripts/check-versions.ts",
+    language = "system",
+    files = '^(package\.json|\.claude-plugin/plugin\.json|\.codex-plugin/plugin\.json|skills/.+/SKILL\.md)$',
+    pass_filenames = false,
+    priority = 30,
+  },
+  {
+    id = "selfscan",
+    name = "документация проходит собственный детектор",
+    entry = "bun src/cli.ts scan --context docs --min P1 --fail-above 30",
+    language = "system",
+    files = '^(README|CONTRIBUTING|AGENTS|NOTICE|CHANGELOG)\.md$|^skills/.+\.md$',
+    priority = 30,
+  },
+  {
+    id = "commit-msg",
+    name = "сообщение коммита на русском",
+    entry = "bun scripts/check-commit-msg.ts",
+    language = "system",
+    stages = ["commit-msg"],
+  },
+  {
+    id = "tests",
+    name = "bun test",
+    entry = "bun test",
+    language = "system",
+    pass_filenames = false,
+    always_run = true,
+    stages = ["pre-push"],
+  },
+]

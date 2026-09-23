@@ -35,7 +35,8 @@ function stripCode(s: string): string {
   return s.replace(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, "").replace(/`[^`\n]+`/g, "");
 }
 
-const AI_PARAM = /[?&](?:utm_source=(?:chatgpt\.com|openai|copilot\.com|claude\.ai|perplexity\.ai|perplexity|gemini\.google\.com|deepseek\.com)|referrer=grok\.com)/gi;
+const AI_PARAM =
+  /[?&](?:utm_source=(?:chatgpt\.com|openai|copilot\.com|claude\.ai|perplexity\.ai|perplexity|gemini\.google\.com|deepseek\.com)|referrer=grok\.com)/gi;
 
 function urls(s: string): string[] {
   return all(/https?:\/\/[^\s)>\]»"]+/g, stripCode(s)).map((u) => u.replace(AI_PARAM, "").replace(/[?&]$/, ""));
@@ -73,12 +74,32 @@ function headingShape(s: string): string[] {
 export function validate(before: string, after: string, context: ContextMode = "general"): ValidationResult {
   const v: Violation[] = [];
   if (frontmatter(before) !== frontmatter(after)) v.push({ kind: "yaml", detail: "YAML-шапка изменена" });
-  compareExact("код", all(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, before), all(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, after), v);
+  compareExact(
+    "код",
+    all(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, before),
+    all(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, after),
+    v,
+  );
   compareExact("инлайн-код", all(/`[^`\n]+`/g, stripCode(before)), all(/`[^`\n]+`/g, stripCode(after)), v);
-  compareExact("формула", all(/\$\$[\s\S]*?\$\$|\$[^$\n]+\$/g, stripCode(before)), all(/\$\$[\s\S]*?\$\$|\$[^$\n]+\$/g, stripCode(after)), v);
+  compareExact(
+    "формула",
+    all(/\$\$[\s\S]*?\$\$|\$[^$\n]+\$/g, stripCode(before)),
+    all(/\$\$[\s\S]*?\$\$|\$[^$\n]+\$/g, stripCode(after)),
+    v,
+  );
   compareExact("URL", urls(before), urls(after), v);
-  compareExact("ссылка на литературу", all(/\[\d+(?:[,;–-]\s*\d+)*(?:,\s*с\.\s*\d+(?:[–-]\d+)?)?\]/g, stripCode(before)), all(/\[\d+(?:[,;–-]\s*\d+)*(?:,\s*с\.\s*\d+(?:[–-]\d+)?)?\]/g, stripCode(after)), v);
-  compareExact("ссылка pandoc", all(/\[-?@[^\]\n]+\]/g, stripCode(before)), all(/\[-?@[^\]\n]+\]/g, stripCode(after)), v);
+  compareExact(
+    "ссылка на литературу",
+    all(/\[\d+(?:[,;–-]\s*\d+)*(?:,\s*с\.\s*\d+(?:[–-]\d+)?)?\]/g, stripCode(before)),
+    all(/\[\d+(?:[,;–-]\s*\d+)*(?:,\s*с\.\s*\d+(?:[–-]\d+)?)?\]/g, stripCode(after)),
+    v,
+  );
+  compareExact(
+    "ссылка pandoc",
+    all(/\[-?@[^\]\n]+\]/g, stripCode(before)),
+    all(/\[-?@[^\]\n]+\]/g, stripCode(after)),
+    v,
+  );
   compareExact("таблица", all(/^[ \t]*\|.*$/gm, stripCode(before)), all(/^[ \t]*\|.*$/gm, stripCode(after)), v);
   compareExact("цитата-блок", all(/^[ \t]*>.*$/gm, stripCode(before)), all(/^[ \t]*>.*$/gm, stripCode(after)), v);
   const quoteNorm = (q: string): string => q.replace(/^["“„«]|["”“»]$/g, "");

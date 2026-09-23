@@ -1,13 +1,32 @@
 ---
 name: antiplagiat
-description: Подготовка русского текста к проверке системой «Антиплагиат» (antiplagiat.ru, «Антиплагиат.ВУЗ»): оценка доли «ИИ-сгенерированного» текста по фрагментам в духе модуля ИИ-детекции, переписывание подсвеченных абзацев своим голосом, чистка технических артефактов, из-за которых документ помечают как подозрительный, и правильное оформление заимствований как цитирований. Используй, когда просят «проверить на антиплагиат», «снизить процент ИИ», «пройти проверку на ИИ-генерацию», «подготовить диссертацию/статью/ВКР к антиплагиату», «откалибровать под мой отчёт Антиплагиата». Для обычной чистки стиля без проверки используй avoid-ai-writing-russian.
+description: >-
+  Подготовка русского текста к проверке системой «Антиплагиат» (antiplagiat.ru, «Антиплагиат.ВУЗ»):
+  оценка доли «ИИ-сгенерированного» текста по фрагментам в духе модуля ИИ-детекции, переписывание
+  подсвеченных абзацев своим голосом, чистка технических артефактов, из-за которых документ помечают
+  как подозрительный, и правильное оформление заимствований как цитирований. Используй, когда просят
+  «проверить на антиплагиат», «снизить процент ИИ», «пройти проверку на ИИ-генерацию», «подготовить
+  диссертацию/статью/ВКР к антиплагиату», «откалибровать под мой отчёт Антиплагиата». Для обычной
+  чистки стиля без проверки используй avoid-ai-writing-russian.
 version: 0.1.0
 license: MIT
-compatibility: Любой агент с поддержкой формата agentskills.io SKILL.md. Для оценки по фрагментам нужен Bun 1.1+; без него — только модельная оценка.
+compatibility: >-
+  Любой агент с поддержкой формата agentskills.io SKILL.md. Для оценки по фрагментам нужен Bun 1.1+; без него оценка только модельная.
 metadata:
   author: Ilya Lubenets
+  author_url: https://github.com/ormeilu
+  homepage: https://github.com/ormeilu/avoid-ai-writing-russian
   repository: https://github.com/ormeilu/avoid-ai-writing-russian
-  tags: russian antiplagiat academic ai-detection
+  issues: https://github.com/ormeilu/avoid-ai-writing-russian/issues
+  changelog: https://github.com/ormeilu/avoid-ai-writing-russian/blob/master/CHANGELOG.md
+  upstream: https://github.com/conorbronsdon/avoid-ai-writing
+  upstream_version: 3.36.0
+  upstream_author: Conor Bronsdon
+  language: ru
+  tags: russian antiplagiat academic ai-detection dissertation vak calibration
+  parent_skill: avoid-ai-writing-russian
+  openclaw:
+    emoji: "🎓"
   agentskills_spec: "1.0"
 ---
 
