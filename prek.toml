@@ -49,6 +49,8 @@ hooks = [
     entry = "bun scripts/check-invisible.ts",
     language = "system",
     types_or = ["ts", "markdown", "json", "yaml"],
+    # Запись terminalizer хранит ANSI-коды вида \u001b[1mтекст: это не подмена букв.
+    exclude = '^docs/demo/aiw-demo\.yml$',
     priority = 5,
   },
   {
