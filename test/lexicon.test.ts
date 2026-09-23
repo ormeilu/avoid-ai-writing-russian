@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { ALL_LEXICON, phrase, TYPE_LABELS, WEIGHTS } from "../src/index.ts";
 
 describe("контракт словаря", () => {
@@ -39,12 +40,20 @@ describe("контракт словаря", () => {
   });
 
   test("в репозитории нет невидимых символов", () => {
-    const root = new URL("../", import.meta.url).pathname;
+    const root = join(import.meta.dir, "..");
     const glob = new Bun.Glob("{src,test,skills,examples}/**/*.{ts,md,json}");
-    const files = [...glob.scanSync(root), "README.md", "CONTRIBUTING.md", "AGENTS.md", "NOTICE.md", "CHANGELOG.md"];
+    const files = [
+      ...glob.scanSync(root),
+      "README.md",
+      "CONTRIBUTING.md",
+      "AGENTS.md",
+      "CLAUDE.md",
+      "NOTICE.md",
+      "CHANGELOG.md",
+    ];
     expect(files.length).toBeGreaterThan(10);
     for (const f of files) {
-      const s = readFileSync(`${root}${f}`, "utf8");
+      const s = readFileSync(join(root, f), "utf8");
       expect(/[\u200B-\u200D\u2060\uFEFF]/.test(s), f).toBe(false);
     }
   });

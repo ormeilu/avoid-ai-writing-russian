@@ -3,8 +3,8 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const cli = new URL("../src/cli.ts", import.meta.url).pathname;
-const fixtures = new URL("./fixtures/", import.meta.url).pathname;
+const cli = join(import.meta.dir, "..", "src", "cli.ts");
+const fixtures = `${join(import.meta.dir, "fixtures")}/`;
 
 function run(args: string[], stdin?: string, cwd?: string): { code: number; out: string; err: string } {
   const p = Bun.spawnSync(["bun", cli, ...args], {
