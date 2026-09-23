@@ -6,11 +6,22 @@ import { join } from "node:path";
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
 const fixtures = `${join(import.meta.dir, "fixtures")}/`;
 
-function run(args: string[], stdin?: string, cwd?: string): { code: number; out: string; err: string } {
+function run(
+  args: string[],
+  stdin?: string,
+  cwd?: string,
+  extraEnv: Record<string, string> = {},
+): { code: number; out: string; err: string } {
+  const env: Record<string, string | undefined> = { ...process.env, AIW_RU_CONFIG: "", NO_COLOR: "1", ...extraEnv };
+  delete env.FORCE_COLOR;
+  if (extraEnv.FORCE_COLOR) {
+    delete env.NO_COLOR;
+    env.FORCE_COLOR = extraEnv.FORCE_COLOR;
+  }
   const p = Bun.spawnSync(["bun", cli, ...args], {
     stdin: stdin ? new TextEncoder().encode(stdin) : undefined,
     cwd,
-    env: { ...process.env, AIW_RU_CONFIG: "" },
+    env,
   });
   return { code: p.exitCode ?? -1, out: p.stdout.toString(), err: p.stderr.toString() };
 }
@@ -20,6 +31,14 @@ describe("cli", () => {
     const r = run(["scan", `${fixtures}corpus/ai/blog.md`]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("сильный ИИ-стиль");
+  });
+
+  test("цвет: NO_COLOR по умолчанию в тестах, FORCE_COLOR включает", () => {
+    const esc = String.fromCharCode(27);
+    expect(run(["scan"], "Давайте разберёмся.").out).not.toContain(esc);
+    const colored = run(["scan"], "Давайте разберёмся.", undefined, { FORCE_COLOR: "1" }).out;
+    expect(colored).toContain(`${esc}[33mP1${esc}[0m`);
+    expect(run(["scan", "--json"], "Давайте разберёмся.", undefined, { FORCE_COLOR: "1" }).out).not.toContain(esc);
   });
 
   test("scan из stdin в JSON", () => {
@@ -40,7 +59,7 @@ describe("cli", () => {
   test("antiplagiat", () => {
     const r = run(["antiplagiat", `${fixtures}corpus/ai/blog.md`]);
     expect(r.code).toBe(0);
-    expect(r.out).toContain("Оценка доли ИИ-текста");
+    expect(r.out).toContain("Доля ИИ-текста");
   });
 
   test("validate возвращает 1 при повреждении", () => {
@@ -57,9 +76,25 @@ describe("cli", () => {
   test("--min скрывает находки ниже уровня", () => {
     const all = run(["scan", `${fixtures}corpus/ai/blog.md`]).out;
     const p0 = run(["scan", "--min", "P0", `${fixtures}corpus/ai/blog.md`]).out;
-    expect(all).toContain("P2:");
-    expect(p0).not.toContain("P2:");
-    expect(p0).toContain("P0:");
+    const row = (level: string): RegExp => new RegExp(`^  ${level}\\s+\\d+:\\d+`, "m");
+    expect(all).toMatch(row("(P2|стиль)"));
+    expect(p0).not.toMatch(row("(P1|P2|стиль)"));
+    expect(p0).toMatch(row("P0"));
+  });
+
+  test("scan: таблица по ширине COLUMNS, P0 выше P1", () => {
+    const r = run(["scan", `${fixtures}corpus/ai/blog.md`], undefined, undefined, { COLUMNS: "80" });
+    const lines = r.out.split("\n");
+    for (const l of lines.slice(1)) expect(l.length, l).toBeLessThanOrEqual(80);
+    expect(r.out).toContain("Уровень  Где");
+    const levels = lines.map((l) => /^ {2}(P0|P1|P2|стиль)\s+\d/.exec(l)?.[1]).filter(Boolean);
+    expect(levels.indexOf("P0")).toBeLessThan(levels.indexOf("P1"));
+  });
+
+  test("scan чистого текста и согласование числительных", () => {
+    const r = run(["scan"], "Одно слово.");
+    expect(r.out).toContain("2 слова, 1 предложение");
+    expect(r.out).toContain("Примет не найдено.");
   });
 
   test("scan нескольких файлов в JSON — массив", () => {
@@ -93,13 +128,14 @@ describe("cli", () => {
     writeFileSync(marked, firstParagraph);
     const cal = run(["calibrate", "--doc", doc, "--marked", marked], undefined, dir);
     expect(cal.code).toBe(0);
-    expect(cal.out).toContain("подсвечено системой 1");
+    expect(cal.out).toContain("Фрагменты с разметкой");
     expect(existsSync(join(dir, ".aiw-ru.json"))).toBe(true);
     const saved = JSON.parse(readFileSync(join(dir, ".aiw-ru.json"), "utf8")) as {
       version: number;
-      samples: unknown[];
+      samples: { y: number }[];
     };
     expect(saved.version).toBe(1);
+    expect(saved.samples.filter((x) => x.y === 1)).toHaveLength(1);
     expect(saved.samples.length).toBeGreaterThan(1);
     const again = run(["calibrate", "--doc", doc, "--marked", marked], undefined, dir);
     const savedAgain = JSON.parse(readFileSync(join(dir, ".aiw-ru.json"), "utf8")) as { samples: unknown[] };
@@ -111,6 +147,29 @@ describe("cli", () => {
 
   test("calibrate без пар --doc/--marked — код 2", () => {
     expect(run(["calibrate", "--doc", "x.md"]).code).toBe(2);
+    expect(run(["calibrate", "--marked", "m.txt", "--doc", "x.md"]).code).toBe(2);
+    expect(run(["calibrate", "--doc", "x.md", "--share", "150"]).code).toBe(2);
+    expect(run(["calibrate", "--doc", "x.md", "--marked", "m.txt", "--share", "10"]).code).toBe(2);
+  });
+
+  test("calibrate --share: итоговая доля из отчёта без разметки фрагментов", () => {
+    const dir = mkdtempSync(join(tmpdir(), "aiw-ru-"));
+    const doc = join(dir, "doc.md");
+    writeFileSync(doc, readFileSync(`${fixtures}corpus/ai/vak.md`, "utf8"));
+    const before = JSON.parse(run(["antiplagiat", "--json", doc], undefined, dir).out) as { aiShare: number };
+    expect(before.aiShare).toBeGreaterThan(50);
+    const cal = run(["calibrate", "--doc", doc, "--share", "0%"], undefined, dir);
+    expect(cal.code).toBe(0);
+    expect(cal.out).toContain("доля 0 %");
+    expect(cal.out).toContain("Ошибка доли ИИ");
+    const saved = JSON.parse(readFileSync(join(dir, ".aiw-ru.json"), "utf8")) as { documents: unknown[] };
+    expect(saved.documents).toHaveLength(1);
+    const after = JSON.parse(run(["antiplagiat", "--json", doc], undefined, dir).out) as {
+      aiShare: number;
+      model: string;
+    };
+    expect(after.model).toBe("calibrated");
+    expect(after.aiShare).toBeLessThan(before.aiShare);
   });
 
   test("битый файл калибровки — понятная ошибка", () => {

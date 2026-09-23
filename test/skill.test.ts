@@ -174,8 +174,10 @@ const CATALOG_EXAMPLES: { text: string; type: string; context?: Parameters<typeo
   { text: "Логи смотрим на ежедневной основе.", type: "calque" },
   { text: "Ни для кого не секрет, что сон важен.", type: "template" },
   { text: "Подводя итог, скажем главное.", type: "transition" },
+  { text: "В заключение, метод работает.", type: "transition" },
   { text: "Это знаменует новую эру в медицине.", type: "significance" },
   { text: "Технология имеет все шансы стать одним из ключевых трендов.", type: "future-narrative" },
+  { text: "Будущее за инновационными решениями!", type: "future-narrative" },
   { text: "Решение потенциально может ускорить работу.", type: "hedge-stack" },
   { text: "Мы получили реальную пользу от внедрения.", type: "real-inflation" },
   { text: "Это честная метрика качества.", type: "moral-adjective" },
@@ -238,5 +240,43 @@ describe("примеры из каталога", () => {
     );
     const missing = lexical.filter((t) => !covered.has(t));
     expect(missing).toEqual([]);
+  });
+});
+
+describe("под-скилл antiplagiat и калибровка", () => {
+  const skill = read(join(SKILLS, "antiplagiat/SKILL.md"));
+  const cli = read(join(ROOT, "src/cli.ts"));
+
+  test("просит у пользователя отчёты для calibrate", () => {
+    expect(skill).toContain("попроси у пользователя отчёты «Антиплагиата»");
+    expect(skill).toContain("calibrate --doc");
+    expect(skill).toContain(".gitignore");
+  });
+
+  test("предлагает несколько способов передать отчёт, и каждый поддержан CLI", () => {
+    for (const way of [
+      "Файл отчёта",
+      "Скриншоты",
+      "Скопированные фрагменты",
+      "Номера абзацев",
+      "итоговая цифра",
+      "Ссылка на отчёт",
+    ]) {
+      expect(skill).toContain(way);
+    }
+    for (const flag of ["--marked", "--share"]) {
+      expect(skill).toContain(flag);
+      expect(cli).toContain(`"${flag}"`);
+    }
+  });
+
+  test("строка, по которой скилл узнаёт некалиброванную модель, есть в выводе CLI", () => {
+    const quoted = /строке «Модель» вывода стоит «([^»]+)»/.exec(skill)?.[1];
+    expect(quoted).toBeDefined();
+    expect(cli).toContain(`"${quoted}"`);
+  });
+
+  test("основной скилл упоминает отчёты при переходе к antiplagiat", () => {
+    expect(read(join(SKILLS, "avoid-ai-writing-russian/SKILL.md"))).toContain("прошлые отчёты «Антиплагиата»");
   });
 });

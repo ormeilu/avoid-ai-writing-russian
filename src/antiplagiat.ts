@@ -198,10 +198,22 @@ export interface Sample {
   y: 0 | 1;
 }
 
+/**
+ * Документ, для которого известна только итоговая доля ИИ-текста из отчёта
+ * (без разметки фрагментов). Для каждого фрагмента хранятся признаки и длина в знаках.
+ */
+export interface DocSample {
+  fragments: { f: number[]; chars: number }[];
+  /** Доля ИИ-текста по отчёту, 0–100. */
+  share: number;
+}
+
 export interface CalibrationFile {
   version: 1;
   model: Model;
   samples: Sample[];
+  /** Документы с одной итоговой долей (`calibrate --share`). */
+  documents?: DocSample[];
 }
 
 function norm(s: string): string {
@@ -286,4 +298,50 @@ export function balancedAccuracy(model: Model, samples: Sample[]): number {
   const tp = pos.filter((s) => predict(model, s.f) >= model.threshold).length;
   const tn = neg.filter((s) => predict(model, s.f) < model.threshold).length;
   return (tp / pos.length + tn / neg.length) / 2;
+}
+
+/** Признаки и длины фрагментов документа с долей ИИ-текста из отчёта. */
+export function documentSample(source: string, share: number): DocSample {
+  const report = antiplagiat(source);
+  return {
+    share,
+    fragments: report.fragments.map((f) => ({
+      f: f.features,
+      chars: source.slice(f.start, f.end).replace(/\s+/g, " ").trim().length,
+    })),
+  };
+}
+
+/** Доля ИИ-текста по знакам, которую модель предскажет для документа. */
+export function predictShare(model: Model, doc: DocSample): number {
+  let ai = 0;
+  let all = 0;
+  for (const fr of doc.fragments) {
+    all += fr.chars;
+    if (predict(model, fr.f) >= model.threshold) ai += fr.chars;
+  }
+  return all ? (ai * 100) / all : 0;
+}
+
+/** Средняя ошибка доли ИИ-текста в процентных пунктах. */
+export function shareError(model: Model, docs: DocSample[]): number {
+  if (!docs.length) return Number.NaN;
+  return docs.reduce((a, d) => a + Math.abs(predictShare(model, d) - d.share), 0) / docs.length;
+}
+
+/**
+ * Подстройка под итоговые доли из отчётов: сдвиг свободного члена, при котором
+ * предсказанные доли ближе всего к отчётным. Веса признаков не меняются: одной цифры
+ * на документ хватает только на общий уровень строгости системы.
+ */
+export function fitShare(model: Model, docs: DocSample[]): Model {
+  if (!docs.length) return model;
+  let best = { bias: model.bias, err: shareError(model, docs) };
+  for (let d = -8; d <= 8.0001; d += 0.02) {
+    const bias = model.bias + d;
+    const err = shareError({ ...model, bias }, docs);
+    const closer = Math.abs(d) < Math.abs(best.bias - model.bias);
+    if (err < best.err - 1e-9 || (Math.abs(err - best.err) <= 1e-9 && closer)) best = { bias, err };
+  }
+  return { ...model, bias: Number(best.bias.toFixed(4)) };
 }

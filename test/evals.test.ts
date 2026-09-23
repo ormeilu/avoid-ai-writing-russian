@@ -104,4 +104,8 @@ describe("эталонные ответы", () => {
   test("ответ без итогового текста — провал для правки", () => {
     expect(grade(byId("vak-protected"), "Всё хорошо.").failures).toContain("в ответе нет раздела «Итоговый текст»");
   });
+
+  test("эталон antiplagiat-asks-reports: агент просит отчёты для калибровки", () => {
+    expect(grade(byId("antiplagiat-asks-reports"), golden("antiplagiat-asks-reports.md")).failures).toEqual([]);
+  });
 });

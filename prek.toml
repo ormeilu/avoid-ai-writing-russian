@@ -83,7 +83,7 @@ hooks = [
     name = "документация проходит собственный детектор",
     entry = "bun src/cli.ts scan --context docs --min P1 --fail-above 30",
     language = "system",
-    files = '^(README|CONTRIBUTING|AGENTS|NOTICE|CHANGELOG)\.md$|^skills/.+\.md$',
+    files = '^(README|CONTRIBUTING|AGENTS|CLAUDE|NOTICE|CHANGELOG)\.md$|^skills/.+\.md$',
     priority = 30,
   },
   {

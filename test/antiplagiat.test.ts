@@ -1,5 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { antiplagiat, balancedAccuracy, DEFAULT_MODEL, fit, labelFragments, type Sample } from "../src/index.ts";
+import {
+  antiplagiat,
+  balancedAccuracy,
+  DEFAULT_MODEL,
+  documentSample,
+  fit,
+  fitShare,
+  labelFragments,
+  predictShare,
+  type Sample,
+  shareError,
+} from "../src/index.ts";
 
 const fixture = (name: string): Promise<string> => Bun.file(new URL(`./fixtures/${name}`, import.meta.url)).text();
 
@@ -45,5 +56,23 @@ describe("antiplagiat", () => {
     ];
     const model = fit(samples);
     expect(balancedAccuracy(model, samples)).toBeGreaterThanOrEqual(balancedAccuracy(DEFAULT_MODEL, samples));
+  });
+});
+
+describe("калибровка по итоговой доле", () => {
+  test("fitShare сдвигает порог строгости к доле из отчёта", async () => {
+    const ai = await fixture("corpus/ai/vak.md");
+    const human = await fixture("corpus/human/vak.md");
+    const lenient = [documentSample(ai, 10), documentSample(human, 0)];
+    const model = fitShare(DEFAULT_MODEL, lenient);
+    expect(model.bias).toBeLessThan(DEFAULT_MODEL.bias);
+    expect(model.weights).toEqual(DEFAULT_MODEL.weights);
+    expect(shareError(model, lenient)).toBeLessThan(shareError(DEFAULT_MODEL, lenient));
+    expect(predictShare(model, lenient[1] as (typeof lenient)[number])).toBe(0);
+  });
+
+  test("без документов модель не меняется", () => {
+    expect(fitShare(DEFAULT_MODEL, [])).toEqual(DEFAULT_MODEL);
+    expect(Number.isNaN(shareError(DEFAULT_MODEL, []))).toBe(true);
   });
 });
