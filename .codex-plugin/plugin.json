@@ -1,0 +1,14 @@
+{
+  "name": "avoid-ai-writing-russian",
+  "version": "0.1.0",
+  "description": "Аудит и правка русских текстов от ИИ-стиля; под-скилл antiplagiat для подготовки к проверке «Антиплагиатом».",
+  "author": {
+    "name": "Ilya Lubenets",
+    "url": "https://github.com/ormeilu/avoid-ai-writing-russian"
+  },
+  "license": "MIT",
+  "keywords": ["russian", "writing", "editing", "ai-detection", "antiplagiat"],
+  "skills": "./skills/",
+  "homepage": "https://github.com/ormeilu/avoid-ai-writing-russian",
+  "repository": "https://github.com/ormeilu/avoid-ai-writing-russian"
+}

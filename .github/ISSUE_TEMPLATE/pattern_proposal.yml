@@ -1,0 +1,37 @@
+name: Новая примета
+description: Предложить конструкцию, по которой узнаётся русский текст модели
+labels: ["новая примета"]
+body:
+  - type: textarea
+    id: examples
+    attributes:
+      label: Примеры из текстов моделей
+      description: Два-три примера; модель, если известна.
+    validations:
+      required: true
+  - type: textarea
+    id: legit
+    attributes:
+      label: Где та же конструкция законна
+      description: Пример и как отличить.
+    validations:
+      required: true
+  - type: textarea
+    id: fix
+    attributes:
+      label: Чем заменить
+      description: Конкретный вариант, а не «перефразировать».
+    validations:
+      required: true
+  - type: dropdown
+    id: tier
+    attributes:
+      label: Уровень
+      options:
+        - 1А — маркер ИИ
+        - 1Б — канцелярит (не довод об авторстве)
+        - 2 — в скоплении
+        - 3 — по плотности
+        - Отдельная категория каталога
+    validations:
+      required: true

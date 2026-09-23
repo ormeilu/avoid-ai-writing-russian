@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "avoid-ai-writing-russian",
+  "description": "Русская адаптация avoid-ai-writing: чистка ИИ-стиля и подготовка к «Антиплагиату».",
+  "owner": {
+    "name": "Ilya Lubenets"
+  },
+  "plugins": [
+    {
+      "name": "avoid-ai-writing-russian",
+      "source": "./",
+      "description": "Аудит и правка русских текстов от ИИ-стиля; под-скилл antiplagiat.",
+      "category": "productivity",
+      "keywords": ["russian", "writing", "editing", "ai-detection", "antiplagiat"]
+    }
+  ]
+}

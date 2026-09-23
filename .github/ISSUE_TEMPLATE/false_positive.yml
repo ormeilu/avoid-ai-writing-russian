@@ -1,0 +1,31 @@
+name: Ложное срабатывание
+description: Детектор или скилл отметил живой текст как ИИ-стиль
+labels: ["ложное срабатывание"]
+body:
+  - type: textarea
+    id: text
+    attributes:
+      label: Фрагмент текста
+      description: Без персональных данных. Достаточно абзаца вокруг находки.
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Команда или запрос
+      placeholder: bun src/cli.ts scan text.md --context vak
+    validations:
+      required: true
+  - type: textarea
+    id: finding
+    attributes:
+      label: Находка
+      description: Строка из вывода детектора или ответа скилла.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Почему это ошибка
+    validations:
+      required: true
