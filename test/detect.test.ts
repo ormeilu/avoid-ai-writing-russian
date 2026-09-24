@@ -103,6 +103,18 @@ describe("технические отпечатки", () => {
     const r = analyze("Отправили HTTP-запрос на TCP-порт, PHP-скрипт ответил OK-кодом.");
     expect(r.suspicious).toBe(false);
     expect(r.score).toBeLessThan(15);
+    expect(analyze("Наш PHPшник написал на Pythonе, CEOшный отдел сказал OKей.").suspicious).toBe(false);
+    expect(analyze(`Пишем на P${String.fromCharCode(0x443)}thon.`).suspicious).toBe(true);
+  });
+
+  test("подмена букв и невидимые символы — улики для проверки, а не ИИ-стиль", () => {
+    const zw = String.fromCharCode(0x200b);
+    const r = analyze(`Ра${zw}бота и р${String.fromCharCode(0x61)}бота.`);
+    expect(r.suspicious).toBe(true);
+    expect(r.issues.filter((i) => i.severity === "P0").map((i) => i.type)).toEqual(
+      expect.arrayContaining(["invisible-chars", "homoglyph"]),
+    );
+    expect(r.score).toBeLessThan(15);
   });
 
   test("число невидимых символов согласовано", () => {

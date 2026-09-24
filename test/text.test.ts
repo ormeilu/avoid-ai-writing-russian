@@ -112,6 +112,44 @@ describe("prepare", () => {
     expect(p.text).toContain("HTTP-запрос");
   });
 
+  test("латинская основа с русским окончанием — не подмена", () => {
+    for (const s of ["PHPшник", "OKей", "CEOшный", "на Pythonе", "в Excelе", "iPhoneа", "в TeXе", "вPython"]) {
+      expect(prepare(s).homoglyphs, s).toEqual([]);
+    }
+  });
+
+  test("латинская i в украинском слове и «х» как знак умножения — не подмена", () => {
+    const i = String.fromCharCode(0x69);
+    const kha = String.fromCharCode(0x445);
+    for (const s of [`ш${i}р${i}к`, `р${i}зних`, `F${kha}G`, `m${kha}n`]) expect(prepare(s).homoglyphs, s).toEqual([]);
+  });
+
+  test("ударение латинской буквой с акутом — не подмена", () => {
+    const a = String.fromCharCode(0xe1);
+    for (const s of [`К${a}рмен`, `С${a}нта-Фе`]) expect(prepare(s).homoglyphs, s).toEqual([]);
+  });
+
+  test("подмена по смене алфавитов внутри слова", () => {
+    const ch = (...codes: number[]): string => String.fromCharCode(...codes);
+    const spoofed = [
+      `P${ch(0x443)}thon`, // кириллическая «у» внутри латинского слова
+      `m${ch(0x43e)}del`, // кириллическая «о»
+      `${ch(0x420)}ython`, // кириллическая «Р» в начале латинского слова
+      `р${ch(0x61)}бота`, // латинская «a» внутри русского слова
+      `работ${ch(0x61)}`, // латинская «a» в конце
+      `${ch(0x70)}абота`, // латинская «p» в начале
+      `${ch(0x70, 0x61)}бота`, // две латинские буквы в начале
+      `${ch(0x65)}щ${ch(0x65)}`, // латиницы больше, но «щ» выдаёт русское слово
+      `${ch(0x4d)}Ч${ch(0x43)}`, // сокращение с латинскими M и C
+      `${ch(0x42)}Контакте`, // латинская B перед заглавной кириллицей
+      `${ch(0x43, 0x41)}ДЫ`, // заглавное слово: не сокращение с окончанием
+      `У${ch(0x4f, 0x50, 0x58, 0x4f)}ЛА`, // латиница внутри заглавного слова
+    ];
+    for (const s of spoofed) expect(prepare(s).homoglyphs, s).toHaveLength(1);
+    expect(prepare(`P${ch(0x443)}thon`).text).toBe("Python");
+    expect(prepare(`р${ch(0x61)}бот${ch(0x61)}`).text).toBe("работа");
+  });
+
   test("подмена внутри части дефисного слова находится", () => {
     const p = prepare(`HTTP-з${String.fromCharCode(0x61)}прос`);
     expect(p.homoglyphs).toHaveLength(1);

@@ -27,9 +27,11 @@ import {
 import type { AnalysisResult, AnalyzeOptions, ContextMode, Issue, Severity } from "./types.ts";
 
 export const WEIGHTS: Record<string, number> = {
-  "invisible-chars": 10,
-  homoglyph: 10,
-  // Мягкий перенос — след Word или PDF, а не довод об авторстве: в оценку не идёт.
+  // Невидимые символы, подмена букв и мягкие переносы — гигиена документа, а не ИИ-стиль:
+  // в человеческих текстах LLMTrace они встречаются чаще, чем в сгенерированных. В оценку
+  // не идут; первые два делают документ подозрительным (флаг `suspicious`).
+  "invisible-chars": 0,
+  homoglyph: 0,
   "soft-hyphen": 0,
   "chat-markup": 10,
   "ai-url": 8,

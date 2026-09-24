@@ -42,6 +42,96 @@ const LATIN_TO_CYRILLIC: Record<string, string> = {
   H: "Н",
   B: "В",
 };
+const CYRILLIC_TO_LATIN: Record<string, string> = Object.fromEntries(
+  Object.entries(LATIN_TO_CYRILLIC).map(([latin, cyrillic]) => [cyrillic, latin]),
+);
+
+/**
+ * Латиница без диакритики. «á» в «Кáрмен» — знак ударения, а не подмена,
+ * поэтому в сериях она не участвует, как цифры и прочие знаки.
+ */
+const ASCII_LATIN_RE = /[A-Za-z]/;
+
+/** Серия букв одного алфавита; цифры и прочие знаки её не обрывают. */
+interface Run {
+  latin: boolean;
+  start: number;
+  end: number;
+}
+
+function scriptRuns(s: string): Run[] {
+  const runs: Run[] = [];
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s[i] as string;
+    const latin = ASCII_LATIN_RE.test(c);
+    if (!latin && !CYRILLIC_RE.test(c)) continue;
+    const last = runs[runs.length - 1];
+    if (last?.latin === latin) last.end = i + 1;
+    else runs.push({ latin, start: i, end: i + 1 });
+  }
+  return runs;
+}
+
+/** Буквы серии без цифр и прочих знаков. */
+function letters(s: string, r: Run): string[] {
+  const own = r.latin ? ASCII_LATIN_RE : CYRILLIC_RE;
+  return [...s.slice(r.start, r.end)].filter((c) => own.test(c));
+}
+
+/** У каждой буквы серии есть двойник в другом алфавите. */
+function lookalike(s: string, r: Run): boolean {
+  const map = r.latin ? LATIN_TO_CYRILLIC : CYRILLIC_TO_LATIN;
+  return letters(s, r).every((c) => c in map);
+}
+
+/**
+ * Подмена букв в части слова без дефисов. Алфавит слова выдаёт буква без
+ * двойника: «щ» в русском слове, «n» в английском. Подозрительны буквы-двойники
+ * другого алфавита. Если без двойника есть буквы обоих алфавитов (украинское
+ * слово с латинской i вместо і) или нет ни одной, подозрителен алфавит,
+ * в котором букв меньше. Законная смесь — латинская основа с русским
+ * окончанием («Pythonе», «PHPшник», «OKей») и слипшийся предлог («вPython»).
+ * Подмена — двойники внутри слова, в конце русского слова, латинские в начале
+ * русского слова и одна-две кириллические в начале английского.
+ */
+function spoofed(s: string): boolean {
+  const runs = scriptRuns(s);
+  const first = runs[0];
+  const second = runs[1];
+  const last = runs[runs.length - 1];
+  if (!first || !second || !last) return false;
+  const of = (latin: boolean): string[] => runs.filter((r) => r.latin === latin).flatMap((r) => letters(s, r));
+  const [latinLetters, cyrillicLetters] = [of(true), of(false)];
+  const latinAnchored = latinLetters.some((c) => !(c in LATIN_TO_CYRILLIC));
+  const cyrillicAnchored = cyrillicLetters.some((c) => !(c in CYRILLIC_TO_LATIN));
+  const suspectScript = (latin: boolean): boolean =>
+    latinAnchored !== cyrillicAnchored
+      ? latin === cyrillicAnchored
+      : latin
+        ? latinLetters.length <= cyrillicLetters.length
+        : cyrillicLetters.length <= latinLetters.length;
+  const suspect = (r: Run): boolean => suspectScript(r.latin) && lookalike(s, r);
+  // Алфавиты чередуются, поэтому внутренняя серия зажата буквами другого алфавита.
+  for (let k = 1; k < runs.length - 1; k += 1) {
+    const r = runs[k] as Run;
+    // «FхG», «mхn»: одиночная «х» между одиночными буквами — знак умножения.
+    const times =
+      /^[\u0445\u0425xX]$/u.test(letters(s, r).join("")) &&
+      letters(s, runs[k - 1] as Run).length === 1 &&
+      letters(s, runs[k + 1] as Run).length === 1;
+    if (!times && suspect(r)) return true;
+  }
+  if (last.latin && suspect(last)) return true;
+  if (!suspect(first)) return false;
+  const head = letters(s, first).join("");
+  // Латинское сокращение перед русским суффиксом («OKей», «PHPшник»), но не заглавное русское слово.
+  const lowerNext = /\p{Ll}/u.test(s[second.start] ?? "");
+  if (first.latin) return !(head.length >= 2 && head === head.toUpperCase() && lowerNext);
+  // Кириллица перед английским словом: подмена, если слово продолжается строчными,
+  // и слипшийся предлог, если дальше заглавная («вPython»).
+  return head.length <= 2 && lowerNext;
+}
+
 /** Символы, которые удаляются из текста перед поиском. */
 const STRIPPED_RE = /[\u200B-\u200D\u2060\uFEFF\u00AD]/u;
 const SOFT_HYPHEN = "\u00AD";
@@ -168,14 +258,16 @@ export function prepare(source: string): Prepared {
     let found = false;
     for (const part of word.matchAll(/[\p{L}\p{N}]+/gu)) {
       const s = part[0];
-      if (!CYRILLIC_RE.test(s) || !LATIN_RE.test(s)) continue;
-      // «Pythonовский» — законная смесь: латиница без двойников в кириллице.
-      if (![...s].every((c) => !LATIN_RE.test(c) || c in LATIN_TO_CYRILLIC)) continue;
+      if (!CYRILLIC_RE.test(s) || !LATIN_RE.test(s) || !spoofed(s)) continue;
       found = true;
+      // Буквы-двойники приводятся к алфавиту слова, чтобы словари видели настоящее слово.
+      const latin = [...s].filter((c) => LATIN_RE.test(c)).length;
+      const toLatin = latin > [...s].filter((c) => CYRILLIC_RE.test(c)).length;
+      const map = toLatin ? CYRILLIC_TO_LATIN : LATIN_TO_CYRILLIC;
       const at = start + (part.index ?? 0);
       for (let k = 0; k < s.length; k += 1) {
         const c = units[at + k] as string;
-        if (c in LATIN_TO_CYRILLIC) units[at + k] = LATIN_TO_CYRILLIC[c] as string;
+        if (c in map) units[at + k] = map[c] as string;
       }
     }
     if (found) homoglyphs.push({ index: toSource[start] ?? start, word });
