@@ -29,3 +29,17 @@ references:
         given-names: Conor
     repository-code: "https://github.com/conorbronsdon/avoid-ai-writing"
     license: MIT
+  - type: data
+    title: "LLMTrace: A Corpus for Classification and Fine-Grained Localization of AI-Written Text"
+    authors:
+      - family-names: Tolstykh
+        given-names: Irina
+      - family-names: Tsybina
+        given-names: Aleksandra
+      - family-names: Yakubson
+        given-names: Sergey
+      - family-names: Kuprashevich
+        given-names: Maksim
+    url: "https://huggingface.co/datasets/iitolstykh/LLMTrace_classification"
+    license: Apache-2.0
+    year: 2025

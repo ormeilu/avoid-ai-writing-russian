@@ -5,3 +5,4 @@ dist/
 .DS_Store
 evals/results/
 docs/demo/demo-raw.gif
+evals/data/
