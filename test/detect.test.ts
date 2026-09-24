@@ -84,6 +84,13 @@ describe("защищённое содержимое", () => {
     expect(analyze(text).issues).toHaveLength(0);
   });
 
+  test("длинное слово без пробелов не вешает детектор", () => {
+    // Вырожденный вывод модели из LLMTrace: «версииconsumeconsume…» на 18 тысяч знаков.
+    const t = performance.now();
+    analyze(`Возьмём автомобиль версии${"consume".repeat(1000)} и дальше текст.`);
+    expect(performance.now() - t).toBeLessThan(1000);
+  });
+
   test("YAML-шапка не проверяется", () => {
     expect(analyze("---\ntitle: Давайте разберёмся\n---\nОбычный текст.").issues).toHaveLength(0);
   });

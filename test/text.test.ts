@@ -45,6 +45,12 @@ describe("sentences", () => {
     for (const x of sentences(s, 100)) expect(s.slice(x.start - 100, x.end - 100)).toBe(x.text);
   });
 
+  test("длинная цепочка точек разбирается за линейное время", () => {
+    const t = performance.now();
+    expect(texts(`Текст ${".".repeat(50000)} конец. Дальше.`)).toHaveLength(2);
+    expect(performance.now() - t).toBeLessThan(500);
+  });
+
   test("подсчёт слов", () => {
     expect(sentences("Один два-три четыре.")[0]?.words).toBe(3);
   });
