@@ -11,6 +11,7 @@
 export const TYPE_TO_SECTION: Record<string, string> = {
   "invisible-chars": "Невидимые символы и подмена букв",
   homoglyph: "Невидимые символы и подмена букв",
+  "soft-hyphen": "Невидимые символы и подмена букв",
   "chat-markup": "Разметка цитирования из чатов",
   "ai-url": "Параметры ИИ-инструментов в ссылках",
   placeholder: "Незаполненные заглушки",

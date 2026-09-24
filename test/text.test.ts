@@ -71,8 +71,27 @@ describe("prepare", () => {
     const src = `а${ZW}б${SHY}в`;
     const p = prepare(src);
     expect(p.text).toBe("абв");
-    expect(p.invisible.map((i) => i.index)).toEqual([1, 3]);
+    expect(p.invisible.map((i) => i.index)).toEqual([1]);
+    expect(p.softHyphens).toEqual([3]);
     expect(p.toSource.slice(0, 3)).toEqual([0, 2, 4]);
+  });
+
+  test("BOM в начале и соединитель внутри эмодзи — не вставки", () => {
+    const bom = String.fromCharCode(0xfeff);
+    const zwj = String.fromCharCode(0x200d);
+    expect(prepare(`${bom}Текст`).invisible).toEqual([]);
+    expect(prepare(`${bom}Текст`).text).toBe("Текст");
+    expect(prepare(`Команда 👨${zwj}💻 и 🏳${String.fromCharCode(0xfe0f)}${zwj}🌈`).invisible).toEqual([]);
+    expect(prepare(`Ра${zwj}бота`).invisible).toHaveLength(1);
+    expect(prepare(`Текст${bom} дальше`).invisible).toHaveLength(1);
+  });
+
+  test("неразрывный дефис и U+2010 становятся обычным дефисом без сдвига", () => {
+    const src = `по${String.fromCharCode(0x2011)}настоящему и кто${String.fromCharCode(0x2010)}то`;
+    const p = prepare(src);
+    expect(p.text).toBe("по-настоящему и кто-то");
+    expect(p.text.length).toBe(src.length);
+    expect(words(p.text)).toEqual(["по-настоящему", "и", "кто-то"]);
   });
 
   test("латиница в русском слове исправляется для поиска", () => {
@@ -85,6 +104,18 @@ describe("prepare", () => {
   test("полностью латинские и законно смешанные слова не трогаются", () => {
     const p = prepare("Python и Wi-Fi-модуль, IT-отдел");
     expect(p.homoglyphs).toEqual([]);
+  });
+
+  test("латинское сокращение через дефис с русским словом — не подмена", () => {
+    const p = prepare("HTTP-запрос на TCP-порт, PHP-скрипт ответил OK-кодом");
+    expect(p.homoglyphs).toEqual([]);
+    expect(p.text).toContain("HTTP-запрос");
+  });
+
+  test("подмена внутри части дефисного слова находится", () => {
+    const p = prepare(`HTTP-з${String.fromCharCode(0x61)}прос`);
+    expect(p.homoglyphs).toHaveLength(1);
+    expect(p.text).toBe("HTTP-запрос");
   });
 
   test("маскирование сохраняет длину и переводы строк", () => {

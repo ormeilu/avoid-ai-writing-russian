@@ -41,6 +41,14 @@ describe("cli", () => {
     expect(run(["scan", "--json"], "Давайте разберёмся.", undefined, { FORCE_COLOR: "1" }).out).not.toContain(esc);
   });
 
+  test("средняя длина предложения согласована с числом", () => {
+    expect(run(["scan"], "Мы пришли домой поздно.").out).toContain("в среднем 4 слова в предложении");
+    expect(run(["scan"], "Мы пришли домой очень поздно вечером.").out).toContain("в среднем 6 слов в предложении");
+    expect(run(["scan"], "Мы пришли домой. Мы пришли домой поздно.").out).toContain(
+      "в среднем 3,5 слова в предложении",
+    );
+  });
+
   test("scan из stdin в JSON", () => {
     const r = run(["scan", "--json"], "Давайте разберёмся.");
     expect(JSON.parse(r.out).issues[0].type).toBe("lets");

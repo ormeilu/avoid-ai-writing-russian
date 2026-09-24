@@ -34,6 +34,7 @@ describe("antiplagiat", () => {
   test("подозрительный документ", () => {
     const zw = String.fromCharCode(0x200b);
     expect(antiplagiat(`Обычный${zw} текст.`).suspicious).toBe(true);
+    expect(antiplagiat(`Обыч${String.fromCharCode(0x00ad)}ный текст.`).suspicious).toBe(false);
   });
 
   test("разметка по подсвеченным кускам", async () => {

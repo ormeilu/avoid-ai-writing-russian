@@ -29,6 +29,7 @@ import {
 } from "./antiplagiat.ts";
 import { analyze, TYPE_LABELS } from "./detect.ts";
 import { table, wrapText } from "./table.ts";
+import { plural } from "./text.ts";
 import { CONTEXT_MODES, type ContextMode, PROFILE_TO_MODE, type Severity } from "./types.ts";
 import { validate } from "./validate.ts";
 
@@ -163,12 +164,10 @@ function screenWidth(): number {
 /** Число по-русски: десятичная запятая, не больше двух знаков после неё. */
 const ru = (n: number, digits = 2): string => String(Number(n.toFixed(digits))).replace(".", ",");
 
-/** «1 слово», «2 слова», «5 слов». */
-function plural(n: number, one: string, few: string, many: string): string {
-  const d = n % 10;
-  const dd = n % 100;
-  const form = d === 1 && dd !== 11 ? one : d >= 2 && d <= 4 && (dd < 12 || dd > 14) ? few : many;
-  return `${n} ${form}`;
+/** «2,5 слова» при дробном числе, «6 слов» при целом. */
+function meanWords(n: number): string {
+  const s = ru(n, 1);
+  return s.includes(",") ? `${s} слова` : plural(Number(s), "слово", "слова", "слов");
 }
 
 /** Пояснение под таблицей: приглушённое, с переносом по ширине экрана. */
@@ -221,7 +220,7 @@ function cmdScan(a: Args): number {
       ],
       [
         "Ритм",
-        `в среднем ${ru(s.meanSentenceLength, 1)} слова в предложении, разброс ${ru(s.sentenceLengthCV)}, MATTR ${ru(s.mattr)}`,
+        `в среднем ${meanWords(s.meanSentenceLength)} в предложении, разброс ${ru(s.sentenceLengthCV)}, MATTR ${ru(s.mattr)}`,
       ],
     ]);
     if (r.suspicious) out(c.red("  Документ выглядит подозрительным: невидимые символы или подмена букв."));

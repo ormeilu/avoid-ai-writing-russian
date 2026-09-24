@@ -42,12 +42,23 @@ const LATIN_TO_CYRILLIC: Record<string, string> = {
   H: "Н",
   B: "В",
 };
-const INVISIBLE_RE = /[\u200B-\u200D\u2060\uFEFF\u00AD]/gu;
+/** Символы, которые удаляются из текста перед поиском. */
+const STRIPPED_RE = /[\u200B-\u200D\u2060\uFEFF\u00AD]/u;
+const SOFT_HYPHEN = "\u00AD";
+const BOM = "\uFEFF";
+const ZWJ = "\u200D";
+const EMOJI_BEFORE_ZWJ = /(?:\p{Extended_Pictographic}|\p{Emoji_Modifier}|\uFE0F)$/u;
+const EMOJI_AFTER_ZWJ = /^\p{Extended_Pictographic}/u;
+
+/** U+200D между частями эмодзи (👨 + 💻) — соединитель, а не вставка. */
+function joinsEmoji(s: string, i: number): boolean {
+  return EMOJI_BEFORE_ZWJ.test(s.slice(Math.max(0, i - 2), i)) && EMOJI_AFTER_ZWJ.test(s.slice(i + 1, i + 3));
+}
 
 export interface Prepared {
   /** Исходный текст. */
   source: string;
-  /** Нормализованный текст: без невидимых символов, ё→е, без подмены букв. */
+  /** Нормализованный текст: без невидимых символов, ё→е, U+2010/U+2011→дефис, без подмены букв. */
   text: string;
   /** Нормализованный текст, где код и YAML-шапка заменены пробелами. */
   noCode: string;
@@ -55,7 +66,10 @@ export interface Prepared {
   prose: string;
   /** Смещение в `text` → смещение в `source`. */
   toSource: number[];
+  /** Невидимые вставки. BOM в начале текста и соединитель внутри эмодзи сюда не входят. */
   invisible: { index: number; char: string }[];
+  /** Позиции мягких переносов (U+00AD) в исходнике: их ставят Word и копирование из PDF. */
+  softHyphens: number[];
   homoglyphs: { index: number; word: string }[];
   lineStarts: number[];
 }
@@ -126,34 +140,45 @@ export function lineCol(lineStarts: number[], index: number): { line: number; co
 
 export function prepare(source: string): Prepared {
   const invisible: { index: number; char: string }[] = [];
+  const softHyphens: number[] = [];
   const toSource: number[] = [];
   let stripped = "";
   for (let i = 0; i < source.length; i += 1) {
     const ch = source[i] as string;
-    INVISIBLE_RE.lastIndex = 0;
-    if (INVISIBLE_RE.test(ch)) {
-      invisible.push({ index: i, char: ch });
+    if (STRIPPED_RE.test(ch)) {
+      if (ch === SOFT_HYPHEN) softHyphens.push(i);
+      else if (!(ch === BOM && i === 0) && !(ch === ZWJ && joinsEmoji(source, i)))
+        invisible.push({ index: i, char: ch });
       continue;
     }
-    stripped += ch;
+    // Неразрывный дефис и U+2010 с клавиатуры не набрать, их ставят модели; для словарей это обычный дефис.
+    stripped += ch === "\u2010" || ch === "\u2011" ? "-" : ch;
     toSource.push(i);
   }
   toSource.push(source.length);
 
-  // Подмена латиницы внутри кириллических слов (и наоборот считаем находкой).
+  // Подмена латиницы внутри кириллических слов. Части дефисного слова проверяются
+  // по отдельности: в «HTTP-запрос» латинское сокращение стоит при русском слове законно.
   const homoglyphs: { index: number; word: string }[] = [];
   const units = stripped.split("");
   for (const m of stripped.matchAll(WORD_RE)) {
     const word = m[0];
     if (!CYRILLIC_RE.test(word) || !LATIN_RE.test(word)) continue;
     const start = m.index ?? 0;
-    const latinOnlyLookalikes = [...word].every((c) => !LATIN_RE.test(c) || c in LATIN_TO_CYRILLIC);
-    if (!latinOnlyLookalikes) continue; // «Wi-Fi-роутер», «IT-отдел» — законная смесь
-    homoglyphs.push({ index: toSource[start] ?? start, word });
-    for (let k = 0; k < word.length; k += 1) {
-      const c = units[start + k] as string;
-      if (c in LATIN_TO_CYRILLIC) units[start + k] = LATIN_TO_CYRILLIC[c] as string;
+    let found = false;
+    for (const part of word.matchAll(/[\p{L}\p{N}]+/gu)) {
+      const s = part[0];
+      if (!CYRILLIC_RE.test(s) || !LATIN_RE.test(s)) continue;
+      // «Pythonовский» — законная смесь: латиница без двойников в кириллице.
+      if (![...s].every((c) => !LATIN_RE.test(c) || c in LATIN_TO_CYRILLIC)) continue;
+      found = true;
+      const at = start + (part.index ?? 0);
+      for (let k = 0; k < s.length; k += 1) {
+        const c = units[at + k] as string;
+        if (c in LATIN_TO_CYRILLIC) units[at + k] = LATIN_TO_CYRILLIC[c] as string;
+      }
     }
+    if (found) homoglyphs.push({ index: toSource[start] ?? start, word });
   }
   const text = units.join("").replace(/ё/g, "е").replace(/Ё/g, "Е");
   const noCode = maskCode(text);
@@ -165,6 +190,7 @@ export function prepare(source: string): Prepared {
     prose,
     toSource,
     invisible,
+    softHyphens,
     homoglyphs,
     lineStarts: computeLineStarts(source),
   };
@@ -172,6 +198,14 @@ export function prepare(source: string): Prepared {
 
 export function words(s: string): string[] {
   return s.match(WORD_RE) ?? [];
+}
+
+/** «1 слово», «2 слова», «5 слов». */
+export function plural(n: number, one: string, few: string, many: string): string {
+  const d = n % 10;
+  const dd = n % 100;
+  const form = d === 1 && dd !== 11 ? one : d >= 2 && d <= 4 && (dd < 12 || dd > 14) ? few : many;
+  return `${n} ${form}`;
 }
 
 export type BlockKind = "prose" | "heading" | "list" | "table" | "quote" | "code" | "empty";

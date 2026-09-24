@@ -100,6 +100,49 @@ describe("технические отпечатки", () => {
 
   test("законная смесь алфавитов не считается подменой", () => {
     expect(analyze("Настроили Wi-Fi-роутер и IT-отдел.").suspicious).toBe(false);
+    const r = analyze("Отправили HTTP-запрос на TCP-порт, PHP-скрипт ответил OK-кодом.");
+    expect(r.suspicious).toBe(false);
+    expect(r.score).toBeLessThan(15);
+  });
+
+  test("число невидимых символов согласовано", () => {
+    const zw = String.fromCharCode(0x200b);
+    const text = (s: string): string | undefined => analyze(s).issues.find((i) => i.type === "invisible-chars")?.text;
+    expect(text(`Ра${zw}бота.`)).toBe("1 невидимый символ");
+    expect(text(`Ра${zw}бо${zw}та.`)).toBe("2 невидимых символа");
+  });
+
+  test("мягкий перенос — шлифовка, а не подозрительный документ", () => {
+    const shy = String.fromCharCode(0x00ad);
+    const r = analyze(
+      `Первую неделю мы потратили впустую. Модель на ноутбуке выдавала 40 кадров в секунду, а на Jet${shy}son еле-еле 9.`,
+    );
+    expect(r.suspicious).toBe(false);
+    expect(r.score).toBeLessThan(15);
+    const hit = r.issues.find((i) => i.type === "soft-hyphen");
+    expect(hit?.severity).toBe("P2");
+    expect(hit?.text).toBe("1 мягкий перенос");
+  });
+
+  test("BOM в начале и эмодзи с соединителем не делают документ подозрительным", () => {
+    const bom = String.fromCharCode(0xfeff);
+    const zwj = String.fromCharCode(0x200d);
+    expect(analyze(`${bom}Обычный текст.`).issues).toHaveLength(0);
+    expect(analyze(`Команда 👨${zwj}💻 довольна.`).suspicious).toBe(false);
+  });
+
+  test("неразрывный дефис не прячет слово от словаря", () => {
+    const r = analyze(`Это по${String.fromCharCode(0x2011)}настоящему важный шаг для команды.`);
+    expect(r.issues.map((i) => i.type)).toContain("tier1");
+  });
+
+  test("служебные символы ссылок ChatGPT и голые маркеры", () => {
+    const [open, sep, close] = [0xe200, 0xe202, 0xe201].map((c) => String.fromCharCode(c));
+    const types = (s: string): string[] => analyze(s).issues.map((i) => i.type);
+    expect(types(`Рост составил 12 %.${open}cite${sep}turn0search3${close}`)).toContain("chat-markup");
+    expect(types("Рост составил 12 % turn0search12 за год.")).toContain("chat-markup");
+    expect(types("Рост составил 12 % 【4:0†source】 за год.")).toContain("chat-markup");
+    expect(types("Поворот turn направо, потом search.")).not.toContain("chat-markup");
   });
 
   test("смещения указывают в исходник даже после удаления невидимых символов", () => {

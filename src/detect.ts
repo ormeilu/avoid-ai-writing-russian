@@ -18,6 +18,7 @@ import {
   mattr,
   mean,
   type Prepared,
+  plural,
   prepare,
   type Sentence,
   sentences,
@@ -28,6 +29,8 @@ import type { AnalysisResult, AnalyzeOptions, ContextMode, Issue, Severity } fro
 export const WEIGHTS: Record<string, number> = {
   "invisible-chars": 10,
   homoglyph: 10,
+  // Мягкий перенос — след Word или PDF, а не довод об авторстве: в оценку не идёт.
+  "soft-hyphen": 0,
   "chat-markup": 10,
   "ai-url": 8,
   placeholder: 8,
@@ -93,6 +96,7 @@ export const WEIGHTS: Record<string, number> = {
 export const TYPE_LABELS: Record<string, string> = {
   "invisible-chars": "Невидимые символы",
   homoglyph: "Подмена букв",
+  "soft-hyphen": "Мягкие переносы",
   "chat-markup": "Разметка цитирования из чата",
   "ai-url": "Параметр ИИ-инструмента в ссылке",
   placeholder: "Незаполненная заглушка",
@@ -342,11 +346,25 @@ function detectFingerprints(ctx: Ctx): void {
       type: "invisible-chars",
       rule: "zero-width",
       severity: "P0",
-      text: `${p.invisible.length} невидимых символов`,
+      text: plural(p.invisible.length, "невидимый символ", "невидимых символа", "невидимых символов"),
       index: idx,
       line,
       column,
       hint: "удалить; такие документы системы проверки помечают как подозрительные",
+    });
+  }
+  if (p.softHyphens.length) {
+    const idx = p.softHyphens[0] ?? 0;
+    const { line, column } = lineCol(p.lineStarts, idx);
+    ctx.issues.push({
+      type: "soft-hyphen",
+      rule: "soft-hyphen",
+      severity: "P2",
+      text: plural(p.softHyphens.length, "мягкий перенос", "мягких переноса", "мягких переносов"),
+      index: idx,
+      line,
+      column,
+      hint: "удалить перед сдачей; обычно их оставляют Word и копирование из PDF",
     });
   }
   for (const h of p.homoglyphs) {
@@ -367,7 +385,7 @@ function detectFingerprints(ctx: Ctx): void {
   };
   scan(
     "chat-markup",
-    /citeturn\d+\w*|contentReference\[oaicite:\d+\](?:\{index=\d+\})?|oai_citation|\[attached_file:\d+\]|grok_card/g,
+    /\uE200[^\uE201\n]{0,200}\uE201|[\uE200-\uE204]|citeturn\d+\w*|(?<![\p{L}\d])turn\d+(?:search|news|file|image|view|fetch|video|product|academia)\d+|【\d+(?::\d+)?†[^】\n]{0,80}】|contentReference\[oaicite:\d+\](?:\{index=\d+\})?|oai_citation|\[attached_file:\d+\]|grok_card/gu,
     "P0",
     "удалить; если ссылка нужна — заменить настоящей",
   );
@@ -813,6 +831,7 @@ const AGGREGATE = new Set([
   "phrase3-cluster",
   "tier3",
   "invisible-chars",
+  "soft-hyphen",
 ]);
 
 /**
