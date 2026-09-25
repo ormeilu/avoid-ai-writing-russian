@@ -18,9 +18,10 @@ from aiw_ru.cli import USAGE, main, parse
 ROOT = Path(__file__).parent.parent
 SKILLS = ROOT / "skills"
 REFERENCES = SKILLS / "avoid-ai-writing-russian" / "references"
-# Тематические файлы каталога примет; профили контекста и голоса лежат отдельно.
-CATALOG_FILES = sorted(p for p in REFERENCES.glob("*.md") if p.name != "profiles.md")
+# Тематические файлы каталога примет; профили и задание проверяющему лежат отдельно.
+CATALOG_FILES = sorted(p for p in REFERENCES.glob("*.md") if p.name not in ("profiles.md", "review.md"))
 PROFILES = REFERENCES / "profiles.md"
+REVIEW = REFERENCES / "review.md"
 PYPROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 AI_VAK = ROOT / "tests" / "fixtures" / "corpus" / "ai" / "vak.md"
 
@@ -149,6 +150,28 @@ class TestSkill:
         assert [f"{i.line}: {i.text}" for i in serious] == []
 
 
+def test_reference_invocations_valid():
+    """вызовы детектора в файлах references/ считаются от папки скилла, как в SKILL.md"""
+    base = SKILLS / "avoid-ai-writing-russian"
+    found = [m for p in REFERENCES.glob("*.md") for m in INVOCATION_RE.finditer(read(p))]
+    assert found
+    for m in found:
+        assert (base / m[1]).resolve() == ROOT, m[0]
+        assert m[3].split()[0] in COMMANDS, m[0]
+
+
+def test_main_has_source_check_and_reviewer():
+    """после правки сверка с источником, рамка, переносимость и свежий проверяющий"""
+    for phrase in ("**Сверка с источником (rewrite и edit).**", "проверь рамку", "**Тест на переносимость.**"):
+        assert phrase in MAIN
+    assert "](references/review.md)" in MAIN
+    review = read(REVIEW)
+    for part in ("Выдумка", "Сдвиг смысла", "Рамка", "Переносимость", "Вердикт: прошло | не прошло"):
+        assert part in review
+    # Проверяющий не видит рассуждений редактора.
+    assert "без черновиков, списка изменений и своих рассуждений" in MAIN
+
+
 def test_skill_invocations_point_at_this_package():
     """проект из вызовов объявляет команду aiw-ru"""
     assert PYPROJECT["project"]["scripts"]["aiw-ru"] == "aiw_ru.cli:run"
@@ -255,7 +278,7 @@ def test_catalog_split_into_topic_files():
         "typography.md",
         "vocabulary.md",
     ]
-    for p in [*CATALOG_FILES, PROFILES]:
+    for p in [*CATALOG_FILES, PROFILES, REVIEW]:
         text = read(p)
         assert text.startswith("# "), p.name
         assert "`../SKILL.md`" in text, p.name
