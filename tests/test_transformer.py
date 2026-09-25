@@ -16,6 +16,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from aiw_ru import models
+
 pytest.importorskip("torch")
 pytest.importorskip("transformers")
 pytest.importorskip("onnxruntime")
@@ -509,7 +511,15 @@ def test_card_and_report_for_fp32_bundle():
     body = card.text
     assert "aiw-ru models install modernbert" in body and "aiw-ru classify --model modernbert текст.md" in body
     assert "`model_int8.onnx`" in body and "## Какую модель выбрать" in body
-    assert "точный вариант" in body and "в \\\\(6.8\\\\) раза медленнее" in body
+    assert "точный вариант" in body
+    choose = body.split("## Какую модель выбрать")[1].split("\n## ")[0]
+    # Таблица в порядке aiw-ru, по строке «когда брать» на модель, без сплошного абзаца сравнений.
+    this = "[`modernbert`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-modernbert), эта модель"
+    assert f"| {this} |" in choose
+    assert choose.index("[`modernbert`]") < choose.index("[`transformer`]") < choose.index("[`lightgbm`]")
+    assert f"- `transformer` — {models.TRANSFORMER.summary}." in choose
+    assert f"- `modernbert` (эта модель) — {models.MODERNBERT.summary}." in choose
+    assert "в порядке таблицы" in choose and "Против" not in choose
     assert "deepvk2025rumodernbert" in body
     assert not re.search(r"\S\\\\\(", body)
     report = tt.report_body(m, tt.bundle_for(m["params"]["base"]).repo)
@@ -573,9 +583,7 @@ def test_card_and_report_for_frozen_heavy_bundle():
     assert "aiw-ru models install frida" in body and "--model frida" in body
     assert "Модель тяжёлая, для мощных машин" in body and "у вызовов дольше секунды" in body
     assert "самый тяжёлый трансформер aiw-ru, но не самый точный: на test его обходит `modernbert`." in body
-    assert (
-        "в \\\\(226\\\\) раз медленнее" in body and "в \\\\(33\\\\) раза медленнее" in body and "без дообучения" in body
-    )
+    assert "без дообучения" in body and f"- `frida` (эта модель) — {tt.BUNDLES['ai-forever/FRIDA'].summary}." in body
     assert "habr.com/ru/companies/sberdevices/articles/909924" in body
     assert not re.search(r"\S\\\\\(", body)
     report = tt.report_body(m, tt.bundle_for("ai-forever/FRIDA").repo)

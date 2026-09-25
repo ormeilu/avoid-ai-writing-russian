@@ -15,14 +15,27 @@
 На test ROC AUC $0.993$, у LightGBM на признаках aiw-ru $0.943$,
 у оценки правил $0.615$.
 
-Это точный вариант среди трансформеров aiw-ru, за точность он платит скоростью и размером. Против [`russian-ai-text-detector-mini-frida`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-mini-frida): ROC AUC на test $0.993$ против $0.991$, людей принято за ИИ $4.3\%$ против $9.5\%$, в $2.0$ раза медленнее: $272.8$ мс против $137.2$ мс на $512$ токенов на M1, файл $140$ МБ против $130$ МБ. Против [`russian-ai-text-detector-bert`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-bert): ROC AUC на test $0.993$ против $0.987$, людей принято за ИИ $4.3\%$ против $7.2\%$, в $6.8$ раза медленнее: $272.8$ мс против $39.8$ мс на $512$ токенов на M1, файл $140$ МБ против $29.7$ МБ.
+Это точный вариант среди трансформеров aiw-ru, за точность он платит скоростью и размером.
 
-| Модель | Имя в aiw-ru | ROC AUC | Accuracy | Людей принято за ИИ | Файл, МБ | мс, M1 | мс, x86 |
-| --- | --: | --: | --: | --: | --: | --: | --: |
-| [`russian-ai-text-detector-modernbert`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-modernbert), эта модель | `modernbert` | $0.9930$ | $0.962$ | $4.3\%$ | $140$ | $272.8$ | $367.9$ |
-| [`russian-ai-text-detector-mini-frida`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-mini-frida) | `mini-frida` | $0.9909$ | $0.948$ | $9.5\%$ | $130$ | $137.2$ | $216.2$ |
-| [`russian-ai-text-detector-bert`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-bert) | `transformer` | $0.9869$ | $0.945$ | $7.2\%$ | $29.7$ | $39.8$ | $101.1$ |
-| [`russian-ai-text-detector-lightgbm`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-lightgbm) | `lightgbm` | $0.9431$ | $0.868$ | $16.5\%$ | $10.0$ | — | — |
+| Модель | Людей принято за ИИ | ROC AUC | Accuracy | Файл, МБ | M1, мс | x86, мс |
+| --- | --: | --: | --: | --: | --: | --: |
+| [`modernbert`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-modernbert), эта модель | $4.3\%$ | $0.9930$ | $0.962$ | $140$ | $272.8$ | $367.9$ |
+| [`transformer`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-bert) | $7.2\%$ | $0.9869$ | $0.945$ | $29.7$ | $39.8$ | $101.1$ |
+| [`mini-frida`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-mini-frida) | $9.5\%$ | $0.9909$ | $0.948$ | $130$ | $137.2$ | $216.2$ |
+| [`lightgbm`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-lightgbm) | $16.5\%$ | $0.9431$ | $0.868$ | $10.0$ | — | — |
+
+- `modernbert` (эта модель) — самая точная, но тяжёлая и в несколько раз медленнее: для мощных машин и спорных текстов.
+- `transformer` — почти так же точна, лёгкая и быстрая: выбор по умолчанию.
+- `mini-frida` — ROC AUC выше, чем у трансформера, но при пороге 50 % чаще принимает людей за ИИ; в 4 раза тяжелее и в 3 раза медленнее.
+- `lightgbm` — самая лёгкая, работает и без onnxruntime (Mac на Intel), но заметно менее точна.
+
+Если установлено несколько моделей, aiw-ru берёт вероятность у первой из них
+в порядке таблицы. Порядок задаёт доля людей, принятых за ИИ, а не ROC AUC:
+ошибиться в человеке дороже, чем пропустить ИИ-текст.
+
+Задержка — один текст на $512$ токенов в один поток на M1 и на двух ядрах Xeon
+виртуальной машины Colab (x86). Размер у LightGBM — файл модели, признаки для неё
+считает сам детектор aiw-ru.
 
 ## Выбор базы
 

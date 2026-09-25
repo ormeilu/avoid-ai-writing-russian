@@ -64,6 +64,7 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_
 from transformers.utils import logging as hf_logging
 
 import aiw_ru
+from aiw_ru.models import MODELS
 from aiw_ru.text import plural
 from hub import (
     DATASET,
@@ -1870,6 +1871,8 @@ class Bundle:
     log: str
     # Ставится командой `aiw-ru models install` без имени и отвечает в classify по умолчанию.
     default: bool = False
+    # Когда брать модель, пока её нет в aiw_ru.models; потом строка берётся оттуда, как в `models info`.
+    summary: str = ""
 
 
 BUNDLES = {
@@ -1880,7 +1883,12 @@ BUNDLES = {
     "sergeyzh/rubert-mini-frida": Bundle(
         "toiletsandpaper/russian-ai-text-detector-mini-frida", "mini-frida", "mini-frida"
     ),
-    "ai-forever/FRIDA": Bundle("toiletsandpaper/russian-ai-text-detector-frida", "frida", "frida"),
+    "ai-forever/FRIDA": Bundle(
+        "toiletsandpaper/russian-ai-text-detector-frida",
+        "frida",
+        "frida",
+        summary="замороженный энкодер FRIDA с логистической головой, самая тяжёлая: для мощных машин",
+    ),
 }
 
 
@@ -2012,113 +2020,145 @@ def related_row(run_dir: Path) -> dict:
     }
 
 
-def _models_md(m: dict, repo: str) -> str:
-    """Все модели aiw-ru рядом: точность на test против размера и задержки."""
-    b, t = bundle_for(m["params"]["base"]), m["test"]
-
-    def fpr(r: dict) -> str:
-        return pct(1 - r["classes"]["human"]["recall"])
-
+def _models_rows(m: dict, repo: str) -> list[dict]:
+    """Все модели aiw-ru с числами на test в порядке aiw-ru: по доле людей, принятых за ИИ."""
     rows = [
-        [
-            f"{_hub_link(repo)}, эта модель",
-            f"`{b.name}`",
-            _num4(t["roc_auc"]),
-            num(t["accuracy"]),
-            fpr(t),
-            _mb(m["params"]["size_mb"]),
-            _ms(_shipped_ms(m)),
-            _ms(_shipped_ms(m, x86=True)),
-        ]
+        {
+            "name": bundle_for(m["params"]["base"]).name,
+            "repo": repo,
+            "test": m["test"],
+            "size_mb": m["params"]["size_mb"],
+            "ms": _shipped_ms(m),
+            "x86": _shipped_ms(m, x86=True),
+            "this": True,
+        }
     ]
-    for r in sorted(m.get("related", []), key=lambda r: -r["test"]["roc_auc"]):
-        rows.append(
-            [
-                _hub_link(r["repo"]),
-                f"`{r['name']}`",
-                _num4(r["test"]["roc_auc"]),
-                num(r["test"]["accuracy"]),
-                fpr(r["test"]),
-                _mb(r["size_mb"]),
-                _ms(r["ms_512_1"]),
-                _ms(r["x86_ms_512_1"]),
-            ]
-        )
+    rows += [
+        {
+            "name": r["name"],
+            "repo": r["repo"],
+            "test": r["test"],
+            "size_mb": r["size_mb"],
+            "ms": r["ms_512_1"],
+            "x86": r["x86_ms_512_1"],
+            "this": False,
+        }
+        for r in m.get("related", [])
+    ]
     lg = m.get("lightgbm") or {}
     if lg.get("test"):
         rows.append(
-            [
-                _hub_link(lg["repo"]),
-                "`lightgbm`",
-                _num4(lg["test"]["roc_auc"]),
-                num(lg["test"]["accuracy"]),
-                fpr(lg["test"]),
-                _mb(lg.get("size_mb")),
-                "—",
-                "—",
-            ]
+            {
+                "name": "lightgbm",
+                "repo": lg["repo"],
+                "test": lg["test"],
+                "size_mb": lg.get("size_mb"),
+                "ms": None,
+                "x86": None,
+                "this": False,
+            }
         )
-    head = ["Модель", "Имя в aiw-ru", "ROC AUC", "Accuracy", "Людей принято за ИИ", "Файл, МБ", "мс, M1", "мс, x86"]
-    return md_table(head, rows)
+    return sorted(rows, key=lambda r: _fpr(r["test"]))
 
 
-def _times(k: float) -> str:
-    """«$6.8$ раза», «$150$ раз»: дробное — с одним знаком, от десяти — целое."""
-    if k < 10:
-        return f"${k:.1f}$ раза"
-    n = round(k)
-    return f"${n}$ {plural(n, 'раз', 'раза', 'раз').split(' ', 1)[1]}"
+def _fpr(t: dict) -> float:
+    return 1 - t["classes"]["human"]["recall"]
 
 
-def _position(m: dict) -> str:
+def _models_md(rows: list[dict]) -> str:
+    """Таблица моделей: доля людей, принятых за ИИ, первой, потому что по ней aiw-ru выбирает модель."""
+
+    def name(r: dict) -> str:
+        link = f"[`{r['name']}`](https://huggingface.co/{r['repo']})"
+        return f"{link}, эта модель" if r["this"] else link
+
+    head = ["Модель", "Людей принято за ИИ", "ROC AUC", "Accuracy", "Файл, МБ", "M1, мс", "x86, мс"]
+    return md_table(
+        head,
+        [
+            [
+                name(r),
+                pct(_fpr(r["test"])),
+                _num4(r["test"]["roc_auc"]),
+                num(r["test"]["accuracy"]),
+                _mb(r["size_mb"]),
+                _ms(r["ms"]),
+                _ms(r["x86"]),
+            ]
+            for r in rows
+        ],
+    )
+
+
+def _summary(name: str) -> str:
+    """Когда брать модель: та же строка, что показывает `aiw-ru models info`."""
+    if name in MODELS:
+        return MODELS[name].summary
+    return next((b.summary for b in BUNDLES.values() if b.name == name), "")
+
+
+def _notes_md(rows: list[dict]) -> str:
+    return "\n".join(
+        f"- `{r['name']}`{' (эта модель)' if r['this'] else ''} — {_summary(r['name'])}."
+        for r in rows
+        if _summary(r["name"])
+    )
+
+
+def _choose_md(m: dict, repo: str) -> str:
+    """Раздел «Какую модель выбрать»: вступление, таблица, строка на модель и правило выбора."""
+    rows = _models_rows(m, repo)
+    return f"""{_position(m, rows)}
+
+{_models_md(rows)}
+
+{_notes_md(rows)}
+
+Если установлено несколько моделей, aiw-ru берёт вероятность у первой из них
+в порядке таблицы. Порядок задаёт доля людей, принятых за ИИ, а не ROC AUC:
+ошибиться в человеке дороже, чем пропустить ИИ-текст.
+
+Задержка — один текст на $512$ токенов в один поток на M1 и на двух ядрах Xeon
+виртуальной машины Colab (x86). Размер у LightGBM — файл модели, признаки для неё
+считает сам детектор aiw-ru."""
+
+
+_ORDINAL = {1: "первая", 2: "вторая", 3: "третья", 4: "четвёртая", 5: "пятая", 6: "шестая"}
+_OF = {2: "двух", 3: "трёх", 4: "четырёх", 5: "пяти", 6: "шести"}
+
+
+def _position(m: dict, rows: list[dict]) -> str:
     """Место модели среди трансформеров aiw-ru: точнее или быстрее и какой ценой."""
     rel = m.get("related", [])
-    if not rel:
-        return ""
     auc_, ms, mb = m["test"]["roc_auc"], _shipped_ms(m), m["params"]["size_mb"]
     most_accurate = all(auc_ >= r["test"]["roc_auc"] for r in rel)
     fastest = ms is not None and all(r["ms_512_1"] is None or ms <= r["ms_512_1"] for r in rel)
     slowest = ms is not None and all(r["ms_512_1"] is None or ms >= r["ms_512_1"] for r in rel)
     better = [f"`{r['name']}`" for r in rel if r["test"]["roc_auc"] > auc_]
-    lead = (
-        "Это самый точный трансформер aiw-ru и самый быстрый."
-        if most_accurate and fastest
-        else "Это точный вариант среди трансформеров aiw-ru, за точность он платит скоростью и размером."
-        if most_accurate
-        else "Это быстрый вариант среди трансформеров aiw-ru, за скорость он платит точностью."
-        if fastest
-        else f"Это самый тяжёлый трансформер aiw-ru, но не самый точный: на test его обходит {', '.join(better)}."
-        if slowest and len(better) == 1
-        else f"Это самый тяжёлый трансформер aiw-ru, но не самый точный: на test его обходят {', '.join(better)}."
-        if slowest
-        else "Это промежуточный вариант среди трансформеров aiw-ru."
-    )
+    if most_accurate and fastest:
+        lead = "Это самый точный трансформер aiw-ru и самый быстрый."
+    elif most_accurate:
+        lead = "Это точный вариант среди трансформеров aiw-ru, за точность он платит скоростью и размером."
+    elif fastest:
+        lead = "Это быстрый вариант среди трансформеров aiw-ru, за скорость он платит точностью."
+    elif slowest:
+        verb = "обходит" if len(better) == 1 else "обходят"
+        lead = f"Это самый тяжёлый трансформер aiw-ru, но не самый точный: на test его {verb} {', '.join(better)}."
+    else:
+        by_auc = sorted(rows, key=lambda r: -r["test"]["roc_auc"])
+        auc_rank = next(i for i, r in enumerate(by_auc, 1) if r["this"])
+        fpr_rank = next(i for i, r in enumerate(rows, 1) if r["this"])
+        link = "и" if auc_rank == fpr_rank else "а"
+        lead = (
+            f"По ROC AUC на test это {_ORDINAL[auc_rank]} из {_OF[len(rows)]} моделей aiw-ru, {link} по доле "
+            f"людей, принятых за ИИ, — {_ORDINAL[fpr_rank]}."
+        )
     if mb >= 1000:
         lead += (
             f" Модель тяжёлая, для мощных машин: {_mb(mb)} МБ на диске и {_ms(ms)} мс на текст в $512$ токенов "
             "на M1 в один поток."
         )
-    parts = []
-    for r in sorted(rel, key=lambda r: -r["test"]["roc_auc"]):
-        other = _hub_link(r["repo"])
-        cmp_auc = f"ROC AUC на test {num(auc_)} против {num(r['test']['roc_auc'])}"
-        if ms and r["ms_512_1"]:
-            k = ms / r["ms_512_1"]
-            speed = (
-                f"в {_times(k)} медленнее"
-                if k >= 1.05
-                else f"в {_times(1 / k)} быстрее"
-                if k <= 0.95
-                else "так же быстр"
-            )
-            cmp_ms = f"{speed}: {_ms(ms)} мс против {_ms(r['ms_512_1'])} мс на $512$ токенов на M1"
-        else:
-            cmp_ms = ""
-        cmp_mb = f"файл {_mb(mb)} МБ против {_mb(r['size_mb'])} МБ"
-        fpr = (pct(1 - m["test"]["classes"]["human"]["recall"]), pct(1 - r["test"]["classes"]["human"]["recall"]))
-        cmp_auc += f", людей принято за ИИ {fpr[0]} против {fpr[1]}"
-        parts.append(f"Против {other}: {cmp_auc}, {', '.join(x for x in (cmp_ms, cmp_mb) if x)}.")
-    return " ".join([lead, *parts])
+    return lead
 
 
 def _pilot_md(m: dict) -> str:
@@ -2740,17 +2780,7 @@ def card_body(m: dict, repo: str) -> str:
     others.append(f"[LightGBM на признаках aiw-ru](https://huggingface.co/{LIGHTGBM_REPO}) (`lightgbm`)")
     choose = ""
     if m.get("related"):
-        choose = f"""
-
-## Какую модель выбрать
-
-{_position(m)}
-
-{_models_md(m, repo)}
-
-Задержка — один текст на $512$ токенов в один поток: M1 и два ядра Xeon
-виртуальной машины Colab. Размер у LightGBM — файл модели, признаки для неё
-считает сам детектор aiw-ru."""
+        choose = f"\n\n## Какую модель выбрать\n\n{_choose_md(m, repo)}"
     return f"""# Детектор ИИ-текста для русского языка
 
 `{name}` оценивает вероятность, что русский текст написала нейросеть, а не
@@ -2977,11 +3007,7 @@ ROC AUC и accuracy посчитаны на полном valid у PyTorch, «ROC
     b = bundle_for(p["base"])
     choose = ""
     if m.get("related"):
-        choose = f"""
-
-{_position(m)}
-
-{_models_md(m, repo)}"""
+        choose = f"\n\n{_choose_md(m, repo)}"
     what = (
         f"замороженный энкодер `{p['base']}` с обученной логистической головой"
         if "head" in p
