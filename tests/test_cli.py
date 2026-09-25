@@ -16,6 +16,7 @@ from typing import Any, Protocol
 
 import pytest
 
+from aiw_ru import models
 from aiw_ru.cli import USAGE, Col, layout, main
 
 ROOT = Path(__file__).parent.parent
@@ -52,6 +53,10 @@ def cli(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp
     monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.delenv("COLUMNS", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # Модели из кэша Hugging Face разработчика не должны попадать в вывод.
+    for model in models.MODELS.values():
+        monkeypatch.setenv(model.env, str(tmp_path / "нет-модели"))
+    models.load.cache_clear()
     work = tmp_path / "work"
     work.mkdir()
     monkeypatch.chdir(work)

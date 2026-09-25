@@ -60,9 +60,10 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
   calibrate --doc Ф --marked Ф подстроить модель antiplagiat под ваши отчёты: документ и файл
                                с фрагментами, которые отчёт подсветил как ИИ
   calibrate --doc Ф --share N  то же, если известна только итоговая доля ИИ из отчёта, %
-  classify [файл…]             вероятность ИИ по необязательной модели LightGBM
+  classify [файл…]             вероятность ИИ по необязательной модели (трансформер или LightGBM)
   models                       необязательные модели: установлены ли и где лежат
-  models install               скачать модель с Hugging Face (нужен extra ml)
+  models install [имя…]        скачать модели с Hugging Face (нужен extra ml):
+                               transformer, lightgbm; без имени — обе
   skill [имя] [файл]           текст скилла для агента, если стоит только aiw-ru, без плагина:
                                без имени — список скиллов, с именем — SKILL.md,
                                с файлом — файл скилла (references/patterns.md)
@@ -76,6 +77,8 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
   --min P0|P1|P2    показывать находки не ниже уровня (scan)
   --fail-above N    scan: код выхода 1, если оценка выше N
   --config ПУТЬ     файл калибровки (по умолчанию ./.aiw-ru.json, затем ~/.config/aiw-ru.json)
+  --model ИМЯ       scan, antiplagiat, classify: transformer или lightgbm
+                    (по умолчанию первая установленная в этом порядке)
   --no-model        scan, antiplagiat: не показывать вероятность от модели, даже если она есть
   -h, --help        справка
 """
@@ -105,6 +108,8 @@ class Args:
     # Пары для calibrate: документ и разметка из отчёта.
     reports: list[Report] = field(default_factory=list)
     no_model: bool = False
+    # Модель для вероятности: имя из models.MODELS или None — первая установленная.
+    model_name: str | None = None
     help: bool = False
 
 
@@ -127,6 +132,12 @@ def parse(argv: list[str]) -> Args:
             a.jsonl = True
         elif x == "--no-model":
             a.no_model = True
+        elif x == "--model":
+            v = need(i, x)
+            i += 1
+            if v not in models.MODELS:
+                raise UsageError(f"неизвестная --model: {v}; есть: {', '.join(models.MODELS)}")
+            a.model_name = v
         elif x == "--context":
             v = need(i, x)
             i += 1
@@ -387,25 +398,45 @@ def jsonl(a: Args, run: Callable[[str], dict[str, Any]]) -> int:
     return 0
 
 
-def model_signal(a: Args, text: str, result: AnalysisResult | None = None) -> float | None:
-    """Вероятность от необязательной модели, если она установлена и не выключена --no-model."""
-    if a.no_model or not models.available():
+@dataclass(frozen=True, slots=True)
+class Signal:
+    """Вероятность ИИ от необязательной модели и сама модель."""
+
+    loaded: models.Loaded
+    probability: float
+
+    @property
+    def ai(self) -> bool:
+        return self.probability >= self.loaded.threshold
+
+
+def model_signal(a: Args, text: str, result: AnalysisResult | None = None) -> Signal | None:
+    """Вероятность от необязательной модели, если она установлена и не выключена --no-model.
+
+    Модель, выбранная через --model, обязана быть установлена; без --model берётся первая установленная.
+    """
+    if a.no_model:
         return None
-    return models.probability(text, result)
+    loaded = models.preferred(a.model_name)
+    return None if loaded is None else Signal(loaded, loaded.probability(text, result))
 
 
-def with_signal(data: dict[str, Any], p: float | None) -> dict[str, Any]:
-    if p is not None:
-        data["model"] = {"probability": round(p, 4), "ai": p >= models.threshold(), "repo": models.LIGHTGBM_REPO}
+def signal_json(sig: Signal) -> dict[str, Any]:
+    m = sig.loaded.model
+    return {"name": m.name, "probability": round(sig.probability, 4), "ai": sig.ai, "repo": m.repo}
+
+
+def with_signal(data: dict[str, Any], sig: Signal | None) -> dict[str, Any]:
+    # Не "model": это поле уже занято в отчёте antiplagiat (default или calibrated).
+    if sig is not None:
+        data["classifier"] = signal_json(sig)
     return data
 
 
-def signal_fact(p: float) -> tuple[str, Text]:
-    style = "red" if p >= models.threshold() else "green"
-    return (
-        "Вероятность ИИ",
-        Text.styled(f"{js_round(p * 100)} % по модели LightGBM (порог {js_round(models.threshold() * 100)} %)", style),
-    )
+def signal_fact(sig: Signal) -> tuple[str, Text]:
+    t = js_round(sig.loaded.threshold * 100)
+    text = f"{js_round(sig.probability * 100)} % ({sig.loaded.model.title}, порог {t} %)"
+    return ("Вероятность ИИ", Text.styled(text, "red" if sig.ai else "green"))
 
 
 def cmd_scan(a: Args) -> int:
@@ -689,70 +720,91 @@ def cmd_calibrate(a: Args) -> int:
 
 
 def cmd_classify(a: Args) -> int:
-    models.load()
+    loaded = models.preferred(a.model_name)
+    if loaded is None:
+        raise models.ModelError(
+            f"ни одна модель не установлена: поставьте пакеты ({models.INSTALL_HINT}) и скачайте модели "
+            "(aiw-ru models install)"
+        )
+
+    def one(text: str) -> Signal:
+        return Signal(loaded, loaded.probability(text))
+
     if a.jsonl:
-        return jsonl(a, lambda text: with_signal({}, models.probability(text))["model"])
+        return jsonl(a, lambda text: signal_json(one(text)))
     files = a.files or ["-"]
-    results = [(f, models.probability(read(f))) for f in files]
+    results = [(f, one(read(f))) for f in files]
     if a.json:
-        docs = [{"file": f, **with_signal({}, p)["model"]} for f, p in results]
+        docs = [{"file": f, **signal_json(sig)} for f, sig in results]
         sys.stdout.write(dump(docs[0] if len(docs) == 1 else docs) + "\n")
         return 0
-    for n, (f, p) in enumerate(results):
+    for n, (f, sig) in enumerate(results):
         if n > 0:
             out()
         heading("stdin" if f == "-" else f)
-        facts([signal_fact(p)])
+        facts([signal_fact(sig)])
     out()
     note(
         "Модель обучена на русской части корпуса LLMTrace и видела не все жанры. Вероятность — сигнал, а не "
-        f"доказательство авторства. Замеры по жанрам: https://huggingface.co/{models.LIGHTGBM_REPO}"
+        f"доказательство авторства. Замеры по жанрам: https://huggingface.co/{loaded.model.repo}"
     )
     return 0
 
 
+def model_state(model: models.Model) -> dict[str, Any]:
+    st = models.status(model)
+    error = None
+    try:
+        models.load(model)
+    except models.ModelError as e:
+        error = str(e)
+    return {
+        "name": model.name,
+        "repo": model.repo,
+        "dependencies": st.dependencies,
+        "missing": models.missing_dependencies(model),
+        "path": str(st.path) if st.path else None,
+        "ready": error is None,
+        "error": error,
+    }
+
+
 def cmd_models(a: Args) -> int:
     if a.files and a.files[0] == "install":
-        try:
-            path = models.install()
-        except OSError as e:
-            raise models.ModelError(f"не удалось скачать модель: {e}") from None
-        facts([("LightGBM", Text.styled("скачана", "green")), ("Папка", str(path))])
+        chosen = [models.get(name) for name in a.files[1:]] or list(models.MODELS.values())
+        for model in chosen:
+            try:
+                path = models.install(model)
+            except OSError as e:
+                raise models.ModelError(f"не удалось скачать модель {model.name}: {e}") from None
+            facts([(model.name, Text.styled("скачана", "green")), ("Папка", str(path))])
         return 0
     if a.files:
         raise UsageError(f"models: неизвестное действие {a.files[0]}")
-    st = models.status()
-    missing = models.missing_dependencies()
-    error = None
-    try:
-        models.load()
-    except models.ModelError as e:
-        error = str(e)
+    states = [model_state(m) for m in models.MODELS.values()]
     if a.json:
-        data = {
-            "repo": st.repo,
-            "dependencies": st.dependencies,
-            "missing": missing,
-            "path": str(st.path) if st.path else None,
-            "ready": error is None,
-            "error": error,
-        }
-        sys.stdout.write(dump(data) + "\n")
+        sys.stdout.write(dump({"ready": any(x["ready"] for x in states), "models": states}) + "\n")
         return 0
-    heading("LightGBM")
-    facts(
-        [
-            ("Репозиторий", f"https://huggingface.co/{st.repo}"),
-            (
-                "Пакеты",
-                Text.styled("установлены", "green")
-                if st.dependencies
-                else Text.styled(f"нет {', '.join(missing)}: {models.INSTALL_HINT}", "yellow"),
-            ),
-            ("Файлы", str(st.path) if st.path else Text.styled("не скачаны: aiw-ru models install", "yellow")),
-            ("Состояние", Text.styled("готова", "green") if error is None else Text.styled(error, "yellow")),
-        ]
-    )
+    for n, x in enumerate(states):
+        if n > 0:
+            out()
+        heading(x["name"])
+        facts(
+            [
+                ("Репозиторий", f"https://huggingface.co/{x['repo']}"),
+                (
+                    "Пакеты",
+                    Text.styled("установлены", "green")
+                    if x["dependencies"]
+                    else Text.styled(f"нет {', '.join(x['missing'])}: {models.INSTALL_HINT}", "yellow"),
+                ),
+                (
+                    "Файлы",
+                    x["path"] or Text.styled(f"не скачаны: aiw-ru models install {x['name']}", "yellow"),
+                ),
+                ("Состояние", Text.styled("готова", "green") if x["ready"] else Text.styled(x["error"], "yellow")),
+            ]
+        )
     return 0
 
 

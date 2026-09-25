@@ -26,8 +26,15 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-# Необязательная модель LightGBM (aiw-ru models install); без неё всё остальное работает.
-ml = ["huggingface-hub>=1.33.0", "lightgbm>=4.7.0"]
+# Необязательные модели (aiw-ru models install): трансформер в ONNX и LightGBM; без них всё остальное работает.
+# У onnxruntime нет колёс для macOS на Intel: там ставится только LightGBM.
+ml = [
+    "huggingface-hub>=1.33.0",
+    "lightgbm>=4.7.0",
+    "numpy>=2.5.3",
+    "onnxruntime>=1.30.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "tokenizers>=0.23.2",
+]
 
 [project.urls]
 Homepage = "https://github.com/ormeilu/avoid-ai-writing-russian"
@@ -61,11 +68,14 @@ dev = [
     "ty>=0.0.84",
     "types-regex>=2026.9.10.20260911",
 ]
+# Обучение LightGBM и всё, что нужно тестам моделей: пакеты extra ml и scikit-learn.
 train = [
     "huggingface-hub>=1.33.0",
     "lightgbm>=4.7.0",
     "numpy>=2.5.3",
+    "onnxruntime>=1.30.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "scikit-learn>=1.9.1",
+    "tokenizers>=0.23.2",
 ]
 # Дообучение трансформера: тяжёлые пакеты отдельно, чтобы CI и LightGBM их не тянули.
 transformer = [
@@ -98,6 +108,14 @@ ban-relative-imports = "all"
 [tool.ty.environment]
 # Тесты импортируют скрипты как модули верхнего уровня, как pytest с pythonpath ниже.
 extra-paths = ["scripts", "evals"]
+
+# torch, transformers и onnx стоят только в группе transformer, которую CI не ставит.
+# Без неё ty не находит эти модули; с ней (uv run --group transformer ty check) проверяет полностью.
+[[tool.ty.overrides]]
+include = ["scripts/train_transformer.py", "scripts/colab_transformer.py", "tests/test_transformer.py", "tests/fixtures/tiny-transformer/make.py"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

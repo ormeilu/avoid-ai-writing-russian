@@ -4,6 +4,22 @@
 
 ## [Не выпущено]
 
+### Добавлено
+
+- Вторая необязательная модель: дообученный русский трансформер в ONNX ([toiletsandpaper/russian-ai-text-detector-bert](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-bert)). Работает на CPU через onnxruntime, без torch. Если стоят обе модели, вероятность в `scan`, `antiplagiat` и `classify` даёт трансформер. Отчёт об обучении в `docs/models/russian-ai-text-detector-bert.md`, скрипты `scripts/train_transformer.py` и `scripts/colab_transformer.py`.
+- `--model transformer|lightgbm` выбирает модель в `scan`, `antiplagiat` и `classify`; `aiw-ru models install [имя…]` ставит одну модель или обе.
+
+### Изменено
+
+- Вероятность от модели в JSON `scan` и `antiplagiat` лежит в поле `classifier` с именем модели. В 2.0.0rc1 она была в поле `model` и в `antiplagiat` затирала имя модели калибровки.
+- `aiw-ru models --json` отдаёт `ready` (готова хотя бы одна модель) и список `models` с состоянием каждой.
+- extra `ml` ставит и onnxruntime с tokenizers для трансформера; на Mac с Intel onnxruntime не ставится, там работает только LightGBM.
+
+### Исправлено
+
+- На Windows `aiw-ru scan … | head` завершался с кодом 120: закрытый канал там приходит как OSError с EINVAL.
+- На macOS без libomp LightGBM падал с трассировкой при загрузке; теперь `aiw-ru models` просит `brew install libomp`.
+
 ## [2.0.0rc1] — 2026-09-25
 
 ### Добавлено
