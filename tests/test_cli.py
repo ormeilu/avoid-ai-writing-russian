@@ -8,6 +8,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ from typing import Any, Protocol
 
 import pytest
 
-from aiw_ru import models
+from aiw_ru import models, skills
 from aiw_ru.cli import USAGE, Col, layout, main
 
 ROOT = Path(__file__).parent.parent
@@ -609,6 +610,17 @@ def test_skill_lists_skills(cli: Cli):
         for n in ("chat", "profiles", "review", "rhetoric", "sentences", "structure", "typography", "vocabulary")
     ]
     assert data[1]["description"].startswith("Подготовка русского текста")
+
+
+def test_skill_files_in_hidden_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """пакет из кэша uv лежит под ~/.cache: файлы скилла видны, скрытые файлы внутри скилла нет"""
+    base = tmp_path / ".cache" / "skills"
+    shutil.copytree(skills.SOURCE, base)
+    (base / skills.MAIN / ".DS_Store").write_text("", encoding="utf-8")
+    monkeypatch.setattr(skills, "PACKAGED", base)
+    files = skills.all_skills()[0].files
+    assert "references/review.md" in files
+    assert not any(f.startswith(".") or "/." in f for f in files)
 
 
 @pytest.mark.parametrize(

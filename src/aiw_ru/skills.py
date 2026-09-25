@@ -81,11 +81,14 @@ def first_sentence(text: str) -> str:
 
 
 def _files(folder: Path) -> tuple[str, ...]:
+    """Файлы скилла без SKILL.md и скрытых. Скрытость проверяется внутри папки скилла:
+    сам пакет может лежать под скрытой папкой, например в кэше uv (~/.cache/uv)."""
+    found = (p.relative_to(folder) for p in folder.rglob("*") if p.is_file())
     return tuple(
         sorted(
-            p.relative_to(folder).as_posix()
-            for p in folder.rglob("*")
-            if p.is_file() and p.name != "SKILL.md" and not any(part.startswith(".") for part in p.parts)
+            rel.as_posix()
+            for rel in found
+            if rel.name != "SKILL.md" and not any(part.startswith(".") for part in rel.parts)
         )
     )
 

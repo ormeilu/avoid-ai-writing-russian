@@ -223,6 +223,36 @@ def test_onnx_external_data_is_downloaded():
     assert not any(fnmatch("model_fp32.onnx", p) for p in models.MODERNBERT.files)
 
 
+class _Tokenizer0:
+    """Tokenizer из tokenizers 0.x: обрезку и дополнение снимают методы no_*."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def no_truncation(self) -> None:
+        self.calls.append("truncation")
+
+    def no_padding(self) -> None:
+        self.calls.append("padding")
+
+
+class _Tokenizer1:
+    """Tokenizer из tokenizers 1.x: методов no_* нет, обрезка и дополнение снимаются присваиванием None."""
+
+    truncation: object = "обрезка"
+    padding: object = "дополнение"
+
+
+def test_tokenizer_without_limits_in_both_versions():
+    """окна режет сам aiw-ru, поэтому обрезку и дополнение токенизатора снимаем в любой версии tokenizers"""
+    old = _Tokenizer0()
+    models._no_limits(old)
+    assert old.calls == ["truncation", "padding"]
+    new = _Tokenizer1()
+    models._no_limits(new)
+    assert new.truncation is None and new.padding is None
+
+
 def test_transformer_format_mismatch(transformer_dir: Path):
     spec = json.loads((transformer_dir / "inference.json").read_text(encoding="utf-8"))
     spec["version"] = models.INFERENCE_VERSION + 1

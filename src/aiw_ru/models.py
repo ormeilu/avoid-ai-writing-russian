@@ -277,6 +277,17 @@ class _Transformer:
         return float((z[:, ai] / z.sum(axis=1)).mean())
 
 
+def _no_limits(tokenizer: Any) -> None:
+    """Снимает обрезку и дополнение: окна по max_length режет _Transformer.
+    В tokenizers 0.x для этого есть методы no_*, в 1.x их нет, а свойствам присваивают None."""
+    if hasattr(tokenizer, "no_truncation"):
+        tokenizer.no_truncation()
+        tokenizer.no_padding()
+    else:
+        tokenizer.truncation = None
+        tokenizer.padding = None
+
+
 def _load_transformer(model: Model, path: Path) -> _Transformer:
     spec = json.loads((path / "inference.json").read_text(encoding="utf-8"))
     if spec.get("version", 1) != INFERENCE_VERSION or spec.get("format") != "onnx":
@@ -291,8 +302,7 @@ def _load_transformer(model: Model, path: Path) -> _Transformer:
     options.log_severity_level = 3
     session = ort.InferenceSession(str(path / spec["file"]), options, providers=["CPUExecutionProvider"])
     tokenizer = Tokenizer.from_file(str(path / spec["tokenizer"]))
-    tokenizer.no_truncation()
-    tokenizer.no_padding()
+    _no_limits(tokenizer)
     rules = [(re.compile(r["pattern"], re.MULTILINE), r["replacement"]) for r in spec.get("normalize", [])]
     return _Transformer(model, float(spec.get("threshold", 0.5)), spec, session, tokenizer, rules)
 
