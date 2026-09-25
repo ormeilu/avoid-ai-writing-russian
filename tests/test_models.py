@@ -604,6 +604,7 @@ def test_classify_long_text_by_fragments(long_doc: str, capsys: pytest.CaptureFi
     out = flat(cli(capsys, "classify", long_doc)[1])
     assert "Прочитано" in out and "4 слова из 12, строка 1 из 5: окно модели 6 токенов" in out
     assert "Выше порога 1 фрагмент из 3, в них 33 % слов: строка 3." in out
+    assert "Один фрагмент выше порога в длинном тексте — слабый признак" in out and "aiw-ru models guide" in out
     assert "Проверено 3 фрагмента за" in out and "на 25 %" in out
     # без фрагментов и с пределом
     data = json.loads(cli(capsys, "classify", "--json", "--no-fragments", long_doc)[1])
@@ -680,3 +681,14 @@ def test_cli_models_info(capsys: pytest.CaptureFixture[str]):
     assert {e["name"] for e in json.loads(out)["models"]} >= {"transformer", "lightgbm"}
     code, _, err = cli(capsys, "models", "info", "gpt")
     assert code == 2 and "нет модели gpt" in err
+
+
+def test_cli_models_guide(capsys: pytest.CaptureFixture[str], root: Path):
+    """руководство по классификации: файл каталога скилла с командами через aiw-ru"""
+    code, out, _ = cli(capsys, "models", "guide")
+    guide = (root / "skills" / "avoid-ai-writing-russian" / "references" / "models.md").read_text(encoding="utf-8")
+    assert code == 0 and out.startswith("# Модели: как пользоваться классификацией")
+    assert "aiw-ru classify --all /tmp/fragment.md --json" in out and "--project" not in out
+    # разделы те же, что в файле скилла
+    heads = [line for line in guide.splitlines() if line.startswith("## ")]
+    assert heads and [line for line in out.splitlines() if line.startswith("## ")] == heads

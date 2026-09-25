@@ -19,9 +19,11 @@ ROOT = Path(__file__).parent.parent
 SKILLS = ROOT / "skills"
 REFERENCES = SKILLS / "avoid-ai-writing-russian" / "references"
 # Тематические файлы каталога примет; профили и задание проверяющему лежат отдельно.
-CATALOG_FILES = sorted(p for p in REFERENCES.glob("*.md") if p.name not in ("profiles.md", "review.md"))
+CATALOG_FILES = sorted(p for p in REFERENCES.glob("*.md") if p.name not in ("profiles.md", "review.md", "models.md"))
 PROFILES = REFERENCES / "profiles.md"
 REVIEW = REFERENCES / "review.md"
+# Руководство по моделям: его печатает и `aiw-ru models guide`.
+MODELS_GUIDE = REFERENCES / "models.md"
 PYPROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 AI_VAK = ROOT / "tests" / "fixtures" / "corpus" / "ai" / "vak.md"
 
@@ -244,8 +246,11 @@ def test_model_probability_is_only_a_signal():
 def test_long_text_is_read_by_fragments():
     """агент видит, что модель прочитала только начало, проверяет весь текст по фрагментам и знает, сколько ждать"""
     assert "**Длинный текст модель читает не целиком.**" in MAIN
-    for phrase in ("read.truncated", "fragments", "aiLines", "--max-fragments", "110 мс у ModernBERT", "stderr"):
+    for phrase in ("read.truncated", "fragments", "aiLines", "--max-fragments", "125 мс у ModernBERT", "stderr"):
         assert phrase in MAIN, phrase
+    # один фрагмент выше порога — слабый признак, подробности в руководстве по моделям
+    assert "Один фрагмент выше порога в длинном тексте — слабый признак" in MAIN
+    assert "](references/models.md)" in MAIN and "aiw-ru models guide" in MAIN
     assert "«Прочитано»" in AP and "classify` по фрагментам" in AP
     for flag in ("--no-fragments", "--max-fragments"):
         assert flag in USAGE
@@ -297,7 +302,7 @@ def test_catalog_split_into_topic_files():
         "typography.md",
         "vocabulary.md",
     ]
-    for p in [*CATALOG_FILES, PROFILES, REVIEW]:
+    for p in [*CATALOG_FILES, PROFILES, REVIEW, MODELS_GUIDE]:
         text = read(p)
         assert text.startswith("# "), p.name
         assert "`../SKILL.md`" in text, p.name

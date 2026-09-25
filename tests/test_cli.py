@@ -607,7 +607,17 @@ def test_skill_lists_skills(cli: Cli):
     assert [s["name"] for s in data] == ["avoid-ai-writing-russian", "antiplagiat"]
     assert data[0]["files"] == [
         f"references/{n}.md"
-        for n in ("chat", "profiles", "review", "rhetoric", "sentences", "structure", "typography", "vocabulary")
+        for n in (
+            "chat",
+            "models",
+            "profiles",
+            "review",
+            "rhetoric",
+            "sentences",
+            "structure",
+            "typography",
+            "vocabulary",
+        )
     ]
     assert data[1]["description"].startswith("Подготовка русского текста")
 

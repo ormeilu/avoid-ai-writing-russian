@@ -68,6 +68,8 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
                                --all — по всем установленным рядом, видно, согласны ли они
   models                       необязательные модели: установлены ли и где лежат
   models info [имя]            качество, скорость, память и размер моделей до скачивания
+  models guide                 как пользоваться классификацией: какую модель взять, как читать
+                               вероятность и фрагменты длинного текста, как перепроверить фрагмент
   models install [имя…]        скачать модели с Hugging Face (нужен extra ml):
                                modernbert, transformer, mini-frida, lightgbm; без имени —
                                transformer и lightgbm, modernbert и mini-frida только по имени
@@ -619,6 +621,16 @@ def show_fragments(scan: models.ChunkScan, loaded: models.Loaded, text: str) -> 
     else:
         out(indented(Text.styled("Все фрагменты ниже порога.", "green")))
     out()
+    if len(above) == 1 and len(scan.chunks) > 1:
+        note(
+            "Один фрагмент выше порога в длинном тексте — слабый признак: так бывает и у текстов людей. "
+            "Сверьте эти строки с находками scan; как читать итог и перепроверить фрагмент — aiw-ru models guide."
+        )
+    elif len(above) > 1:
+        note(
+            "Отмеченные строки шире самого ИИ-текста: фрагмент захватывает и соседний текст. "
+            "Как читать итог — aiw-ru models guide."
+        )
     note(
         f"Проверено {plural(len(scan.chunks), 'фрагмент', 'фрагмента', 'фрагментов')} за "
         f"{ru(max(scan.seconds, 0.1), 1)} с: каждый в окно модели, соседние заходят друг на друга "
@@ -1185,9 +1197,17 @@ def cmd_models_info(a: Args) -> int:
     return 0
 
 
+# Руководство по классификации — файл каталога основного скилла, его же читает агент.
+GUIDE = "references/models.md"
+
+
 def cmd_models(a: Args) -> int:
     if a.files and a.files[0] == "info":
         return cmd_models_info(a)
+    if a.files and a.files[0] == "guide":
+        text = skills.read(skills.MAIN, GUIDE)
+        sys.stdout.write(text if text.endswith("\n") else text + "\n")
+        return 0
     if a.files and a.files[0] == "install":
         chosen = [models.get(name) for name in a.files[1:]] or [m for m in models.MODELS.values() if m.default]
         for model in chosen:

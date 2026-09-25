@@ -1,0 +1,160 @@
+{
+  "rows": [
+    {
+      "backend": "onnx",
+      "tokens": 512,
+      "threads": 8,
+      "seconds": 0.12812783400295302,
+      "peak_mb": 181.890625
+    },
+    {
+      "backend": "onnx-fast",
+      "tokens": 512,
+      "threads": 8,
+      "seconds": 0.12774799999897368,
+      "peak_mb": 177.453125
+    },
+    {
+      "backend": "torch",
+      "tokens": 512,
+      "threads": 8,
+      "seconds": 0.0701612500124611,
+      "peak_mb": 499.9375
+    },
+    {
+      "backend": "onnx",
+      "tokens": 2048,
+      "threads": 8,
+      "seconds": 1.0718135419883765,
+      "peak_mb": 781.40625
+    },
+    {
+      "backend": "onnx-fast",
+      "tokens": 2048,
+      "threads": 8,
+      "seconds": 0.47195983401616104,
+      "peak_mb": 329.984375
+    },
+    {
+      "backend": "torch",
+      "tokens": 2048,
+      "threads": 8,
+      "seconds": 0.23013362500933,
+      "peak_mb": 606.421875
+    },
+    {
+      "backend": "onnx",
+      "tokens": 4096,
+      "threads": 8,
+      "seconds": 3.8047824579989538,
+      "peak_mb": 2469.0
+    },
+    {
+      "backend": "onnx-fast",
+      "tokens": 4096,
+      "threads": 8,
+      "seconds": 1.2568215419887565,
+      "peak_mb": 540.328125
+    },
+    {
+      "backend": "torch",
+      "tokens": 4096,
+      "threads": 8,
+      "seconds": 0.5522397919849027,
+      "peak_mb": 730.515625
+    },
+    {
+      "backend": "onnx-fast",
+      "tokens": 8192,
+      "threads": 8,
+      "seconds": 3.1503889159939718,
+      "peak_mb": 976.46875
+    },
+    {
+      "backend": "torch",
+      "tokens": 8192,
+      "threads": 8,
+      "seconds": 1.6088921669870615,
+      "peak_mb": 881.453125
+    },
+    {
+      "backend": "onnx",
+      "tokens": 512,
+      "threads": 2,
+      "seconds": 0.15465762501116842,
+      "peak_mb": 181.578125
+    },
+    {
+      "backend": "onnx-fast",
+      "tokens": 512,
+      "threads": 2,
+      "seconds": 0.1272308749903459,
+      "peak_mb": 177.75
+    },
+    {
+      "backend": "torch",
+      "tokens": 512,
+      "threads": 2,
+      "seconds": 0.054486958018969744,
+      "peak_mb": 500.203125
+    },
+    {
+      "backend": "onnx",
+      "tokens": 2048,
+      "threads": 2,
+      "seconds": 1.3392970420245547,
+      "peak_mb": 756.21875
+    },
+    {
+      "backend": "onnx-fast",
+      "tokens": 2048,
+      "threads": 2,
+      "seconds": 0.6095556250074878,
+      "peak_mb": 329.65625
+    },
+    {
+      "backend": "torch",
+      "tokens": 2048,
+      "threads": 2,
+      "seconds": 0.27211916699889116,
+      "peak_mb": 605.109375
+    },
+    {
+      "backend": "onnx",
+      "tokens": 4096,
+      "threads": 2,
+      "seconds": 6.590140834014164,
+      "peak_mb": 2365.359375
+    },
+    {
+      "backend": "onnx-fast",
+      "tokens": 4096,
+      "threads": 2,
+      "seconds": 1.8414309579820838,
+      "peak_mb": 539.9375
+    },
+    {
+      "backend": "torch",
+      "tokens": 4096,
+      "threads": 2,
+      "seconds": 0.8887277920148335,
+      "peak_mb": 732.640625
+    },
+    {
+      "backend": "onnx-fast",
+      "tokens": 8192,
+      "threads": 2,
+      "seconds": 4.624676499981433,
+      "peak_mb": 974.3125
+    },
+    {
+      "backend": "torch",
+      "tokens": 8192,
+      "threads": 2,
+      "seconds": 2.170215291000204,
+      "peak_mb": 838.75
+    }
+  ],
+  "cpu": "arm64",
+  "cpus": 8
+}
