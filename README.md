@@ -6,7 +6,7 @@
 [![PyPI](https://img.shields.io/pypi/v/aiw-ru?label=PyPI)](https://pypi.org/project/aiw-ru/)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776ab?logo=python&logoColor=white)](pyproject.toml)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
-[![Модель на Hugging Face](https://img.shields.io/badge/Hugging%20Face-russian--ai--text--detector--lightgbm-ffd21e?logo=huggingface)](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-lightgbm)
+[![Модели на Hugging Face](https://img.shields.io/badge/Hugging%20Face-коллекция%20aiw--ru-ffd21e?logo=huggingface)](https://huggingface.co/collections/toiletsandpaper/aiw-ru-6ab5bd007af45f80cee60456)
 [![prek](https://img.shields.io/badge/хуки-prek-orange)](https://prek.j178.dev)
 [![Апстрим](https://img.shields.io/badge/апстрим-avoid--ai--writing-555)](https://github.com/conorbronsdon/avoid-ai-writing)
 
