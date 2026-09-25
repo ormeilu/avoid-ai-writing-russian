@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -355,6 +358,43 @@ def test_transformer_format_mismatch(transformer_dir: Path):
     (transformer_dir / "inference.json").write_text(json.dumps(spec), encoding="utf-8")
     with pytest.raises(models.ModelError, match="обновите aiw-ru"):
         models.load(models.TRANSFORMER)
+
+
+# Свежий процесс: в этом onnxruntime уже импортирован, а ORT_DISABLE_TELEMETRY стоит из conftest.py.
+TELEMETRY_SPY = """
+import os, sys
+
+seen = []
+
+
+class Spy:
+    def find_spec(self, name, path=None, target=None):
+        if name == "onnxruntime":
+            seen.append(os.environ.get("ORT_DISABLE_TELEMETRY"))
+
+
+sys.meta_path.insert(0, Spy())
+import aiw_ru.cli
+
+print(os.environ.get("ORT_DISABLE_TELEMETRY"))
+from aiw_ru import models
+
+models.load(models.TRANSFORMER)
+# Первым meta_path спрашивает find_spec из missing_dependencies, последним — сам импорт.
+print(seen[-1])
+"""
+
+
+def test_onnxruntime_is_imported_without_telemetry(tmp_path: Path):
+    """телеметрию onnxruntime выключает переменная окружения: она стоит с запуска CLI и в момент импорта"""
+    folder = onnx_bundle(tmp_path / "transformer")
+    env = {k: v for k, v in os.environ.items() if k != "ORT_DISABLE_TELEMETRY"}
+    env["AIW_RU_TRANSFORMER_DIR"] = str(folder)
+    r = subprocess.run(
+        [sys.executable, "-c", TELEMETRY_SPY], env=env, capture_output=True, text=True, timeout=120, check=False
+    )
+    assert r.returncode == 0, r.stderr[-4000:]
+    assert r.stdout.split() == ["1", "1"]
 
 
 def chosen(name: str | None = None) -> models.Model | None:

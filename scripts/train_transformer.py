@@ -51,6 +51,10 @@ from itertools import pairwise
 from pathlib import Path
 from typing import Any, Protocol
 
+# Телеметрия onnxruntime роняет процесс на выходе. aiw_ru.models выключает её при импорте,
+# но onnxruntime здесь импортируется раньше него.
+os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
+
 import numpy as np
 import onnxruntime as ort
 import sklearn

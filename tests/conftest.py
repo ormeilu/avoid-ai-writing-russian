@@ -1,5 +1,6 @@
 """Общие пути и помощники для тестов."""
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -7,6 +8,11 @@ import pytest
 
 ROOT = Path(__file__).parent.parent
 FIXTURES = ROOT / "tests" / "fixtures"
+
+# Тесты импортируют onnxruntime напрямую, раньше aiw_ru.models. Его телеметрия включается при импорте,
+# через десяток секунд шлёт данные и на выходе из pytest изредка роняет процесс в abort
+# (recursive_mutex lock failed, код 134). Переменную наследуют и подпроцессы тестов.
+os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
 
 
 @pytest.fixture

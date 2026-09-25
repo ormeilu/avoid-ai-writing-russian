@@ -33,6 +33,12 @@ from aiw_ru.features import CONTEXT, FEATURE_NAMES, FEATURES_VERSION, features
 from aiw_ru.text import sentences, words
 from aiw_ru.types import AnalysisResult
 
+# onnxruntime 1.30 при импорте запускает телеметрию Microsoft: секунд через десять она шлёт данные,
+# а если процесс завершается во время отправки, падает в abort (recursive_mutex lock failed).
+# Выключается она только переменной окружения до импорта. Ставим её здесь, при импорте модуля:
+# CLI импортирует models при запуске. Явное значение пользователя не трогаем.
+os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
+
 INSTALL_HINT = 'uv sync --extra ml (или pip install "aiw-ru[ml]")'
 # Версия inference.json, которую понимает этот код.
 INFERENCE_VERSION = 1
