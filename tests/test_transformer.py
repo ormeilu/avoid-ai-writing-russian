@@ -223,11 +223,12 @@ def test_frozen_encoder_onnx_follows_spec(tmp_path: Path):
     """Проверка frozen_encoder_check в отдельном процессе.
 
     torch и LightGBM приносят каждый свою libomp, и conftest.py загружает первой копию LightGBM:
-    экспорт torch в процессе pytest виснет в libomp.
+    экспорт torch в процессе pytest виснет в libomp. В отдельном процессе первой грузится копия torch,
+    и он считает на всех потоках.
     """
     here = Path(__file__).resolve().parent
     paths = [here, here.parent / "scripts", here.parent / "evals", os.environ.get("PYTHONPATH", "")]
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join(str(x) for x in paths if str(x)), "OMP_NUM_THREADS": "1"}
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(str(x) for x in paths if str(x))}
     code = (
         "import sys; from pathlib import Path; import test_transformer as t; t.frozen_encoder_check(Path(sys.argv[1]))"
     )
