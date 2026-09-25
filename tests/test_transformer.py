@@ -442,7 +442,7 @@ def test_report_from_fake_metrics():
 
 
 def test_report_names_three_finalists():
-    """Три базы на полном train: быстрая по умолчанию, середина и точная, у каждой веса и задержка поставки."""
+    """Три базы на полном train: быстрая, середина и точная по умолчанию, у каждой веса и задержка поставки."""
     m = fake_metrics()
     tiny = m["finalists"][0]
     m["finalists"] = [
@@ -468,7 +468,7 @@ def test_report_names_three_finalists():
     ]
     text = tt.report_body(m, tt.REPO)
     assert "На полном train обучены $3$ базы из пилота" in text and "по обоим, `sergeyzh/rubert-mini-frida`." in text
-    assert "`transformer` ставится по умолчанию" in text and "`modernbert` точнее всех" in text
+    assert "`modernbert` точнее всех и ставится по умолчанию" in text and "`transformer` считает быстрее" in text
     assert "`mini-frida` — промежуточный вариант" in text and "две базы" not in text
     assert "| `sergeyzh/rubert-mini-frida` | `mini-frida` | $0.9916$ |" in text and "| fp32 | $130$ | $137.2$ |" in text
 
@@ -532,7 +532,8 @@ def test_card_and_report_for_fp32_bundle():
     assert meta["license"] == "apache-2.0" and meta["base_model_relation"] == "finetune"
     assert "modernbert" in meta["tags"] and "int8" not in meta["tags"]
     body = card.text
-    assert "aiw-ru models install modernbert" in body and "aiw-ru classify --model modernbert текст.md" in body
+    # ModernBERT ставится по умолчанию, поэтому classify без --model.
+    assert "aiw-ru models install modernbert" in body and "aiw-ru classify текст.md" in body
     assert "`model_int8.onnx`" in body and "## Какую модель выбрать" in body
     assert "точный вариант" in body
     choose = body.split("## Какую модель выбрать")[1].split("\n## ")[0]

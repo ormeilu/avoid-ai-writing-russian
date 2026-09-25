@@ -11,9 +11,9 @@
     {
       "name": "modernbert",
       "title": "ModernBERT",
-      "summary": "самая точная, но тяжёлая и в несколько раз медленнее: для мощных машин и спорных текстов",
+      "summary": "самая точная: выбор по умолчанию, но тяжелее трансформера и в несколько раз медленнее",
       "repo": "toiletsandpaper/russian-ai-text-detector-modernbert",
-      "default": false,
+      "default": true,
       "base": "deepvk/RuModernBERT-small",
       "license": "Apache-2.0",
       "weights": "fp32",
@@ -39,9 +39,9 @@
     {
       "name": "transformer",
       "title": "трансформер",
-      "summary": "почти так же точна, лёгкая и быстрая: выбор по умолчанию",
+      "summary": "почти так же точна, лёгкая и в несколько раз быстрее ModernBERT: для слабой машины",
       "repo": "toiletsandpaper/russian-ai-text-detector-bert",
-      "default": true,
+      "default": false,
       "base": "cointegrated/rubert-tiny2",
       "license": "MIT",
       "weights": "int8",

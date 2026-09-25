@@ -72,7 +72,7 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
                                вероятность и фрагменты длинного текста, как перепроверить фрагмент
   models install [имя…]        скачать модели с Hugging Face (нужен extra ml):
                                modernbert, transformer, mini-frida, lightgbm; без имени —
-                               transformer и lightgbm, modernbert и mini-frida только по имени
+                               modernbert и lightgbm, transformer и mini-frida только по имени
   skill [имя] [файл]           текст скилла для агента, если стоит только aiw-ru, без плагина:
                                без имени — список скиллов, с именем — SKILL.md,
                                с файлом — файл скилла (references/vocabulary.md)

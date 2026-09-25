@@ -403,7 +403,7 @@ def chosen(name: str | None = None) -> models.Model | None:
 
 
 def test_preferred_model(model_dir: Path, transformer_dir: Path, monkeypatch: pytest.MonkeyPatch):
-    """по умолчанию трансформер, без него LightGBM, без обеих — ничего"""
+    """без ModernBERT вероятность даёт трансформер, без него LightGBM, без обеих — ничего"""
     assert chosen() is models.TRANSFORMER
     assert chosen("lightgbm") is models.LIGHTGBM
     monkeypatch.setenv("AIW_RU_TRANSFORMER_DIR", str(transformer_dir / "нет"))
@@ -470,15 +470,16 @@ def test_cli_models_status(model_dir: Path, transformer_dir: Path, capsys: pytes
     assert "models install modernbert" in data["models"][0]["error"]
 
 
-def test_modernbert_is_opt_in_and_preferred(
+def test_modernbert_is_default_and_preferred(
     model_dir: Path,
     transformer_dir: Path,
     modernbert_dir: Path,
     texts: dict[str, str],
     capsys: pytest.CaptureFixture[str],
 ):
-    """точная модель ставится только по имени, а установленная даёт вероятность по умолчанию"""
-    assert [m.name for m in models.MODELS.values() if m.default] == ["transformer", "lightgbm"]
+    """без имени ставятся ModernBERT и LightGBM; трансформер только по имени, установленная ModernBERT
+    даёт вероятность раньше него"""
+    assert [m.name for m in models.MODELS.values() if m.default] == ["modernbert", "lightgbm"]
     assert chosen() is models.MODERNBERT
     _, out, _ = cli(capsys, "classify", "--json", texts["ai"])
     assert json.loads(out)["name"] == "modernbert"

@@ -1933,9 +1933,9 @@ class Bundle:
 
 
 BUNDLES = {
-    "cointegrated/rubert-tiny2": Bundle(REPO, "transformer", "tiny2", default=True),
+    "cointegrated/rubert-tiny2": Bundle(REPO, "transformer", "tiny2"),
     "deepvk/RuModernBERT-small": Bundle(
-        "toiletsandpaper/russian-ai-text-detector-modernbert", "modernbert", "modernbert"
+        "toiletsandpaper/russian-ai-text-detector-modernbert", "modernbert", "modernbert", default=True
     ),
     "sergeyzh/rubert-mini-frida": Bundle(
         "toiletsandpaper/russian-ai-text-detector-mini-frida", "mini-frida", "mini-frida"
@@ -1950,7 +1950,7 @@ BUNDLES = {
 
 
 def bundle_for(base: str) -> Bundle:
-    return BUNDLES.get(base, Bundle(REPO, "transformer", short_name(base), default=True))
+    return BUNDLES.get(base, Bundle(REPO, "transformer", short_name(base)))
 
 
 LICENSE_NAMES = {"mit": "MIT", "apache-2.0": "Apache 2.0"}
@@ -2289,7 +2289,7 @@ def _finalists_intro(m: dict) -> str:
     return (
         f"На полном train обучены {_nw(len(rows), 'база', 'базы', 'баз')} из пилота: самая быстрая, "
         f"`{fast['base']}`, самая точная, `{best['base']}`, и средняя по обоим, {bases}. Все они выпущены "
-        f"как модели aiw-ru: {name(fast)} ставится по умолчанию и считает быстрее всех, {name(best)} точнее "
+        f"как модели aiw-ru: {name(best)} точнее всех и ставится по умолчанию, {name(fast)} считает быстрее "
         f"всех, {names} — промежуточный вариант."
     )
 

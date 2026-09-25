@@ -79,8 +79,7 @@ MODERNBERT = Model(
     _ONNX_FILES,
     _ONNX_DEPENDENCIES,
     "AIW_RU_MODERNBERT_DIR",
-    default=False,
-    summary="самая точная, но тяжёлая и в несколько раз медленнее: для мощных машин и спорных текстов",
+    summary="самая точная: выбор по умолчанию, но тяжелее трансформера и в несколько раз медленнее",
 )
 MINI_FRIDA = Model(
     "mini-frida",
@@ -100,7 +99,8 @@ TRANSFORMER = Model(
     _ONNX_FILES,
     _ONNX_DEPENDENCIES,
     "AIW_RU_TRANSFORMER_DIR",
-    summary="почти так же точна, лёгкая и быстрая: выбор по умолчанию",
+    default=False,
+    summary="почти так же точна, лёгкая и в несколько раз быстрее ModernBERT: для слабой машины",
 )
 LIGHTGBM = Model(
     "lightgbm",
