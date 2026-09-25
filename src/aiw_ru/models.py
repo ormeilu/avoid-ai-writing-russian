@@ -80,7 +80,7 @@ MINI_FRIDA = Model(
     _ONNX_DEPENDENCIES,
     "AIW_RU_MINI_FRIDA_DIR",
     default=False,
-    summary="между ними: ROC AUC выше, чем у трансформера, но при пороге 50 % чаще принимает людей за ИИ; "
+    summary="ROC AUC выше, чем у трансформера, но при пороге 50 % чаще принимает людей за ИИ; "
     "в 4 раза тяжелее и в 3 раза медленнее",
 )
 TRANSFORMER = Model(
@@ -102,8 +102,10 @@ LIGHTGBM = Model(
     kind="lightgbm",
     summary="самая лёгкая, работает и без onnxruntime (Mac на Intel), но заметно менее точна",
 )
-# Порядок — предпочтение: первая установленная модель даёт вероятность по умолчанию.
-MODELS: dict[str, Model] = {m.name: m for m in (MODERNBERT, MINI_FRIDA, TRANSFORMER, LIGHTGBM)}
+# Порядок — предпочтение: первая установленная модель даёт вероятность по умолчанию. Модели идут
+# по доле людей, принятых за ИИ на test (4,3 %, 7,2 %, 9,5 %, 16,5 %), а не по ROC AUC: ошибиться
+# в человеке для скилла дороже, чем пропустить ИИ-текст.
+MODELS: dict[str, Model] = {m.name: m for m in (MODERNBERT, TRANSFORMER, MINI_FRIDA, LIGHTGBM)}
 LIGHTGBM_REPO = LIGHTGBM.repo
 
 

@@ -37,34 +37,6 @@
       "revision": "36fbd6ce9a31a8fb3f3904e9c7952a1d07242b7f"
     },
     {
-      "name": "mini-frida",
-      "title": "mini-frida",
-      "summary": "между ними: ROC AUC выше, чем у трансформера, но при пороге 50 % чаще принимает людей за ИИ; в 4 раза тяжелее и в 3 раза медленнее",
-      "repo": "toiletsandpaper/russian-ai-text-detector-mini-frida",
-      "default": false,
-      "base": "sergeyzh/rubert-mini-frida",
-      "license": "MIT",
-      "weights": "fp32",
-      "report": "docs/models/russian-ai-text-detector-mini-frida.md",
-      "quality": {
-        "roc_auc": 0.9909,
-        "accuracy": 0.9477,
-        "f1_macro": 0.9453,
-        "human_as_ai": 0.0946,
-        "roc_auc_created": 0.992,
-        "valid_roc_auc": 0.9916,
-        "test_texts": 52521
-      },
-      "download_mb": 126.3,
-      "measured": {
-        "load_ms": 161.7,
-        "short_ms": 5.8,
-        "long_ms": 56.1,
-        "ram_mb": 504.8
-      },
-      "revision": "70ccd5beb99ec3a4e4c0957c03f2bebe8e27f632"
-    },
-    {
       "name": "transformer",
       "title": "трансформер",
       "summary": "почти так же точна, лёгкая и быстрая: выбор по умолчанию",
@@ -91,6 +63,34 @@
         "ram_mb": 211.2
       },
       "revision": "732b6b7400b8b340357f0ab01d382206852180af"
+    },
+    {
+      "name": "mini-frida",
+      "title": "mini-frida",
+      "summary": "ROC AUC выше, чем у трансформера, но при пороге 50 % чаще принимает людей за ИИ; в 4 раза тяжелее и в 3 раза медленнее",
+      "repo": "toiletsandpaper/russian-ai-text-detector-mini-frida",
+      "default": false,
+      "base": "sergeyzh/rubert-mini-frida",
+      "license": "MIT",
+      "weights": "fp32",
+      "report": "docs/models/russian-ai-text-detector-mini-frida.md",
+      "quality": {
+        "roc_auc": 0.9909,
+        "accuracy": 0.9477,
+        "f1_macro": 0.9453,
+        "human_as_ai": 0.0946,
+        "roc_auc_created": 0.992,
+        "valid_roc_auc": 0.9916,
+        "test_texts": 52521
+      },
+      "download_mb": 126.3,
+      "measured": {
+        "load_ms": 161.7,
+        "short_ms": 5.8,
+        "long_ms": 56.1,
+        "ram_mb": 504.8
+      },
+      "revision": "70ccd5beb99ec3a4e4c0957c03f2bebe8e27f632"
     },
     {
       "name": "lightgbm",

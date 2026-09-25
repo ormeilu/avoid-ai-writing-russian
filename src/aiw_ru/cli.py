@@ -66,7 +66,7 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
   models                       необязательные модели: установлены ли и где лежат
   models info [имя]            качество, скорость, память и размер моделей до скачивания
   models install [имя…]        скачать модели с Hugging Face (нужен extra ml):
-                               modernbert, mini-frida, transformer, lightgbm; без имени —
+                               modernbert, transformer, mini-frida, lightgbm; без имени —
                                transformer и lightgbm, modernbert и mini-frida только по имени
   skill [имя] [файл]           текст скилла для агента, если стоит только aiw-ru, без плагина:
                                без имени — список скиллов, с именем — SKILL.md,
@@ -81,7 +81,7 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
   --min P0|P1|P2    показывать находки не ниже уровня (scan)
   --fail-above N    scan: код выхода 1, если оценка выше N
   --config ПУТЬ     файл калибровки (по умолчанию ./.aiw-ru.json, затем ~/.config/aiw-ru.json)
-  --model ИМЯ       scan, antiplagiat, classify: modernbert, mini-frida, transformer или lightgbm
+  --model ИМЯ       scan, antiplagiat, classify: modernbert, transformer, mini-frida или lightgbm
                     (по умолчанию первая установленная в этом порядке)
   --no-model        scan, antiplagiat: не показывать вероятность от модели, даже если она есть
   -h, --help        справка

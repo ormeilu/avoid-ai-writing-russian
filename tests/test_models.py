@@ -320,19 +320,32 @@ def test_modernbert_is_opt_in_and_preferred(
     assert json.loads(out)["name"] == "transformer"
 
 
-def test_models_ordered_by_accuracy():
-    """порядок предпочтения — по ROC AUC на test: ModernBERT, mini-frida, трансформер, LightGBM"""
-    assert list(models.MODELS) == ["modernbert", "mini-frida", "transformer", "lightgbm"]
+def test_models_ordered_by_false_ai():
+    """порядок предпочтения — по доле людей, принятых за ИИ на test: чем реже, тем раньше"""
+    assert list(models.MODELS) == ["modernbert", "transformer", "mini-frida", "lightgbm"]
+    cat = {e["name"]: e["quality"]["human_as_ai"] for e in models.catalog()["models"]}
+    rates = [cat[name] for name in models.MODELS]
+    assert rates == sorted(rates)
+    assert list(cat) == list(models.MODELS)  # models info печатает в том же порядке
 
 
-def test_mini_frida_is_opt_in_between_modernbert_and_transformer(
-    transformer_dir: Path, mini_frida_dir: Path, capsys: pytest.CaptureFixture[str], texts: dict[str, str]
+def test_mini_frida_is_opt_in_after_transformer(
+    transformer_dir: Path,
+    mini_frida_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    texts: dict[str, str],
 ):
-    """mini-frida ставится только по имени; установленная, она важнее трансформера"""
+    """mini-frida ставится только по имени; рядом с трансформером вероятность даёт трансформер,
+    mini-frida выбирается через --model или работает, если трансформера нет"""
     assert not models.MINI_FRIDA.default
-    assert chosen() is models.MINI_FRIDA
-    _, out, _ = cli(capsys, "classify", "--json", texts["ai"])
+    assert chosen() is models.TRANSFORMER
+    _, out, _ = cli(capsys, "classify", "--json", "--model", "mini-frida", texts["ai"])
     assert json.loads(out)["name"] == "mini-frida"
+    monkeypatch.setenv("AIW_RU_TRANSFORMER_DIR", str(transformer_dir / "нет"))
+    monkeypatch.setenv("AIW_RU_MODEL_DIR", str(transformer_dir / "нет"))
+    models.load.cache_clear()
+    assert chosen() is models.MINI_FRIDA
 
 
 def test_cli_unknown_model(capsys: pytest.CaptureFixture[str]):
