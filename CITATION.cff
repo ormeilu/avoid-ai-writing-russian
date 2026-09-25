@@ -11,7 +11,7 @@ authors:
     given-names: Ilya
     email: lubenets.ilya.igorevich@gmail.com
 license: MIT
-version: 2.0.0rc3
+version: 2.0.0rc4
 date-released: "2026-09-23"
 repository-code: "https://github.com/ormeilu/avoid-ai-writing-russian"
 url: "https://github.com/ormeilu/avoid-ai-writing-russian"

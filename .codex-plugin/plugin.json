@@ -1,6 +1,6 @@
 {
   "name": "avoid-ai-writing-russian",
-  "version": "2.0.0rc3",
+  "version": "2.0.0rc4",
   "description": "Аудит и правка русских текстов от ИИ-стиля; под-скилл antiplagiat для подготовки к проверке «Антиплагиатом».",
   "author": {
     "name": "Ilya Lubenets",
