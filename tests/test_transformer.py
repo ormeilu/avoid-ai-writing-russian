@@ -610,3 +610,28 @@ def test_bundle_hub_layout(tmp_path):
     hub = tt.bundle_hub(tmp_path, "onnx/model_int8.onnx")
     assert (hub / "model.onnx").read_text(encoding="utf-8") == "onnx/model_int8.onnx"
     assert (hub / "model_fp32.onnx").exists() and not (hub / "model_int8.onnx").exists()
+
+
+def test_base_revision_offline_uses_cached_snapshot(tmp_path, monkeypatch):
+    def offline(*_args, **_kwargs):
+        raise OSError("offline")
+
+    monkeypatch.setattr(tt.HfApi, "model_info", offline)
+    monkeypatch.setattr(tt, "HF_HUB_CACHE", str(tmp_path))
+    assert tt.base_revision("org/base") == ""
+    (tmp_path / "models--org--base" / "snapshots" / "abc123").mkdir(parents=True)
+    assert tt.base_revision("org/base") == "abc123"
+    (tmp_path / "models--org--base" / "snapshots" / "def456").mkdir()
+    assert tt.base_revision("org/base") == ""
+
+
+def test_batches_respect_token_budget():
+    lengths = np.array([10, 8000, 20, 4000, 30, 40, 8192, 50])
+    for rng in (None, np.random.default_rng(1)):
+        out = tt.batches(lengths, 4, rng, tokens=8192)
+        assert sorted(int(k) for b in out for k in b) == list(range(len(lengths)))
+        for b in out:
+            assert len(b) <= 4
+            assert len(b) == 1 or len(b) * int(lengths[b].max()) <= 8192
+    # без лимита по токенам — как раньше, по size текстов
+    assert [len(b) for b in tt.batches(lengths, 4, None)] == [4, 4]

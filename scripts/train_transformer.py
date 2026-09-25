@@ -58,6 +58,7 @@ import tokenizers
 import torch
 import transformers
 from huggingface_hub import HfApi, ModelCard, ModelCardData, hf_hub_download
+from huggingface_hub.constants import HF_HUB_CACHE
 from huggingface_hub.errors import HfHubHTTPError
 from sklearn.metrics import log_loss
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_linear_schedule_with_warmup
@@ -313,19 +314,33 @@ def encode_split(
     return enc
 
 
-def batches(lengths: np.ndarray, size: int, rng: np.random.Generator | None) -> list[np.ndarray]:
-    """Пачки из текстов близкой длины, чтобы меньше паддинга. С rng порядок пачек случайный."""
+def cut(order: np.ndarray, lengths: np.ndarray, size: int, tokens: int) -> list[np.ndarray]:
+    """Режет тексты, отсортированные по длине, на пачки до size текстов и до tokens токенов (ширина × тексты)."""
+    if not tokens:
+        return [order[i : i + size] for i in range(0, len(order), size)]
+    out, start = [], 0
+    for i in range(1, len(order) + 1):
+        # Ширина пачки — длина последнего, самого длинного текста.
+        if i == len(order) or i - start == size or (i + 1 - start) * int(lengths[order[i]]) > tokens:
+            out.append(order[start:i])
+            start = i
+    return out
+
+
+def batches(lengths: np.ndarray, size: int, rng: np.random.Generator | None, tokens: int = 0) -> list[np.ndarray]:
+    """Пачки из текстов близкой длины, чтобы меньше паддинга. С rng порядок пачек случайный.
+
+    tokens ограничивает пачку по токенам: с окном 8192 пачка из длинных текстов иначе не влезает в память.
+    """
     n = len(lengths)
     if rng is None:
-        order = np.argsort(lengths, kind="stable")
-        return [order[i : i + size] for i in range(0, n, size)]
+        return cut(np.argsort(lengths, kind="stable"), lengths, size, tokens)
     out: list[np.ndarray] = []
     perm = rng.permutation(n)
     pool = size * 64
     for i in range(0, n, pool):
         chunk = perm[i : i + pool]
-        chunk = chunk[np.argsort(lengths[chunk], kind="stable")]
-        out += [chunk[j : j + size] for j in range(0, len(chunk), size)]
+        out += cut(chunk[np.argsort(lengths[chunk], kind="stable")], lengths, size, tokens)
     return [out[k] for k in rng.permutation(len(out))]
 
 
@@ -423,11 +438,13 @@ def pad_multiple(device: torch.device) -> int:
 
 
 @torch.inference_mode()
-def predict_torch(model: Any, enc: Encoded, device: torch.device, precision: str, size: int, pad_id: int) -> np.ndarray:
+def predict_torch(
+    model: Any, enc: Encoded, device: torch.device, precision: str, size: int, pad_id: int, tokens: int = 0
+) -> np.ndarray:
     """Вероятность класса «ИИ» для каждого текста."""
     model.eval()
     out = np.zeros(len(enc), dtype=np.float32)
-    for idx in batches(enc.lengths, size, None):
+    for idx in batches(enc.lengths, size, None, tokens):
         ids, mask = collate(enc, idx, pad_id, pad_multiple(device))
         with autocast(device, precision):
             logits = model(
@@ -461,7 +478,13 @@ class Config:
     device: str
     precision: str
     raw: bool
+    batch_tokens: int = 0
     seed: int = SEED
+
+    @property
+    def eval_tokens(self) -> int:
+        # Без градиентов пачка при проверке может быть вдвое больше.
+        return 2 * self.batch_tokens
 
 
 def fit(cfg: Config, train: Encoded, valid: Encoded, out: Path, tok: Any) -> dict:
@@ -473,7 +496,7 @@ def fit(cfg: Config, train: Encoded, valid: Encoded, out: Path, tok: Any) -> dic
     _, _, pad_id = special_ids(tok)
     model: Any = load_classifier(cfg.base).to(device)
     rng = np.random.default_rng(cfg.seed)
-    per_epoch = -(-len(train) // cfg.batch)
+    per_epoch = len(batches(train.lengths, cfg.batch, None, cfg.batch_tokens))
     total = max(1, round(per_epoch * cfg.epochs))
     eval_every = max(1, per_epoch // max(1, cfg.evals_per_epoch))
     opt = torch.optim.AdamW(param_groups(model, cfg.weight_decay), lr=cfg.lr, fused=device.type == "cuda")
@@ -487,12 +510,14 @@ def fit(cfg: Config, train: Encoded, valid: Encoded, out: Path, tok: Any) -> dic
     started = last = time.perf_counter()
     stop = False
     print(
-        f"Обучение {cfg.base}: {len(train)} текстов, {total} шагов по {cfg.batch}, "
+        f"Обучение {cfg.base}: {len(train)} текстов, {total} шагов по {cfg.batch}"
+        + (f" и не больше {cfg.batch_tokens} токенов" if cfg.batch_tokens else "")
+        + ", "
         f"проверка на valid ({len(valid)}) каждые {eval_every} шагов",
         flush=True,
     )
     while step < total and not stop:
-        for idx in batches(train.lengths, cfg.batch, rng):
+        for idx in batches(train.lengths, cfg.batch, rng, cfg.batch_tokens):
             model.train()
             ids, mask = collate(train, idx, pad_id, pad_multiple(device))
             with autocast(device, precision):
@@ -522,7 +547,7 @@ def fit(cfg: Config, train: Encoded, valid: Encoded, out: Path, tok: Any) -> dic
                     "loss": loss_sum / loss_n,
                     "lr": sched.get_last_lr()[0],
                     "texts_per_second": speed,
-                    "eta_minutes": (total - step) * cfg.batch / speed / 60,
+                    "eta_minutes": (total - step) * seen / step / speed / 60,
                     "best_valid_roc_auc": best_auc,
                 }
                 print(
@@ -536,7 +561,7 @@ def fit(cfg: Config, train: Encoded, valid: Encoded, out: Path, tok: Any) -> dic
             if step % eval_every == 0 or step == total:
                 sync(device)
                 t0 = time.perf_counter()
-                p = predict_torch(model, valid, device, precision, cfg.eval_batch, pad_id)
+                p = predict_torch(model, valid, device, precision, cfg.eval_batch, pad_id, cfg.eval_tokens)
                 point = {
                     "step": step,
                     "epoch": round(step / per_epoch, 3),
@@ -626,10 +651,13 @@ def git_commit() -> str:
 
 
 def base_revision(base: str) -> str:
+    """Ревизия базы на Hugging Face; без сети (HF_HUB_OFFLINE=1) — единственный снимок в локальном кэше."""
     try:
         return HfApi().model_info(base).sha or ""
     except (HfHubHTTPError, OSError):
-        return ""
+        snaps = Path(HF_HUB_CACHE) / f"models--{base.replace('/', '--')}" / "snapshots"
+        found = [p.name for p in snaps.iterdir()] if snaps.is_dir() else []
+        return found[0] if len(found) == 1 else ""
 
 
 def short_name(base: str) -> str:
@@ -651,6 +679,7 @@ def cmd_fit(args: argparse.Namespace, pilot: bool) -> None:
         device=args.device,
         precision=args.precision,
         raw=args.raw,
+        batch_tokens=args.batch_tokens,
     )
     hf_logging.set_verbosity_error()
     pick_device(cfg.device)  # без GPU остановиться до токенизации, а не после
@@ -692,6 +721,7 @@ def cmd_fit(args: argparse.Namespace, pilot: bool) -> None:
             "epochs": cfg.epochs,
             "lr": cfg.lr,
             "batch": cfg.batch,
+            "batch_tokens": cfg.batch_tokens,
             "warmup": cfg.warmup,
             "weight_decay": cfg.weight_decay,
             "patience": cfg.patience,
@@ -711,7 +741,7 @@ def cmd_fit(args: argparse.Namespace, pilot: bool) -> None:
         device = pick_device(cfg.device)
         started = time.perf_counter()
         _, _, pad_id = special_ids(tok)
-        p = predict_torch(model.to(device), test, device, summary["precision"], cfg.eval_batch, pad_id)
+        p = predict_torch(model.to(device), test, device, summary["precision"], cfg.eval_batch, pad_id, cfg.eval_tokens)
         np.save(out / "test-probs.npy", p)
         run["dataset"]["test"] = len(test)
         run["params"]["truncated_share"]["test"] = float(test.truncated.mean())
@@ -2902,6 +2932,7 @@ def _reproduce_md(m: dict) -> str:
         train_args = (
             f"train --base {p['base']} --epochs {p['epochs']:g} --lr {p['lr']:g} --batch {p['batch']} "
             f"--max-length {p['max_length']} --evals-per-epoch {p['evals_per_epoch']} --patience {p['patience']}"
+            + (f" --batch-tokens {p['batch_tokens']}" if p.get("batch_tokens") else "")
         )
     fetch_flags = " --exclude 'emb-*' --exclude 'win-*'" if "head" in p else ""
     if p.get("probs_source") == "torch":
@@ -3281,6 +3312,9 @@ def add_fit(ap: argparse.ArgumentParser, pilot: bool) -> None:
     ap.add_argument("--lr", type=float, default=1e-4, help="пиковая скорость обучения AdamW")
     ap.add_argument("--batch", type=int, default=32, help="текстов в пачке")
     ap.add_argument("--eval-batch", type=int, default=128, help="текстов в пачке при проверке")
+    ap.add_argument(
+        "--batch-tokens", type=int, default=0, help="токенов в пачке, ширина × тексты (0 — без лимита; нужен при 8192)"
+    )
     ap.add_argument("--max-length", type=int, default=512, help="токенов на текст, дальше текст обрезается")
     ap.add_argument("--warmup", type=float, default=0.06, help="доля шагов разогрева скорости обучения")
     ap.add_argument("--weight-decay", type=float, default=0.01, help="затухание весов AdamW")
