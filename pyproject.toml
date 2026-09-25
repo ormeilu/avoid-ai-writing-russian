@@ -112,7 +112,14 @@ extra-paths = ["scripts", "evals"]
 # torch, transformers и onnx стоят только в группе transformer, которую CI не ставит.
 # Без неё ty не находит эти модули; с ней (uv run --group transformer ty check) проверяет полностью.
 [[tool.ty.overrides]]
-include = ["scripts/train_transformer.py", "scripts/colab_transformer.py", "tests/test_transformer.py", "tests/fixtures/tiny-transformer/make.py"]
+include = [
+    "scripts/train_transformer.py",
+    "scripts/colab_transformer.py",
+    "scripts/fast_modernbert.py",
+    "scripts/runtime_bench.py",
+    "tests/test_transformer.py",
+    "tests/fixtures/tiny-transformer/make.py",
+]
 
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"
