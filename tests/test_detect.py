@@ -97,6 +97,22 @@ def test_vague_attribution_is_p0():
     assert hit.severity == "P0"
 
 
+def test_fragment_is_source_text():
+    """фрагмент находки взят из исходника: с «ё» и как набран, его можно найти в файле"""
+    src = (
+        "Технология играет всё более важную роль в медицине. "
+        f"Исследование подчёркивает важность тестов, что делает его удобным. Дан{ZW}ный метод работает."
+    )
+    r = analyze(src)
+    fragments = [i.text for i in r.issues]
+    assert "всё более важную" in fragments
+    assert "подчёркивает" in fragments
+    assert f"Дан{ZW}ный метод" in fragments
+    for i in r.issues:
+        if i.type != "invisible-chars":  # у этой находки текст — число символов
+            assert src[i.index : i.index + len(i.text)] == i.text, i.type
+
+
 # ─── защищённое содержимое ──────────────────────────────────────────────
 
 

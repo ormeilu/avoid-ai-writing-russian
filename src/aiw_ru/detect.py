@@ -199,6 +199,11 @@ def _add(
     if ctx.mode == "chat" and type_ in SKIP_IN_CHAT:
         return
     src = ctx.p.to_source[index] if index < len(ctx.p.to_source) else index
+    # Фрагмент показывается как набран в исходнике (с «ё», невидимыми символами и подменёнными
+    # буквами), чтобы его можно было найти в файле. Сводки вроде «три штампа» остаются как есть.
+    end = index + len(text)
+    if text and end <= len(ctx.p.text) and ctx.p.text[index:end] == text:
+        text = ctx.p.source[src : ctx.p.to_source[end - 1] + 1]
     line, column = line_col(ctx.p.line_starts, src)
     ctx.issues.append(
         Issue(
