@@ -531,7 +531,8 @@ def long_doc(transformer_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(models, "UNIT", 1.0)
     monkeypatch.setenv("NO_COLOR", "1")
     path = tmp_path / "long.md"
-    path.write_text(LONG_DOC, encoding="utf-8")
+    # newline="": на Windows write_text иначе пишет \r\n, и в файле становится больше знаков.
+    path.write_text(LONG_DOC, encoding="utf-8", newline="")
     return str(path)
 
 
