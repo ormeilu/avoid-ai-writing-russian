@@ -325,7 +325,12 @@ aiw-ru classify текст.md
 
 ```python
 import json
+import os
 import re
+
+# Без этой строки onnxruntime 1.30 при импорте включает телеметрию Microsoft,
+# и процесс изредка падает на выходе (recursive_mutex lock failed, код 134).
+os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
 
 import numpy as np
 import onnxruntime as ort

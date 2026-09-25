@@ -468,6 +468,8 @@ def test_card_from_fake_metrics():
     assert "по первым \\\\(8\\\\) окнам" in body
     assert "$" not in body.split("```")[0]  # формулы переписаны для Hub
     assert not re.search(r"\S\\\\\(", body)
+    # пример на Python выключает телеметрию onnxruntime до импорта, иначе процесс может упасть на выходе
+    assert body.index('os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")') < body.index("import onnxruntime")
 
 
 def test_card_and_report_for_fp32_bundle():

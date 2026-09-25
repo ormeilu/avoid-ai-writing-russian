@@ -6,7 +6,7 @@
 
 ### Исправлено
 
-- На macOS процесс с моделью в ONNX (трансформер, ModernBERT, mini-frida) изредка падал на выходе с `libc++abi: terminating due to uncaught exception of type std::__1::system_error: recursive_mutex lock failed: Invalid argument` и кодом 134. Падала телеметрия onnxruntime 1.30: она включается при импорте, секунд через десять отправляет данные по сети, и если процесс завершается во время отправки, её поток обращается к уже разрушенному мьютексу. Теперь `aiw_ru.models` при импорте ставит `ORT_DISABLE_TELEMETRY=1`, если переменная не задана, так что при любом запуске `aiw-ru` телеметрия не включается.
+- На macOS процесс с моделью в ONNX (трансформер, ModernBERT, mini-frida) изредка падал на выходе с `libc++abi: terminating due to uncaught exception of type std::__1::system_error: recursive_mutex lock failed: Invalid argument` и кодом 134. Падала телеметрия onnxruntime 1.30: она включается при импорте, секунд через десять отправляет данные по сети, и если процесс завершается во время отправки, её поток обращается к уже разрушенному мьютексу. Теперь `aiw_ru.models` при импорте ставит `ORT_DISABLE_TELEMETRY=1`, если переменная не задана, так что при любом запуске `aiw-ru` телеметрия не включается. Пример на Python в карточках трансформера, ModernBERT и mini-frida ставит ту же переменную до импорта onnxruntime.
 
 ## [2.1.0] — 2026-09-25
 
