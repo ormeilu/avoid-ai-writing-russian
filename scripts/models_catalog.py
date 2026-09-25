@@ -115,8 +115,14 @@ def hub_files(model: Model) -> dict[str, Any]:
     try:
         info = HfApi().model_info(model.repo, files_metadata=True)
     except (HfHubHTTPError, httpx.HTTPError) as e:
-        print(f"{model.name}: нет данных с Hugging Face ({e}), размер остаётся прежним", file=sys.stderr)
-        return {}
+        # Без сети размер считается по скачанной копии: это те же файлы. Ревизию так не узнать.
+        local = models.local_path(model) if models.available(model) else None
+        if local is None:
+            print(f"{model.name}: нет данных с Hugging Face ({e}), размер остаётся прежним", file=sys.stderr)
+            return {}
+        print(f"{model.name}: нет данных с Hugging Face ({e}), размер по {local}", file=sys.stderr)
+        size = sum(f.stat().st_size for f in local.iterdir() if any(fnmatch(f.name, p) for p in model.files))
+        return {"download_mb": round(size / 2**20, 1)}
     size = sum(s.size or 0 for s in info.siblings or [] if any(fnmatch(s.rfilename, p) for p in model.files))
     return {"download_mb": round(size / 2**20, 1), "revision": info.sha}
 

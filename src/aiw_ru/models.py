@@ -72,6 +72,17 @@ MODERNBERT = Model(
     default=False,
     summary="самая точная, но тяжёлая и в несколько раз медленнее: для мощных машин и спорных текстов",
 )
+MINI_FRIDA = Model(
+    "mini-frida",
+    "mini-frida",
+    "toiletsandpaper/russian-ai-text-detector-mini-frida",
+    _ONNX_FILES,
+    _ONNX_DEPENDENCIES,
+    "AIW_RU_MINI_FRIDA_DIR",
+    default=False,
+    summary="между ними: ROC AUC выше, чем у трансформера, но при пороге 50 % чаще принимает людей за ИИ; "
+    "в 4 раза тяжелее и в 3 раза медленнее",
+)
 TRANSFORMER = Model(
     "transformer",
     "трансформер",
@@ -92,7 +103,7 @@ LIGHTGBM = Model(
     summary="самая лёгкая, работает и без onnxruntime (Mac на Intel), но заметно менее точна",
 )
 # Порядок — предпочтение: первая установленная модель даёт вероятность по умолчанию.
-MODELS: dict[str, Model] = {m.name: m for m in (MODERNBERT, TRANSFORMER, LIGHTGBM)}
+MODELS: dict[str, Model] = {m.name: m for m in (MODERNBERT, MINI_FRIDA, TRANSFORMER, LIGHTGBM)}
 LIGHTGBM_REPO = LIGHTGBM.repo
 
 
@@ -136,9 +147,9 @@ def missing_dependencies(model: Model = LIGHTGBM) -> list[str]:
 def local_path(model: Model = LIGHTGBM) -> Path | None:
     """Скачанная модель в кэше Hugging Face, без обращения к сети.
 
-    Переменная окружения модели (AIW_RU_MODEL_DIR для LightGBM, AIW_RU_TRANSFORMER_DIR
-    и AIW_RU_MODERNBERT_DIR для трансформеров) указывает на папку с моделью напрямую: так
-    проверяют только что обученную модель до выкладки и так работают тесты.
+    Переменная окружения модели (`Model.env`: AIW_RU_MODEL_DIR для LightGBM,
+    AIW_RU_TRANSFORMER_DIR и соседние для трансформеров) указывает на папку с моделью
+    напрямую: так проверяют только что обученную модель до выкладки и так работают тесты.
     """
     if override := os.environ.get(model.env):
         path = Path(override).expanduser()

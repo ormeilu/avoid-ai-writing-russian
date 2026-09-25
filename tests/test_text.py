@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from aiw_ru.text import blocks, cv, line_col, mattr, mean, prepare, sentences, words
+from aiw_ru.text import blocks, cv, line_col, mattr, mean, plural, prepare, sentences, words
 
 ZW = chr(0x200B)
 SHY = chr(0x00AD)
@@ -308,3 +308,11 @@ def test_line_col():
     assert line_col(p.line_starts, 0) == (1, 1)
     assert line_col(p.line_starts, 4) == (2, 2)
     assert line_col(p.line_starts, 6) == (3, 1)
+
+
+def test_plural_groups_thousands():
+    """согласование и разряды: «52 521 текст» с неразрывным пробелом, четырёхзначные слитно"""
+    nbsp = chr(0xA0)
+    assert plural(52521, "текст", "текста", "текстов") == f"52{nbsp}521 текст"
+    assert plural(1000, "текст", "текста", "текстов") == "1000 текстов"
+    assert plural(1234567, "слово", "слова", "слов") == f"1{nbsp}234{nbsp}567 слов"

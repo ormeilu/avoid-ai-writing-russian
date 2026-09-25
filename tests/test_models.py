@@ -141,10 +141,11 @@ def onnx_bundle(folder: Path) -> Path:
 
 @pytest.fixture
 def transformer_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """Трансформер из крошечного графа; ModernBERT из кэша разработчика не подхватывается."""
+    """Трансформер из крошечного графа; ModernBERT и mini-frida из кэша разработчика не подхватываются."""
     folder = onnx_bundle(tmp_path / "transformer")
     monkeypatch.setenv("AIW_RU_TRANSFORMER_DIR", str(folder))
     monkeypatch.setenv("AIW_RU_MODERNBERT_DIR", str(tmp_path / "нет"))
+    monkeypatch.setenv("AIW_RU_MINI_FRIDA_DIR", str(tmp_path / "нет"))
     models.load.cache_clear()
     yield folder
     models.load.cache_clear()
@@ -154,6 +155,15 @@ def transformer_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator
 def modernbert_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     folder = onnx_bundle(tmp_path / "modernbert")
     monkeypatch.setenv("AIW_RU_MODERNBERT_DIR", str(folder))
+    models.load.cache_clear()
+    yield folder
+    models.load.cache_clear()
+
+
+@pytest.fixture
+def mini_frida_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    folder = onnx_bundle(tmp_path / "mini-frida")
+    monkeypatch.setenv("AIW_RU_MINI_FRIDA_DIR", str(folder))
     models.load.cache_clear()
     yield folder
     models.load.cache_clear()
@@ -290,7 +300,7 @@ def test_cli_models_status(model_dir: Path, transformer_dir: Path, capsys: pytes
     data = json.loads(out)
     assert code == 0 and data["ready"]
     ready = {m["name"]: m["ready"] for m in data["models"]}
-    assert ready == {"modernbert": False, "transformer": True, "lightgbm": True}
+    assert ready == {"modernbert": False, "mini-frida": False, "transformer": True, "lightgbm": True}
     assert "models install modernbert" in data["models"][0]["error"]
 
 
@@ -308,6 +318,21 @@ def test_modernbert_is_opt_in_and_preferred(
     assert json.loads(out)["name"] == "modernbert"
     _, out, _ = cli(capsys, "classify", "--json", "--model", "transformer", texts["ai"])
     assert json.loads(out)["name"] == "transformer"
+
+
+def test_models_ordered_by_accuracy():
+    """порядок предпочтения — по ROC AUC на test: ModernBERT, mini-frida, трансформер, LightGBM"""
+    assert list(models.MODELS) == ["modernbert", "mini-frida", "transformer", "lightgbm"]
+
+
+def test_mini_frida_is_opt_in_between_modernbert_and_transformer(
+    transformer_dir: Path, mini_frida_dir: Path, capsys: pytest.CaptureFixture[str], texts: dict[str, str]
+):
+    """mini-frida ставится только по имени; установленная, она важнее трансформера"""
+    assert not models.MINI_FRIDA.default
+    assert chosen() is models.MINI_FRIDA
+    _, out, _ = cli(capsys, "classify", "--json", texts["ai"])
+    assert json.loads(out)["name"] == "mini-frida"
 
 
 def test_cli_unknown_model(capsys: pytest.CaptureFixture[str]):

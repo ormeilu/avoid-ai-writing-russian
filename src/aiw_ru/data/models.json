@@ -4,10 +4,64 @@
   "python": "3.14.6",
   "long_text_words": 800,
   "short_text_words": 60,
-  "packages_mb": null,
-  "packages_platform": null,
+  "packages_mb": 209,
+  "packages_platform": "darwin arm64",
   "dataset": "iitolstykh/LLMTrace_classification (ru), test",
   "models": [
+    {
+      "name": "modernbert",
+      "title": "ModernBERT",
+      "summary": "самая точная, но тяжёлая и в несколько раз медленнее: для мощных машин и спорных текстов",
+      "repo": "toiletsandpaper/russian-ai-text-detector-modernbert",
+      "default": false,
+      "base": "deepvk/RuModernBERT-small",
+      "license": "Apache-2.0",
+      "weights": "fp32",
+      "report": "docs/models/russian-ai-text-detector-modernbert.md",
+      "quality": {
+        "roc_auc": 0.993,
+        "accuracy": 0.962,
+        "f1_macro": 0.9607,
+        "human_as_ai": 0.0434,
+        "roc_auc_created": 0.9938,
+        "valid_roc_auc": 0.9935,
+        "test_texts": 52521
+      },
+      "download_mb": 137.7,
+      "measured": {
+        "load_ms": 187.4,
+        "short_ms": 16.5,
+        "long_ms": 93.4,
+        "ram_mb": 386.9
+      }
+    },
+    {
+      "name": "mini-frida",
+      "title": "mini-frida",
+      "summary": "между ними: ROC AUC выше, чем у трансформера, но при пороге 50 % чаще принимает людей за ИИ; в 4 раза тяжелее и в 3 раза медленнее",
+      "repo": "toiletsandpaper/russian-ai-text-detector-mini-frida",
+      "default": false,
+      "base": "sergeyzh/rubert-mini-frida",
+      "license": "MIT",
+      "weights": "fp32",
+      "report": "docs/models/russian-ai-text-detector-mini-frida.md",
+      "quality": {
+        "roc_auc": 0.9909,
+        "accuracy": 0.9477,
+        "f1_macro": 0.9453,
+        "human_as_ai": 0.0946,
+        "roc_auc_created": 0.992,
+        "valid_roc_auc": 0.9916,
+        "test_texts": 52521
+      },
+      "download_mb": 126.3,
+      "measured": {
+        "load_ms": 161.7,
+        "short_ms": 5.8,
+        "long_ms": 56.1,
+        "ram_mb": 504.8
+      }
+    },
     {
       "name": "transformer",
       "title": "трансформер",
@@ -15,7 +69,7 @@
       "repo": "toiletsandpaper/russian-ai-text-detector-bert",
       "default": true,
       "base": "cointegrated/rubert-tiny2",
-      "license": "mit",
+      "license": "MIT",
       "weights": "int8",
       "report": "docs/models/russian-ai-text-detector-bert.md",
       "quality": {
@@ -27,11 +81,12 @@
         "valid_roc_auc": 0.9877,
         "test_texts": 52521
       },
+      "download_mb": 30.7,
       "measured": {
-        "load_ms": 363.6,
-        "short_ms": 4.8,
-        "long_ms": 82.7,
-        "ram_mb": 228.6
+        "load_ms": 107.0,
+        "short_ms": 1.7,
+        "long_ms": 20.8,
+        "ram_mb": 211.2
       }
     },
     {
@@ -53,11 +108,12 @@
         "valid_roc_auc": 0.9422,
         "test_texts": 52521
       },
+      "download_mb": 10.0,
       "measured": {
-        "load_ms": 1600.2,
-        "short_ms": 4.1,
-        "long_ms": 18.2,
-        "ram_mb": 183.2
+        "load_ms": 685.9,
+        "short_ms": 1.5,
+        "long_ms": 11.4,
+        "ram_mb": 186.7
       }
     }
   ]

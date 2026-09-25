@@ -329,11 +329,12 @@ def words(s: str) -> list[str]:
 
 
 def plural(n: int, one: str, few: str, many: str) -> str:
-    """«1 слово», «2 слова», «5 слов»."""
+    """«1 слово», «2 слова», «5 слов»; от 10 000 разряды через неразрывный пробел."""
     d = n % 10
     dd = n % 100
     form = one if d == 1 and dd != 11 else few if 2 <= d <= 4 and (dd < 12 or dd > 14) else many
-    return f"{n} {form}"
+    num = f"{n:,}".replace(",", "\u00a0") if abs(n) >= 10000 else str(n)
+    return f"{num} {form}"
 
 
 BlockKind = Literal["prose", "heading", "list", "table", "quote", "code", "empty"]

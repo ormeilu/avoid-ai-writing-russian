@@ -118,7 +118,8 @@ aiw-ru skill avoid-ai-writing-russian
 
 - трансформер: дообученный русский BERT в ONNX, около 30 МБ, работает на CPU без torch ([карточка](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-bert));
 - LightGBM на признаках детектора: около 10 МБ, легче и быстрее, но заметно менее точный ([карточка](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-lightgbm));
-- ModernBERT: самый точный, но около 140 МБ и в несколько раз медленнее трансформера; ставится только по имени, `aiw-ru models install modernbert` ([карточка](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-modernbert)).
+- ModernBERT: самый точный, но около 140 МБ и в несколько раз медленнее трансформера; ставится только по имени, `aiw-ru models install modernbert` ([карточка](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-modernbert));
+- mini-frida: по ROC AUC между ModernBERT и трансформером, около 130 МБ и в 3 раза медленнее трансформера, а при пороге 50 % чаще принимает людей за ИИ; ставится только по имени, `aiw-ru models install mini-frida` ([карточка](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-mini-frida)).
 
 Вместе со скиллами модели не ставятся, агент предложит их сам и поставит, только если вы согласитесь. Вручную:
 
