@@ -185,13 +185,21 @@ def load_tokenizer(path: str | Path) -> Any:
     return tok
 
 
-def load_classifier(path: str | Path) -> Any:
-    """Модель с головой на два класса: 0 — человек, 1 — ИИ."""
+def load_classifier(path: str | Path, sliding_window: int = 0) -> Any:
+    """Модель с головой на два класса: 0 — человек, 1 — ИИ.
+
+    sliding_window задаёт полуширину локального окна ModernBERT. В config.json у
+    deepvk/RuModernBERT-small есть и local_attention: 128, и sliding_window: 128;
+    transformers 5 читает второй как полуширину, и окно выходит ±128, а исходный
+    ModernBERT с local_attention: 128 смотрел на ±64.
+    """
+    extra = {"sliding_window": sliding_window} if sliding_window else {}
     return AutoModelForSequenceClassification.from_pretrained(
         path,
         num_labels=2,
         id2label=dict(enumerate(LABELS)),
         label2id={name: k for k, name in enumerate(LABELS)},
+        **extra,
     )
 
 
@@ -484,6 +492,7 @@ class Config:
     precision: str
     raw: bool
     batch_tokens: int = 0
+    sliding_window: int = 0
     seed: int = SEED
 
     @property
@@ -499,7 +508,9 @@ def fit(cfg: Config, train: Encoded, valid: Encoded, out: Path, tok: Any) -> dic
     print(f"Устройство: {device.type} ({gpu_name(device)}), точность {precision}: {why}", flush=True)
     seed_everything(cfg.seed)
     _, _, pad_id = special_ids(tok)
-    model: Any = load_classifier(cfg.base).to(device)
+    model: Any = load_classifier(cfg.base, cfg.sliding_window).to(device)
+    if cfg.sliding_window:
+        print(f"Локальное окно: ±{model.config.sliding_window} токенов", flush=True)
     rng = np.random.default_rng(cfg.seed)
     per_epoch = len(batches(train.lengths, cfg.batch, None, cfg.batch_tokens))
     total = max(1, round(per_epoch * cfg.epochs))
@@ -685,6 +696,7 @@ def cmd_fit(args: argparse.Namespace, pilot: bool) -> None:
         precision=args.precision,
         raw=args.raw,
         batch_tokens=args.batch_tokens,
+        sliding_window=args.sliding_window,
     )
     hf_logging.set_verbosity_error()
     pick_device(cfg.device)  # без GPU остановиться до токенизации, а не после
@@ -727,6 +739,9 @@ def cmd_fit(args: argparse.Namespace, pilot: bool) -> None:
             "lr": cfg.lr,
             "batch": cfg.batch,
             "batch_tokens": cfg.batch_tokens,
+            # Окно, с которым модель училась, и ключ --sliding-window, если окно задавалось руками.
+            "sliding_window": getattr(model.config, "sliding_window", None),
+            "sliding_window_arg": cfg.sliding_window,
             "warmup": cfg.warmup,
             "weight_decay": cfg.weight_decay,
             "patience": cfg.patience,
@@ -2949,6 +2964,7 @@ def _reproduce_md(m: dict) -> str:
             f"train --base {p['base']} --epochs {p['epochs']:g} --lr {p['lr']:g} --batch {p['batch']} "
             f"--max-length {p['max_length']} --evals-per-epoch {p['evals_per_epoch']} --patience {p['patience']}"
             + (f" --batch-tokens {p['batch_tokens']}" if p.get("batch_tokens") else "")
+            + (f" --sliding-window {p['sliding_window_arg']}" if p.get("sliding_window_arg") else "")
         )
     fetch_flags = " --exclude 'emb-*' --exclude 'win-*'" if "head" in p else ""
     if p.get("probs_source") == "torch":
@@ -3330,6 +3346,12 @@ def add_fit(ap: argparse.ArgumentParser, pilot: bool) -> None:
     ap.add_argument("--eval-batch", type=int, default=128, help="текстов в пачке при проверке")
     ap.add_argument(
         "--batch-tokens", type=int, default=0, help="токенов в пачке, ширина × тексты (0 — без лимита; нужен при 8192)"
+    )
+    ap.add_argument(
+        "--sliding-window",
+        type=int,
+        default=0,
+        help="полуширина локального окна ModernBERT (0 — как в config.json базы)",
     )
     ap.add_argument("--max-length", type=int, default=512, help="токенов на текст, дальше текст обрезается")
     ap.add_argument("--warmup", type=float, default=0.06, help="доля шагов разогрева скорости обучения")
