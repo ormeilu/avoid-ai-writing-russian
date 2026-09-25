@@ -35,7 +35,7 @@
         "python",
         "uv"
       ],
-      "version": "2.0.0rc2",
+      "version": "2.0.0rc3",
       "author": {
         "name": "Ilya Lubenets",
         "email": "lubenets.ilya.igorevich@gmail.com",
@@ -49,6 +49,6 @@
   ],
   "metadata": {
     "description": "Русская адаптация avoid-ai-writing: чистка ИИ-стиля и подготовка к «Антиплагиату».",
-    "version": "2.0.0rc2"
+    "version": "2.0.0rc3"
   }
 }
