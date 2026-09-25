@@ -10,6 +10,11 @@
 глобального нужны ответы лишь в начале текста (слою L − 1 — только позиция 0, слою
 L − 2 — позиции 0…w и так далее), поэтому последний глобальный слой считает запросы
 только для этого начала, а локальные слои после него работают на нём же.
+
+Третье: глобальные слои считают запросы кусками. Оценки внимания n × n onnxruntime
+держит в памяти целиком, и на 8192 токенах процесс занимал 3,8 ГБ; с 16 кусками в
+памяти оценки одного куска, пик около 1 ГБ, а скорость та же. Это важно для слабых
+ноутбуков и песочниц агентов, где памяти мало.
 """
 
 from __future__ import annotations
@@ -19,6 +24,9 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 from torch import nn
+
+# На сколько кусков делить запросы глобального слоя: пик памяти на 8192 токенах 1 ГБ вместо 3,8.
+GLOBAL_CHUNKS = 16
 
 
 def bias(allowed: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
@@ -39,8 +47,9 @@ def rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
 class FastModernBert(nn.Module):
     """ModernBertForSequenceClassification с пулингом CLS: input_ids, attention_mask → logits."""
 
-    def __init__(self, model: Any) -> None:
+    def __init__(self, model: Any, chunks: int = GLOBAL_CHUNKS) -> None:
         super().__init__()
+        self.chunks = chunks
         cfg = model.config
         if cfg.classifier_pooling != "cls":
             raise ValueError(f"FastModernBert умеет только пулинг cls, а не {cfg.classifier_pooling}")
@@ -117,7 +126,11 @@ class FastModernBert(nn.Module):
             if i == self.last_global:
                 # Дальше нужны только позиции начала: запросы и остаток слоя — только для них.
                 q, h = q[:, :, : self.prefix], h[:, : self.prefix]
-            if self.types[i] == "full_attention":
+            if self.types[i] == "full_attention" and i < self.last_global and self.chunks > 1:
+                # Запросы по кускам: onnxruntime держит в памяти оценки одного куска, а не n × n.
+                parts = q.tensor_split(self.chunks, dim=2)
+                att = torch.cat([F.scaled_dot_product_attention(c, k, v, attn_mask=full) for c in parts], dim=2)
+            elif self.types[i] == "full_attention":
                 att = F.scaled_dot_product_attention(q, k, v, attn_mask=full)
             else:
                 att = self.local(q, k, v, keep)

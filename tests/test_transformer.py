@@ -660,6 +660,20 @@ def test_batches_respect_token_budget():
     assert [len(b) for b in tt.batches(lengths, 4, None)] == [4, 4]
 
 
+@pytest.fixture
+def one_thread():
+    """torch в процессе pytest — только в один поток.
+
+    conftest.py загружает libomp LightGBM первой, и torch, запустив потоки OpenMP, падает по SIGSEGV.
+    """
+    import torch
+
+    before = torch.get_num_threads()
+    torch.set_num_threads(1)
+    yield
+    torch.set_num_threads(before)
+
+
 def tiny_modernbert(pooling: str = "cls", layers: int = 7):
     from transformers import ModernBertConfig, ModernBertForSequenceClassification
 
@@ -683,14 +697,15 @@ def tiny_modernbert(pooling: str = "cls", layers: int = 7):
     return ModernBertForSequenceClassification(cfg).eval()
 
 
+@pytest.mark.parametrize("chunks", [1, 16])
 @pytest.mark.parametrize("lengths", [[1], [3], [8], [9], [40], [57, 5, 30], [200, 17]])
-def test_fast_modernbert_matches_transformers(lengths):
+def test_fast_modernbert_matches_transformers(lengths, chunks, one_thread):
     import torch
 
     from fast_modernbert import FastModernBert
 
     model = tiny_modernbert()
-    fast = FastModernBert(model).eval()
+    fast = FastModernBert(model, chunks).eval()
     # 7 слоёв, глобальные 0, 3, 6: после последнего глобального слоёв нет, проверим и такой случай
     assert fast.prefix == 1
     n = max(lengths)
@@ -706,7 +721,7 @@ def test_fast_modernbert_matches_transformers(lengths):
 
 
 @pytest.mark.parametrize("layers", [8, 9])
-def test_fast_modernbert_tail_after_last_global(layers):
+def test_fast_modernbert_tail_after_last_global(layers, one_thread):
     import torch
 
     from fast_modernbert import FastModernBert
@@ -721,7 +736,7 @@ def test_fast_modernbert_tail_after_last_global(layers):
         assert torch.allclose(fast(ids, mask), model(input_ids=ids, attention_mask=mask).logits, atol=1e-5)
 
 
-def test_fast_modernbert_needs_cls_pooling():
+def test_fast_modernbert_needs_cls_pooling(one_thread):
     from fast_modernbert import FastModernBert
 
     with pytest.raises(ValueError, match="cls"):
