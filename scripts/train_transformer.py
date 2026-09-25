@@ -697,6 +697,7 @@ def cmd_fit(args: argparse.Namespace, pilot: bool) -> None:
         raw=args.raw,
         batch_tokens=args.batch_tokens,
         sliding_window=args.sliding_window,
+        seed=args.seed,
     )
     hf_logging.set_verbosity_error()
     pick_device(cfg.device)  # без GPU остановиться до токенизации, а не после
@@ -2965,6 +2966,7 @@ def _reproduce_md(m: dict) -> str:
             f"--max-length {p['max_length']} --evals-per-epoch {p['evals_per_epoch']} --patience {p['patience']}"
             + (f" --batch-tokens {p['batch_tokens']}" if p.get("batch_tokens") else "")
             + (f" --sliding-window {p['sliding_window_arg']}" if p.get("sliding_window_arg") else "")
+            + (f" --seed {p['seed']}" if p.get("seed", SEED) != SEED else "")
         )
     fetch_flags = " --exclude 'emb-*' --exclude 'win-*'" if "head" in p else ""
     if p.get("probs_source") == "torch":
@@ -3353,6 +3355,7 @@ def add_fit(ap: argparse.ArgumentParser, pilot: bool) -> None:
         default=0,
         help="полуширина локального окна ModernBERT (0 — как в config.json базы)",
     )
+    ap.add_argument("--seed", type=int, default=SEED, help="сид: порядок пачек и начальные веса головы")
     ap.add_argument("--max-length", type=int, default=512, help="токенов на текст, дальше текст обрезается")
     ap.add_argument("--warmup", type=float, default=0.06, help="доля шагов разогрева скорости обучения")
     ap.add_argument("--weight-decay", type=float, default=0.01, help="затухание весов AdamW")
