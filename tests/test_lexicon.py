@@ -10,8 +10,25 @@ from aiw_ru.compat import jsre
 
 ROOT = Path(__file__).parent.parent
 
-# U+200B–U+200D, U+2060 и BOM. Собираются через chr(), чтобы в исходнике не было самих символов.
-INVISIBLE_RE = regex.compile("[" + chr(0x200B) + "-" + chr(0x200D) + chr(0x2060) + chr(0xFEFF) + "]")
+# U+200B–U+200D, U+2060, BOM, знаки направления текста и монгольский разделитель.
+# Собираются через chr(), чтобы в исходнике не было самих символов.
+INVISIBLE_RE = regex.compile(
+    "["
+    + chr(0x200B)
+    + "-"
+    + chr(0x200F)
+    + chr(0x2060)
+    + chr(0xFEFF)
+    + chr(0x061C)
+    + chr(0x180E)
+    + chr(0x202A)
+    + "-"
+    + chr(0x202E)
+    + chr(0x2066)
+    + "-"
+    + chr(0x2069)
+    + "]"
+)
 
 
 def test_every_type_has_label_and_weight():

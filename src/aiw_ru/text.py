@@ -126,19 +126,37 @@ def _spoofed(s: str) -> bool:
     return len(head) <= 2 and lower_next
 
 
+# Знаки направления текста: метки LRM, RLM и ALM, встраивания и переопределения
+# U+202A–U+202E, изоляторы U+2066–U+2069. Клавиатурой в русском тексте не набираются.
+BIDI = frozenset(map(chr, [0x200E, 0x200F, 0x061C, *range(0x202A, 0x202F), *range(0x2066, 0x206A)]))
+# Монгольский разделитель гласных: законен только внутри монгольского слова.
+MVS = chr(0x180E)
 # Символы, которые удаляются из текста перед поиском.
-STRIPPED = frozenset(map(chr, [0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF, 0x00AD]))
+STRIPPED = frozenset(map(chr, [0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF, 0x00AD])) | BIDI | {MVS}
 SOFT_HYPHEN = chr(0x00AD)
 BOM = chr(0xFEFF)
 ZWJ = chr(0x200D)
 HYPHENS = frozenset(map(chr, [0x2010, 0x2011]))
 EMOJI_BEFORE_ZWJ = jsre("(?:\\p{Extended_Pictographic}|\\p{Emoji_Modifier}|\\uFE0F)$", "u")
 EMOJI_AFTER_ZWJ = jsre("^\\p{Extended_Pictographic}", "u")
+RTL_RE = jsre("[\\p{Script=Hebrew}\\p{Script=Arabic}\\p{Script=Syriac}\\p{Script=Thaana}\\p{Script=Nko}]", "u")
+MONGOLIAN_RE = jsre("\\p{Script=Mongolian}", "u")
 
 
 def _joins_emoji(s: str, i: int) -> bool:
     """U+200D между частями эмодзи (👨 + 💻) — соединитель, а не вставка."""
     return bool(EMOJI_BEFORE_ZWJ.search(s[max(0, i - 2) : i])) and bool(EMOJI_AFTER_ZWJ.search(s[i + 1 : i + 3]))
+
+
+def _legit_control(s: str, i: int) -> bool:
+    """Знак направления рядом с ивритом или арабским и разделитель внутри монгольского слова — не вставка."""
+    ch = s[i]
+    if ch in BIDI:
+        # Сам знак ALM (U+061C) относится к арабскому письму, поэтому смотрим только на соседей.
+        return bool(RTL_RE.search(s[max(0, i - 3) : i] + " " + s[i + 1 : i + 4]))
+    if ch == MVS:
+        return bool(MONGOLIAN_RE.search(s[i - 1 : i])) and bool(MONGOLIAN_RE.search(s[i + 1 : i + 2]))
+    return False
 
 
 @dataclass(slots=True)
@@ -165,7 +183,8 @@ class Prepared:
     prose: str
     # Смещение в `text` → смещение в `source`.
     to_source: list[int]
-    # Невидимые вставки. BOM в начале текста и соединитель внутри эмодзи сюда не входят.
+    # Невидимые вставки. BOM в начале текста, соединитель внутри эмодзи и знаки направления
+    # рядом с ивритом или арабским сюда не входят.
     invisible: list[Invisible]
     # Позиции мягких переносов (U+00AD) в исходнике: их ставят Word и копирование из PDF.
     soft_hyphens: list[int]
@@ -251,7 +270,11 @@ def prepare(source: str) -> Prepared:
         if ch in STRIPPED:
             if ch == SOFT_HYPHEN:
                 soft_hyphens.append(i)
-            elif not (ch == BOM and i == 0) and not (ch == ZWJ and _joins_emoji(source, i)):
+            elif (
+                not (ch == BOM and i == 0)
+                and not (ch == ZWJ and _joins_emoji(source, i))
+                and not _legit_control(source, i)
+            ):
                 invisible.append(Invisible(i, ch))
             continue
         # Неразрывный дефис и U+2010 с клавиатуры не набрать, их ставят модели; для словарей это обычный дефис.

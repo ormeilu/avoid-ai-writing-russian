@@ -379,6 +379,10 @@ CATALOG_EXAMPLES: list[tuple[str, str, ContextMode]] = [
     ("Безусловно, метод работает.", "confidence", "general"),
     ("Эта статья заслуживает внимания.", "vague-endorsement", "general"),
     ("Хотя результаты впечатляют, вопрос остается открытым.", "false-concession", "general"),
+    ("Хотите, я сокращу его до 100 слов?", "chat-wrapper", "general"),
+    ("Вот вариант поста:\n\nМы запустили сервис.", "chat-wrapper", "general"),
+    ("Исследование подчёркивает важность сна. Недосып может привести к ошибкам.", "model-idiolect", "general"),
+    ("Мы долго думали, как описать результаты эксперимента, и в итоге решили,", "truncated", "general"),
 ]
 
 CATALOG_LEGIT: list[tuple[str, str, ContextMode]] = [
@@ -392,6 +396,11 @@ CATALOG_LEGIT: list[tuple[str, str, ContextMode]] = [
     ("Настроили Wi-Fi-роутер для IT-отдела.", "homoglyph", "general"),
     ("Задача #12 закрыта, цвет #1a2b3c.", "hashtag-stuffing", "general"),
     ("Представим отсортированный массив из десяти чисел и найдём медиану.", "speculative-opener", "general"),
+    ("Если нужно, могу подготовить сводку к пятнице.", "chat-wrapper", "general"),
+    ("Кстати, если интересно, могу расписать бюджет поездки.", "chat-wrapper", "social"),
+    ("Министр подчёркивает, что сроки не изменятся.", "model-idiolect", "general"),
+    ("Неверный ключ может привести к ошибке. Это позволяет найти её раньше.", "model-idiolect", "technical"),
+    ("Отчёт готов.\n\nС уважением,", "truncated", "general"),
 ]
 
 

@@ -15,7 +15,16 @@ from dataclasses import dataclass, field
 import regex
 
 from aiw_ru.compat import fixed, js_round, jsre, to_fixed, total, trim
-from aiw_ru.lexicon import ACADEMIC_FORMULAS, ALL_LEXICON, PHRASE3, TECHNICAL_TERMS, TIER2, TIER3, LexEntry
+from aiw_ru.lexicon import (
+    ACADEMIC_FORMULAS,
+    ALL_LEXICON,
+    IDIOLECT,
+    PHRASE3,
+    TECHNICAL_TERMS,
+    TIER2,
+    TIER3,
+    LexEntry,
+)
 from aiw_ru.text import Block, Prepared, Sentence, blocks, cv, line_col, mattr, mean, plural, prepare, sentences, words
 from aiw_ru.types import AnalysisResult, ContextMode, Issue, Severity, Stats
 
@@ -31,6 +40,8 @@ WEIGHTS: dict[str, float] = {
     "placeholder": 8,
     "cutoff": 10,
     "chatbot": 8,
+    "chat-wrapper": 6,
+    "truncated": 4,
     "sycophancy": 6,
     "vague-attribution": 5,
     "significance": 5,
@@ -41,6 +52,7 @@ WEIGHTS: dict[str, float] = {
     "tier3": 1,
     "phrase3": 1,
     "phrase3-cluster": 3,
+    "model-idiolect": 3,
     "calque": 3,
     "template": 3,
     "transition": 1.5,
@@ -97,6 +109,8 @@ TYPE_LABELS: dict[str, str] = {
     "placeholder": "Незаполненная заглушка",
     "cutoff": "Оговорка об отсечке знаний",
     "chatbot": "След чат-бота",
+    "chat-wrapper": "Обвязка ответа чата",
+    "truncated": "Текст оборван на полуслове",
     "sycophancy": "Угодливость",
     "vague-attribution": "Размытая ссылка на авторитет",
     "significance": "Раздувание значимости",
@@ -107,6 +121,7 @@ TYPE_LABELS: dict[str, str] = {
     "tier3": "Перегруженное слово",
     "phrase3": "Фразовый штамп",
     "phrase3-cluster": "Скопление фразовых штампов",
+    "model-idiolect": "Почерк модели",
     "calque": "Калька с английского",
     "template": "Шаблонная конструкция",
     "transition": "Шаблонный переход",
@@ -222,7 +237,10 @@ def _hits_range(rs: list[tuple[int, int]], index: int, length: int) -> bool:
 
 
 # ─── Словарные правила ──────────────────────────────────────────────────
-_CLUSTER_ONLY = frozenset(id(e) for e in (*TIER2, *TIER3, *PHRASE3))
+_CLUSTER_ONLY = frozenset(id(e) for e in (*TIER2, *TIER3, *PHRASE3, *IDIOLECT))
+# Почерк модели: находка, если в тексте столько разных оборотов. Один оборот есть
+# у 1,9 % человеческих текстов LLMTrace, два и больше — у 0,1 % (у моделей 1,5 %).
+IDIOLECT_MIN = 2
 
 
 def _detect_lexicon(ctx: _Ctx, bs: list[Block]) -> None:
@@ -320,13 +338,40 @@ def _detect_lexicon(ctx: _Ctx, bs: list[Block]) -> None:
             "три и больше разных штампов — так варьирует шаблоны модель",
         )
 
+    # Почерк модели: считается число разных оборотов, а не плотность. Каждый оборот
+    # даёт одну находку в первом месте, где встретился.
+    if mode != "chat":
+        idioms: dict[str, tuple[int, str]] = {}
+        for e in IDIOLECT:
+            if not _applies(e, mode):
+                continue
+            for m in e.re.finditer(p.prose):
+                if not _hits_range(exempt, m.start(), len(m.group())):
+                    idioms[e.id] = (m.start(), m.group())
+                    break
+        if len(idioms) >= IDIOLECT_MIN:
+            for id_, (idx, text) in idioms.items():
+                _add(
+                    ctx,
+                    "model-idiolect",
+                    id_,
+                    "P1",
+                    idx,
+                    text,
+                    f"{plural(len(idioms), 'оборот', 'оборота', 'оборотов')} из почерка модели в одном тексте: "
+                    "сказать прямо, что произошло и с каким результатом",
+                )
+
 
 # ─── Технические отпечатки ──────────────────────────────────────────────
 CHAT_MARKUP_RE = jsre(
     "\\uE200[^\\uE201\\n]{0,200}\\uE201|[\\uE200-\\uE204]|citeturn\\d+\\w*"
     "|(?<![\\p{L}\\d])turn\\d+(?:search|news|file|image|view|fetch|video|product|academia)\\d+"
     "|【\\d+(?::\\d+)?†[^】\\n]{0,80}】|contentReference\\[oaicite:\\d+\\](?:\\{index=\\d+\\})?"
-    "|oai_citation|\\[attached_file:\\d+\\]|grok_card",
+    "|oai_citation|\\[attached_file:\\d+\\]|grok_render_citation_card_json|grok_card|attributableIndex"
+    "|\\]\\(sandbox:/mnt/data/|:::writing\\{variant=|\\[cite:\\s*\\d+(?:\\s*,\\s*\\d+)*\\]|\\[citation:\\s*\\d+\\]"
+    "|\\[span_\\d+\\]\\((?:start|end)_span\\)|vertexaisearch\\.cloud\\.google\\.com/grounding-api-redirect"
+    "|</?think>",
     "gu",
 )
 AI_URL_RE = jsre(
@@ -395,6 +440,58 @@ def _detect_fingerprints(ctx: _Ctx) -> None:
     ):
         for m in pattern.finditer(p.no_code):
             _add(ctx, type_, type_, "P0", m.start(), m.group(), hint)
+
+
+# ─── Обвязка ответа чата и обрыв генерации ──────────────────────────────
+# Строка-подводка к ответу: «Вот вариант поста:», «Ниже несколько версий:». «Вот
+# несколько вариантов» ловит chatbot. «Вот три варианта:» пишут и авторы статей, а
+# документация — «Ниже приведены варианты запуска:», поэтому числа не входят,
+# а в режиме technical правило не действует.
+LEAD_IN_RE = jsre(
+    "^[ \\t]*(?:\\*\\*)?(?:вот[ \\t]+(?:другой[ \\t]+|еще[ \\t]+один[ \\t]+"
+    "|(?:альтернативн|готов|возможн|обновленн|исправленн|улучшенн|переработанн|сокращенн|доработанн)\\p{L}*[ \\t]+)?"
+    "|ниже[ \\t]+несколько[ \\t]+)(?:вариант|верси|черновик)\\p{L}*[^\\n:]{0,60}:[ \\t*]*$",
+    "gimu",
+)
+# Слова, на которых фраза не кончается: предлоги, союзы, «который». Строчные:
+# «В» в конце строки чаще значит вольты.
+DANGLING_RE = jsre(
+    "(?<![\\p{L}\\d:;])(?:и|в|на|с|к|по|за|для|от|до|из|об|при|без|через|а|но|или|чтобы|котор\\p{L}+)$", "u"
+)
+TRAILING_COMMA_RE = jsre("\\p{L},$", "u")
+TOKEN_RE = jsre("[^ \\t]+", "g")
+TRUNCATED_MIN_WORDS = 8
+
+
+def _detect_chat_leftovers(ctx: _Ctx, bs: list[Block]) -> None:
+    mode = ctx.mode
+    if mode == "chat":
+        return
+    if mode != "technical":
+        for m in LEAD_IN_RE.finditer(ctx.p.prose):
+            _add(ctx, "chat-wrapper", "подводка", "P1", m.start(), m.group(), "удалить подводку, оставить сам текст")
+    # Обрыв генерации: последний блок текста — абзац прозы, его последняя строка длинная
+    # и кончается запятой или словом, на котором фраза кончиться не может. Заголовок,
+    # список, таблица, цитата, код и короткая подпись («С уважением,») не считаются.
+    last = next((b for b in reversed(bs) if b.kind != "empty"), None)
+    if last is None or last.kind != "prose":
+        return
+    raw = ctx.p.text[last.start : last.end]
+    line = trim(raw[raw.rfind("\n") + 1 :])
+    if len(words(line)) < TRUNCATED_MIN_WORDS:
+        return
+    if TRAILING_COMMA_RE.search(line) or DANGLING_RE.search(line):
+        # Находка показывает последние шесть слов строки.
+        tail = line[[t.start() for t in TOKEN_RE.finditer(line)][-6:][0] :]
+        _add(
+            ctx,
+            "truncated",
+            "cut-off",
+            "P1",
+            last.start + raw.rfind(tail),
+            tail,
+            "текст обрывается на полуслове: дописать фразу по источнику или убрать оборванный хвост",
+        )
 
 
 # ─── Типографика ────────────────────────────────────────────────────────
@@ -858,7 +955,7 @@ def _detect_stylometry(ctx: _Ctx, bs: list[Block], prose_sentences: list[list[Se
 AGGREGATE = frozenset(
     (
         "uniform-sentences uniform-paragraphs low-diversity transition-run passive-run tier2-cluster "
-        "phrase3-cluster tier3 invisible-chars soft-hyphen"
+        "phrase3-cluster tier3 invisible-chars soft-hyphen model-idiolect truncated"
     ).split()
 )
 
@@ -925,6 +1022,7 @@ def analyze_internal(source: str, context: ContextMode = "general") -> tuple[Ana
     ctx = _Ctx(p, context, word_count)
 
     _detect_fingerprints(ctx)
+    _detect_chat_leftovers(ctx, bs)
     _detect_lexicon(ctx, bs)
     _detect_typography(ctx, bs)
     _detect_structure(ctx, bs, prose_sentences)

@@ -125,6 +125,30 @@ def test_bom_and_emoji_joiner_not_insertions():
     assert len(prepare(f"Текст{BOM} дальше").invisible) == 1
 
 
+@pytest.mark.parametrize("code", [0x200E, 0x200F, 0x061C, 0x202A, 0x202E, 0x2066, 0x2069, 0x180E])
+def test_bidi_and_mongolian_separator_are_insertions(code: int):
+    """знаки направления текста и монгольский разделитель в русском слове — вставки"""
+    p = prepare(f"Ра{chr(code)}бота готова.")
+    assert p.text == "Работа готова."
+    assert [i.index for i in p.invisible] == [2]
+
+
+def test_bidi_next_to_rtl_and_mongolian_separator_inside_word_not_insertions():
+    """метка направления рядом с ивритом и разделитель внутри монгольского слова законны"""
+    hebrew = ch(0x05E9, 0x05DC, 0x05D5, 0x05DD)
+    assert prepare(f"Он написал {hebrew}{chr(0x200E)} (2019).").invisible == []
+    assert prepare(f"Цитата {chr(0x2067)}{hebrew}{chr(0x2069)} в тексте.").invisible == []
+    mongolian = ch(0x182E, 0x1823, 0x180E, 0x1829)
+    assert prepare(f"Слово {mongolian} по-монгольски.").invisible == []
+
+
+def test_narrow_nbsp_is_not_insertion():
+    """узкий неразрывный пробел U+202F — законная типографика чисел, а не вставка"""
+    p = prepare(f"Итого 10{chr(0x202F)}000 рублей.")
+    assert p.invisible == []
+    assert len(p.text) == len(p.source)
+
+
 def test_nonbreaking_hyphens_become_plain():
     """неразрывный дефис и U+2010 становятся обычным дефисом без сдвига"""
     src = f"по{chr(0x2011)}настоящему и кто{chr(0x2010)}то"
