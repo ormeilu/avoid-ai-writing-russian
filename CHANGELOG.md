@@ -4,7 +4,9 @@
 
 ## [Не выпущено]
 
-Стабильный выпуск 2.0. Вместе с предварительными выпусками 2.0.0rc1–2.0.0rc4 в него вошли детектор на Python и пакет `aiw-ru` на PyPI вместо TypeScript и Bun, `aiw-ru skill` для агентов без плагина, четыре необязательные модели с Hugging Face (ModernBERT, трансформер на rubert-tiny2, mini-frida и LightGBM) со справкой `models info` и сравнением `classify --all`, каталог примет по темам и сверка фактов в `validate`. Подробности в разделах rc ниже.
+## [2.0.0] — 2026-09-25
+
+Стабильный выпуск 2.0. Вместе с предварительными выпусками 2.0.0rc1–2.0.0rc4 в него вошли детектор на Python и пакет `aiw-ru` на PyPI вместо TypeScript и Bun, `aiw-ru skill` для агентов без плагина, четыре необязательные модели с Hugging Face (ModernBERT, трансформер на rubert-tiny2, mini-frida и LightGBM) со справкой `models info` и сравнением `classify --all`, каталог примет по темам и сверка фактов в `validate`. Подробности в разделах этих rc в [CHANGELOG.md](https://github.com/ormeilu/avoid-ai-writing-russian/blob/master/CHANGELOG.md).
 
 ### Изменено
 
