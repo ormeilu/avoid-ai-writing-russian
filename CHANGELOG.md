@@ -4,6 +4,8 @@
 
 ## [Не выпущено]
 
+## [2.0.0rc2] — 2026-09-25
+
 ### Добавлено
 
 - Вторая необязательная модель: дообученный русский трансформер в ONNX ([toiletsandpaper/russian-ai-text-detector-bert](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-bert)). Работает на CPU через onnxruntime, без torch. Если стоят обе модели, вероятность в `scan`, `antiplagiat` и `classify` даёт трансформер. В основе `cointegrated/rubert-tiny2` в int8, файл около 30 МБ. На test русской части LLMTrace ROC AUC 0.987 и accuracy 0.945 (у LightGBM 0.943 и 0.868), человеческих текстов, принятых за ИИ, 7.2 %; замеры относятся к ревизии `a05ddce` на Hugging Face. Отчёт об обучении в `docs/models/russian-ai-text-detector-bert.md`, скрипты `scripts/train_transformer.py` и `scripts/colab_transformer.py`.
