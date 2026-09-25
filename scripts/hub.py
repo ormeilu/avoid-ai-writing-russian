@@ -74,7 +74,11 @@ _INLINE_MATH = re.compile(r"\$([^$\n]+?)\$")
 
 
 def hub_math(text: str) -> str:
-    """Hub рисует строчные формулы только в \\\\(…\\\\), а GitHub — в $…$."""
+    """Hub рисует строчные формулы только в \\\\(…\\\\), а GitHub — в $…$.
+
+    Hub не узнаёт формулу, если перед \\\\( стоит не пробел («(\\\\(1\\\\)», «–\\\\(5\\\\)»),
+    поэтому тексты карточки обходятся без таких мест; это проверяет тест.
+    """
     parts = _CODE.split(text)
     return "".join(
         part if i % 2 else _INLINE_MATH.sub(lambda f: f"\\\\({f[1]}\\\\)", part) for i, part in enumerate(parts)
@@ -164,8 +168,8 @@ def _auc(x: float | None) -> str:
 
 
 def _bucket(b: str) -> str:
-    """«50–149» → $50$–$149$, «400 и больше» → $400$ и больше."""
-    return re.sub(r"\d+", lambda d: f"${d[0]}$", b)
+    """«50–149» → $50\\text{–}149$ одной формулой, «400 и больше» → $400$ и больше."""
+    return re.sub(r"(\d+)(?:–(\d+))?", lambda d: f"${d[1]}\\text{{–}}{d[2]}$" if d[2] else f"${d[1]}$", b)
 
 
 def _features_table(features: list[dict]) -> str:
@@ -331,10 +335,10 @@ below.
 ## Данные
 
 Русская часть [LLMTrace classification](https://huggingface.co/datasets/{DATASET})
-([статья](https://arxiv.org/abs/2509.21269)): {count(ds["train"])} текстов в train,
-число деревьев подобрано по потере на valid ({count(ds["valid"])} текстов),
-итоговые цифры на test ({count(ds["test"])} текстов), который модель при обучении
-не видела. Подробный отчёт об обучении с командами для воспроизведения:
+([статья](https://arxiv.org/abs/2509.21269)). Модель обучена на {count(ds["train"])} текстах
+из train, число деревьев подобрано по потере на {count(ds["valid"])} текстах из valid,
+итоговые цифры посчитаны на {count(ds["test"])} текстах из test, которые модель при
+обучении не видела. Подробный отчёт об обучении с командами для воспроизведения:
 [{REPORT_PATH}]({GITHUB}/blob/master/{REPORT_PATH}).
 
 {_results(m)}
@@ -364,8 +368,8 @@ print(booster.predict([features(text)])[0])  # вероятность, что т
 ```
 
 Признаки считает `aiw_ru.features` той же версии, на которой модель обучена.
-Версия признаков записана в `features.json` ({count(m["features_version"])}), версия
-aiw-ru при обучении {m["aiw_ru_version"]}.
+Номер версии признаков записан в `features.json`, сейчас это {count(m["features_version"])};
+версия aiw-ru при обучении {m["aiw_ru_version"]}.
 
 ## Признаки
 

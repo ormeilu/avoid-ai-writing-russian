@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -187,6 +188,9 @@ def test_hub_math():
     card = str(hub.card(fake_metrics(), "someone/model"))
     assert "\\\\(0.950\\\\)" in card and "$0.950$" not in card
     assert "0,95" not in card and "ai-generated-text-detection" in card
+    # Hub рисует формулу, только если перед \\( пробел или начало строки.
+    assert not re.search(r"\S\\\\\(", card.split("\n---\n", 1)[1])
+    assert hub._bucket("50–149") == "$50\\text{–}149$" and hub._bucket("400 и больше") == "$400$ и больше"
 
 
 def test_card_describes_top_features():
