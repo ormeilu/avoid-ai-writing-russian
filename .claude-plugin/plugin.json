@@ -30,7 +30,7 @@
     "claude-code",
     "codex",
     "agent-skills",
-    "bun",
-    "typescript"
+    "python",
+    "uv"
   ]
 }

@@ -3,6 +3,8 @@ on:
   push:
     branches: [master]
   pull_request:
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -10,33 +12,24 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.12", "3.14"]
     steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          bun-version: latest
-      - run: bun install --frozen-lockfile
-      - run: bun test
+          version: "0.12.18"
+          python-version: ${{ matrix.python }}
+      - run: uv run --locked --group dev --group train pytest
   checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          bun-version: latest
-      - run: bun install --frozen-lockfile
-      - run: bun run lint
-      - run: bun run typecheck
-      - run: bun scripts/check-versions.ts
-      - name: Документация проходит собственный детектор
-        run: bun run selfscan
-      - run: bun run build
-  prek:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-      - run: bun install --frozen-lockfile
-      - uses: j178/prek-action@v2
+          version: "0.12.18"
+      - name: Хуки prek на всех файлах
+        run: uv run --locked --group dev --group train prek run --all-files --show-diff-on-failure
+      - name: Сборка пакета
+        run: uv build
+      - name: Собранный пакет ставится и запускается
+        run: uvx --from "$(ls dist/*.whl)" aiw-ru --help

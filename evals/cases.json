@@ -1,5 +1,5 @@
 {
-  "$comment": "Поведенческие проверки скиллов. Запуск: bun run eval [--case ID] [--agent КОМАНДА]. Проверки описаны в evals/grade.ts.",
+  "$comment": "Поведенческие проверки скиллов. Запуск: uv run python evals/run.py [--case ID] [--agent КОМАНДА]. Проверки описаны в evals/grade.py.",
   "cases": [
     {
       "id": "blog-rewrite",

@@ -3,8 +3,10 @@
 [![CI](https://github.com/ormeilu/avoid-ai-writing-russian/actions/workflows/ci.yml/badge.svg)](https://github.com/ormeilu/avoid-ai-writing-russian/actions/workflows/ci.yml)
 [![Выпуск](https://img.shields.io/github/v/release/ormeilu/avoid-ai-writing-russian?label=выпуск)](https://github.com/ormeilu/avoid-ai-writing-russian/releases)
 [![Лицензия: MIT](https://img.shields.io/badge/лицензия-MIT-blue.svg)](LICENSE)
-[![Bun](https://img.shields.io/badge/Bun-1.1%2B-black?logo=bun)](https://bun.sh)
-[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
+[![PyPI](https://img.shields.io/pypi/v/aiw-ru?label=PyPI)](https://pypi.org/project/aiw-ru/)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776ab?logo=python&logoColor=white)](pyproject.toml)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+[![Модель на Hugging Face](https://img.shields.io/badge/Hugging%20Face-aiw--ru--lightgbm-ffd21e?logo=huggingface)](https://huggingface.co/toiletsandpaper/aiw-ru-lightgbm)
 [![prek](https://img.shields.io/badge/хуки-prek-orange)](https://prek.j178.dev)
 [![Апстрим](https://img.shields.io/badge/апстрим-avoid--ai--writing-555)](https://github.com/conorbronsdon/avoid-ai-writing)
 
@@ -12,7 +14,7 @@
   <img src="docs/demo.gif" alt="Детектор aiw-ru находит 14 примет ИИ-стиля в рекламном абзаце, ставит правке 0/100, проверяет сохранность чисел и оценивает главу по фрагментам в духе «Антиплагиата»" width="800">
 </p>
 
-Скилл для ИИ-агентов (Claude Code, Codex, Cursor и других), который находит и убирает из русских текстов приметы машинной генерации: канцелярит, кальки с английского, «не просто X, а Y», тире-связки, одинаковый ритм предложений. К нему прилагается детектор на TypeScript для Bun и под-скилл `antiplagiat`, который оценивает текст по фрагментам в духе модуля ИИ-детекции системы «Антиплагиат».
+Скилл для ИИ-агентов (Claude Code, Codex, Cursor и других), который находит и убирает из русских текстов приметы машинной генерации: канцелярит, кальки с английского, «не просто X, а Y», тире-связки, одинаковый ритм предложений. К нему прилагается детектор на Python (`aiw-ru`) и под-скилл `antiplagiat`, который оценивает текст по фрагментам в духе модуля ИИ-детекции системы «Антиплагиат».
 
 Это русская адаптация [avoid-ai-writing](https://github.com/conorbronsdon/avoid-ai-writing) Конора Бронсдона. Устройство скилла взято оттуда, каталог примет переписан под русский язык, детектор написан заново. Подробности в разделе [«Благодарности»](#благодарности).
 
@@ -64,11 +66,11 @@ claude plugin marketplace add ormeilu/avoid-ai-writing-russian
 claude plugin install avoid-ai-writing-russian@avoid-ai-writing-russian
 ```
 
-Плагин ставит оба скилла, `avoid-ai-writing-russian` и `antiplagiat`, вместе с детектором.
+Плагин ставит оба скилла, `avoid-ai-writing-russian` и `antiplagiat`, вместе с детектором. Детектору нужен [uv](https://docs.astral.sh/uv/getting-started/installation/).
 
 ### Claude Code, Codex и другие агенты: папка скилла
 
-Клонируйте репозиторий и скопируйте папки скиллов туда, где агент их ищет. Детектор лежит в корне репозитория, поэтому для команд `bun ../../src/cli.ts …` удобнее ссылка, а не копия:
+Клонируйте репозиторий и скопируйте папки скиллов туда, где агент их ищет. Детектор лежит в корне репозитория, а скиллы зовут его командой `uv run --project ../.. aiw-ru …`, поэтому удобнее ссылка, а не копия:
 
 ```bash
 git clone https://github.com/ormeilu/avoid-ai-writing-russian.git ~/src/avoid-ai-writing-russian
@@ -86,13 +88,29 @@ ln -s ~/src/avoid-ai-writing-russian/skills/antiplagiat ~/.claude/skills/antipla
 
 ### Детектор
 
-Нужен [Bun](https://bun.sh) 1.1 или новее. Зависимостей во время работы у детектора нет, `bun install` нужен только для разработки. Без Bun скилл работает, но проверки будут только модельными, и он об этом скажет.
+Скиллам нужен [uv](https://docs.astral.sh/uv/getting-started/installation/): при первом запуске он сам поставит Python 3.12 или новее и зависимости детектора (regex, rich, pydantic). Без uv скилл работает, но проверки будут только модельными, и он об этом скажет.
 
-Собрать один исполняемый файл без зависимостей:
+Отдельно от скиллов детектор ставится из PyPI:
 
 ```bash
-bun run build
+uv tool install aiw-ru
 ```
+
+Или запускается без установки: `uvx aiw-ru scan статья.md`. Подойдёт и `pip install aiw-ru`.
+
+### Необязательная модель
+
+Кроме правил, у детектора есть модель LightGBM, обученная на русской части корпуса LLMTrace: она оценивает вероятность, что текст написала модель. Вместе со скиллами она не ставится, агент предложит её сам и поставит, только если вы согласитесь. Вручную:
+
+```bash
+uv tool install "aiw-ru[ml]"
+```
+
+```bash
+aiw-ru models install
+```
+
+Файлы модели (около 10 МБ) скачиваются с [Hugging Face](https://huggingface.co/toiletsandpaper/aiw-ru-lightgbm) в общий кэш `~/.cache/huggingface`. Карточка модели там же: результаты на LLMTrace по жанрам, длине текста и моделям-генераторам.
 
 ## Как пользоваться
 
@@ -136,26 +154,30 @@ bun run build
 ## Детектор
 
 ```bash
-bun src/cli.ts scan статья.md --context vak
+aiw-ru scan статья.md --context vak
 ```
 
 ```bash
-bun src/cli.ts antiplagiat глава1.md
+aiw-ru antiplagiat глава1.md
 ```
 
 ```bash
-bun src/cli.ts validate исходник.md правка.md
+aiw-ru validate исходник.md правка.md
 ```
 
 ```bash
-bun src/cli.ts calibrate --doc глава1.md --marked глава1-подсвечено.txt
+aiw-ru calibrate --doc глава1.md --marked глава1-подсвечено.txt
 ```
 
 ```bash
-bun src/cli.ts calibrate --doc глава2.md --share 34
+aiw-ru calibrate --doc глава2.md --share 34
 ```
 
-`scan` печатает оценку 0–100, статистику ритма и таблицу находок: уровень P0–P2, строка и столбец, примета, фрагмент и подсказка. Таблица подстраивается под ширину терминала, длинный текст переносится внутри ячейки. Цвет включается только в терминале; `NO_COLOR=1` его выключает, `FORCE_COLOR=1` включает принудительно. Параметр `--json` даёт машиночитаемый вывод, `--fail-above N` возвращает код 1, если оценка выше N (удобно в CI для документации).
+```bash
+aiw-ru classify статья.md
+```
+
+`scan` печатает оценку 0–100, статистику ритма и таблицу находок: уровень P0–P2, строка и столбец, примета, фрагмент и подсказка. Таблица подстраивается под ширину терминала, длинный текст переносится внутри ячейки. Цвет включается только в терминале; `NO_COLOR=1` его выключает, `FORCE_COLOR=1` включает принудительно. Параметр `--json` даёт машиночитаемый вывод, `--jsonl` проверяет пачку документов (по документу в строке, `{"text": "…"}`, ответ тоже по строке на документ), `--fail-above N` возвращает код 1, если оценка выше N (удобно в CI для документации).
 
 `antiplagiat` делит текст на фрагменты (абзацы, короткие склеиваются), описывает каждый семью признаками и переводит их в вероятность логистической моделью. Признаки: плотность примет, однообразие длины предложений, типичная для моделей длина предложения, канцелярит, бедная пунктуация, однообразные начала предложений, бедный словарь. Доля ИИ-текста считается по знакам, как в отчёте системы.
 
@@ -163,15 +185,18 @@ bun src/cli.ts calibrate --doc глава2.md --share 34
 
 `calibrate` дообучает модель `antiplagiat` на ваших отчётах. Лучше всего работает разметка фрагментов: текстовый файл с кусками, которые система подсветила как сгенерированные, по одному на абзац через пустую строку. Собирать его руками не обязательно: агент выпишет фрагменты сам из PDF отчёта или скриншотов. Если под рукой только итоговая цифра, передайте её через `--share`: так подстраивается общая строгость модели, но не веса признаков. Образцы накапливаются в `.aiw-ru.json`, и с каждым отчётом оценка точнее отражает поведение системы на ваших текстах. Отчёты, где система ничего не пометила, тоже пригодятся: это примеры человеческого текста. В файле калибровки только модель и числовые признаки фрагментов, самого текста там нет. В общий репозиторий его всё равно не коммитьте: `antiplagiat` читает `.aiw-ru.json` из текущей папки, и ваша калибровка исказит оценку соавторам (в этом репозитории файл уже в `.gitignore`). Текст есть в файлах с фрагментами из отчётов, их держите вне публичных репозиториев.
 
-Из TypeScript:
+`classify` отвечает вероятностью от необязательной модели LightGBM: какая доля похожих текстов в корпусе LLMTrace написана моделью. Без установленной модели команда подскажет, как её поставить. Если модель есть, `scan` и `antiplagiat` показывают эту вероятность рядом со своей оценкой.
 
-```ts
-// bun add github:ormeilu/avoid-ai-writing-russian
-import { analyze, antiplagiat, validate } from "avoid-ai-writing-russian";
+Из Python:
 
-const result = analyze(text, { context: "academic" });
-console.log(result.score, result.issues.length);
+```python
+from aiw_ru import analyze
+
+result = analyze(text, "academic")
+print(result.score, len(result.issues))
 ```
+
+Результаты — модели pydantic: `result.to_dict()` даёт тот же JSON, что и `aiw-ru scan --json`.
 
 ## Что ловит каталог
 
@@ -201,34 +226,38 @@ console.log(result.score, result.issues.length);
 ## Разработка
 
 ```bash
-bun install
+uv sync --group dev --group train
 ```
 
 ```bash
-prek install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push
+uv run prek install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push
 ```
 
 ```bash
-bun run check
+uv run pytest
 ```
 
-`bun run check` прогоняет линтер и форматтер (Biome), проверку типов, тесты, самопроверку документации детектором и синхронность версий. Тесты покрывают разбор текста, каждое правило детектора, корпус живых и шаблонных текстов шести жанров, CLI, скрипты выпуска и сами скиллы: шапки SKILL.md, ссылки, связь разделов каталога с типами находок детектора, примеры из каталога.
+```bash
+uv run prek run --all-files
+```
 
-Поведение скилла на живом агенте проверяет `bun run eval`: двенадцать случаев (защищённые цитаты, попытка внедрить инструкцию в текст, ловушка на выдуманные числа, режим только поиска и другие) с автоматической оценкой ответа. В CI этот прогон не входит.
+`uv sync --group dev --group train` ставит детектор, инструменты разработки (группа `dev`) и зависимости для обучения модели (группа `train`); без групп ставится только детектор, как у пользователя скилла. Хуки prek прогоняют ruff, ty, самопроверку документации детектором и синхронность версий. Тесты покрывают разбор текста, каждое правило детектора, корпус живых и шаблонных текстов шести жанров, CLI, скрипты выпуска и сами скиллы: шапки SKILL.md, ссылки, связь разделов каталога с типами находок детектора, примеры из каталога.
+
+Поведение скилла на живом агенте проверяет `uv run python evals/run.py`: двенадцать случаев (защищённые цитаты, попытка внедрить инструкцию в текст, ловушка на выдуманные числа, режим только поиска и другие) с автоматической оценкой ответа. В CI этот прогон не входит.
 
 Хуки prek перед коммитом проверяют гигиену файлов, секреты, формат, типы, невидимые символы и сообщение коммита (на русском); перед отправкой запускают тесты. Правила участия — в [CONTRIBUTING.md](CONTRIBUTING.md), история изменений — в [CHANGELOG.md](CHANGELOG.md).
 
 ## Выпуски
 
 ```bash
-bun run release patch
+uv run python scripts/release.py patch
 ```
 
 ```bash
 git push --follow-tags
 ```
 
-Скрипт переносит раздел «Не выпущено» из CHANGELOG в новую версию, обновляет версию во всех манифестах, скиллах и `CITATION.cff`, делает коммит и тег. По тегу GitHub Actions собирает бинарники `aiw-ru` под Linux, macOS и Windows, архив скиллов с контрольными суммами и публикует [выпуск](https://github.com/ormeilu/avoid-ai-writing-russian/releases) с заметками из CHANGELOG.
+Скрипт переносит раздел «Не выпущено» из CHANGELOG в новую версию, обновляет версию в `pyproject.toml`, манифестах, скиллах и `CITATION.cff`, делает коммит и тег. По тегу GitHub Actions публикует пакет на [PyPI](https://pypi.org/project/aiw-ru/) через доверенную публикацию (без токенов в секретах) и создаёт [выпуск](https://github.com/ormeilu/avoid-ai-writing-russian/releases) с архивом скиллов, контрольными суммами и заметками из CHANGELOG.
 
 ## Как сослаться
 

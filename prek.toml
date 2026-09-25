@@ -5,7 +5,7 @@
 #   prek install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push
 #
 # Порядок задан приоритетами: сначала дешёвые проверки файлов и секретов
-# (0–10), потом форматирование и линтер (20), потом типы и проектные
+# (0–10), потом линтер (20) и форматирование (21), потом типы и проектные
 # проверки (30), тесты — только перед отправкой (pre-push).
 
 [[repos]]
@@ -39,51 +39,59 @@ hooks = [
   { id = "yamlfmt", priority = 10 },
 ]
 
-# Проектные хуки: Bun и сам детектор.
+# Проектные хуки: скрипты на Python через uv и сам детектор.
 [[repos]]
 repo = "local"
 hooks = [
   {
     id = "invisible-chars",
     name = "нет невидимых символов и латиницы внутри русских слов",
-    entry = "bun scripts/check-invisible.ts",
+    entry = "uv run python scripts/check_invisible.py",
     language = "system",
-    types_or = ["ts", "markdown", "json", "yaml"],
+    types_or = ["python", "ts", "markdown", "json", "yaml"],
     # Запись terminalizer хранит ANSI-коды вида \u001b[1mтекст: это не подмена букв.
     exclude = '^docs/demo/aiw-demo\.yml$',
     priority = 5,
   },
   {
-    id = "biome",
-    name = "Biome: формат и линтер",
-    entry = "bunx biome check --write --no-errors-on-unmatched --files-ignore-unknown=true",
+    id = "ruff-check",
+    name = "Ruff: линтер",
+    entry = "uv run --group dev ruff check --fix",
     language = "system",
-    types_or = ["ts", "json"],
-    exclude = '^bun\.lock$',
+    types = ["python"],
     priority = 20,
+  },
+  # Формат после линтера: оба переписывают файлы, в одном приоритете они шли бы параллельно.
+  {
+    id = "ruff-format",
+    name = "Ruff: формат",
+    entry = "uv run --group dev ruff format",
+    language = "system",
+    types = ["python"],
+    priority = 21,
   },
   {
     id = "typecheck",
-    name = "TypeScript: проверка типов",
-    entry = "bunx tsc --noEmit",
+    name = "ty: проверка типов",
+    entry = "uv run --group dev --group train ty check",
     language = "system",
-    types = ["ts"],
+    types = ["python"],
     pass_filenames = false,
     priority = 30,
   },
   {
     id = "versions",
     name = "версия одинакова во всех файлах",
-    entry = "bun scripts/check-versions.ts",
+    entry = "uv run python scripts/check_versions.py",
     language = "system",
-    files = '^(package\.json|\.claude-plugin/plugin\.json|\.codex-plugin/plugin\.json|skills/.+/SKILL\.md)$',
+    files = '^(pyproject\.toml|uv\.lock|CITATION\.cff|\.claude-plugin/(plugin|marketplace)\.json|\.codex-plugin/plugin\.json|skills/.+/SKILL\.md)$',
     pass_filenames = false,
     priority = 30,
   },
   {
     id = "selfscan",
     name = "документация проходит собственный детектор",
-    entry = "bun src/cli.ts scan --context docs --min P1 --fail-above 30",
+    entry = "uv run aiw-ru scan --context docs --min P1 --fail-above 30",
     language = "system",
     files = '^(README|CONTRIBUTING|AGENTS|CLAUDE|NOTICE|CHANGELOG)\.md$|^skills/.+\.md$',
     priority = 30,
@@ -91,14 +99,14 @@ hooks = [
   {
     id = "commit-msg",
     name = "сообщение коммита на русском",
-    entry = "bun scripts/check-commit-msg.ts",
+    entry = "uv run python scripts/check_commit_msg.py",
     language = "system",
     stages = ["commit-msg"],
   },
   {
     id = "tests",
-    name = "bun test",
-    entry = "bun test",
+    name = "pytest",
+    entry = "uv run --group dev --group train pytest",
     language = "system",
     pass_filenames = false,
     always_run = true,

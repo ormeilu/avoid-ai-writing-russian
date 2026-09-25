@@ -32,8 +32,8 @@
         "claude-code",
         "codex",
         "agent-skills",
-        "bun",
-        "typescript"
+        "python",
+        "uv"
       ],
       "version": "1.0.0",
       "author": {

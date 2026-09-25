@@ -1,0 +1,95 @@
+[project]
+name = "aiw-ru"
+version = "1.0.0"
+description = "Приметы ИИ-стиля в русском тексте: канцелярит, кальки, шаблонная структура; оценка по фрагментам в духе «Антиплагиата»"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "NOTICE.md"]
+authors = [{ name = "Ilya Lubenets", email = "lubenets.ilya.igorevich@gmail.com" }]
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.13.5",
+    "regex>=2026.9.10",
+    "rich>=15.0.0",
+]
+keywords = ["russian", "ai-detection", "ai-writing", "antiplagiat", "канцелярит", "editing", "style", "claude-code"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Console",
+  "Intended Audience :: Education",
+  "Intended Audience :: Science/Research",
+  "Natural Language :: Russian",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Topic :: Text Processing :: Linguistic",
+  "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+# Необязательная модель LightGBM (aiw-ru models install); без неё всё остальное работает.
+ml = ["huggingface-hub>=1.33.0", "lightgbm>=4.7.0"]
+
+[project.urls]
+Homepage = "https://github.com/ormeilu/avoid-ai-writing-russian"
+Repository = "https://github.com/ormeilu/avoid-ai-writing-russian"
+Changelog = "https://github.com/ormeilu/avoid-ai-writing-russian/blob/master/CHANGELOG.md"
+Issues = "https://github.com/ormeilu/avoid-ai-writing-russian/issues"
+
+[project.scripts]
+aiw-ru = "aiw_ru.cli:run"
+
+[build-system]
+requires = ["uv_build>=0.12.18,<0.13"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "prek>=0.5.3",
+    "pytest>=9.1.1",
+    "ruff>=0.16.9",
+    "ty>=0.0.84",
+    "types-regex>=2026.9.10.20260911",
+]
+train = [
+    "huggingface-hub>=1.33.0",
+    "lightgbm>=4.7.0",
+    "numpy>=2.5.3",
+    "scikit-learn>=1.9.1",
+]
+# Дообучение трансформера: тяжёлые пакеты отдельно, чтобы CI и LightGBM их не тянули.
+transformer = [
+    "onnx>=1.23.0",
+    "onnxruntime>=1.30.0",
+    "onnxscript>=0.7.2",
+    "tokenizers>=0.23.2",
+    "torch>=2.14.0",
+    "transformers>=5.17.0",
+]
+
+[tool.uv]
+required-version = ">=0.12.18"
+# По умолчанию группы не ставятся: скилл зовёт `uv run --project ../.. aiw-ru` и получает
+# только сам детектор. Разработка: `uv sync --group dev --group train` (dev — инструменты, train — обучение).
+default-groups = []
+
+[tool.ruff]
+line-length = 120
+src = ["src", "scripts"]
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "B", "TID"]
+# Списки слов читаются лучше строкой через пробел.
+ignore = ["SIM905"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ty.environment]
+# Тесты импортируют скрипты как модули верхнего уровня, как pytest с pythonpath ниже.
+extra-paths = ["scripts", "evals"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Скрипты выпуска и оценки — не пакет, тесты импортируют их как модули верхнего уровня.
+pythonpath = ["scripts", "evals"]
+addopts = ["-p", "no:cacheprovider"]

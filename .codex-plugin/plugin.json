@@ -28,8 +28,8 @@
     "claude-code",
     "codex",
     "agent-skills",
-    "bun",
-    "typescript"
+    "python",
+    "uv"
   ],
   "skills": "./skills/",
   "homepage": "https://github.com/ormeilu/avoid-ai-writing-russian",
