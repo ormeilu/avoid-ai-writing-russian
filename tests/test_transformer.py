@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -637,3 +638,71 @@ def test_batches_respect_token_budget():
             assert len(b) == 1 or len(b) * int(lengths[b].max()) <= 8192
     # без лимита по токенам — как раньше, по size текстов
     assert [len(b) for b in tt.batches(lengths, 4, None)] == [4, 4]
+
+
+def tiny_modernbert(pooling: str = "cls", layers: int = 7):
+    from transformers import ModernBertConfig, ModernBertForSequenceClassification
+
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(0)
+    # Словарь, а не именованные аргументы: у ModernBertConfig они в **kwargs, и ty их не видит.
+    params: dict[str, Any] = {
+        "vocab_size": 120,
+        "hidden_size": 32,
+        "intermediate_size": 48,
+        "num_hidden_layers": layers,
+        "num_attention_heads": 2,
+        "global_attn_every_n_layers": 3,
+        "local_attention": 16,
+        "max_position_embeddings": 512,
+        "pad_token_id": 0,
+        "classifier_pooling": pooling,
+        "num_labels": 2,
+    }
+    cfg = ModernBertConfig(**params)
+    return ModernBertForSequenceClassification(cfg).eval()
+
+
+@pytest.mark.parametrize("lengths", [[1], [3], [8], [9], [40], [57, 5, 30], [200, 17]])
+def test_fast_modernbert_matches_transformers(lengths):
+    import torch
+
+    from fast_modernbert import FastModernBert
+
+    model = tiny_modernbert()
+    fast = FastModernBert(model).eval()
+    # 7 слоёв, глобальные 0, 3, 6: после последнего глобального слоёв нет, проверим и такой случай
+    assert fast.prefix == 1
+    n = max(lengths)
+    ids = torch.randint(1, 120, (len(lengths), n))
+    mask = torch.zeros(len(lengths), n, dtype=torch.long)
+    for row, length in enumerate(lengths):
+        mask[row, :length] = 1
+        ids[row, length:] = 0
+    with torch.no_grad():
+        ref = model(input_ids=ids, attention_mask=mask).logits
+        got = fast(ids, mask)
+    assert torch.allclose(got, ref, atol=1e-5)
+
+
+@pytest.mark.parametrize("layers", [8, 9])
+def test_fast_modernbert_tail_after_last_global(layers):
+    import torch
+
+    from fast_modernbert import FastModernBert
+
+    model = tiny_modernbert(layers=layers)
+    fast = FastModernBert(model).eval()
+    assert fast.prefix == (layers - 1 - 6) * model.config.sliding_window + 1
+    ids = torch.randint(1, 120, (2, 90))
+    mask = torch.ones(2, 90, dtype=torch.long)
+    mask[1, 61:] = 0
+    with torch.no_grad():
+        assert torch.allclose(fast(ids, mask), model(input_ids=ids, attention_mask=mask).logits, atol=1e-5)
+
+
+def test_fast_modernbert_needs_cls_pooling():
+    from fast_modernbert import FastModernBert
+
+    with pytest.raises(ValueError, match="cls"):
+        FastModernBert(tiny_modernbert("mean"))

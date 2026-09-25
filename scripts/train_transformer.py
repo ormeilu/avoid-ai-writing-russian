@@ -71,6 +71,7 @@ from transformers.utils import logging as hf_logging
 import aiw_ru
 from aiw_ru.models import MODELS
 from aiw_ru.text import plural
+from fast_modernbert import FastModernBert
 from hub import (
     DATASET,
     GENERATORS,
@@ -759,7 +760,11 @@ def cmd_fit(args: argparse.Namespace, pilot: bool) -> None:
 
 
 def export_onnx(model_dir: Path, path: Path) -> None:
-    """PyTorch → ONNX с переменной длиной пачки и текста; веса больше 2 ГБ — во внешнем файле model.onnx.data."""
+    """PyTorch → ONNX с переменной длиной пачки и текста; веса больше 2 ГБ — во внешнем файле model.onnx.data.
+
+    ModernBERT уходит в ONNX через FastModernBert: без матриц n × n в локальных слоях
+    окно в 8192 токена на M1 считается за секунды, а не за минуту.
+    """
     model = load_torch_classifier(model_dir)
     texts = ["Короткий пример.", "Пример подлиннее, чтобы в пачке были тексты разной длины."]
     if is_frozen(model_dir):
@@ -779,6 +784,8 @@ def export_onnx(model_dir: Path, path: Path) -> None:
     big = sum(x.numel() for x in model.parameters()) * 4 > 1.8e9
     batch = torch.export.Dim("batch", min=1, max=1024)
     seq = torch.export.Dim("sequence", min=2, max=max_seq)
+    if not is_frozen(model_dir) and model.config.model_type == "modernbert":
+        model = FastModernBert(model).eval()
     torch.onnx.export(
         model,
         (),
