@@ -540,7 +540,7 @@ def test_broken_pipe_is_not_an_error():
     p.stdout.readline()
     p.stdout.close()
     err = p.stderr.read().decode("utf-8")
-    assert p.wait(timeout=60) == 0
+    assert p.wait(timeout=60) == 0, err
     assert "Traceback" not in err
     assert "BrokenPipeError" not in err
 

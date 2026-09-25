@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass
 from functools import cache
 from importlib.util import find_spec
@@ -99,7 +100,12 @@ def load(repo: str = LIGHTGBM_REPO) -> tuple[Any, dict[str, Any]]:
     if path is None:
         raise ModelError("модель не скачана: aiw-ru models install")
     spec = _check(path)
-    import lightgbm as lgb
+    try:
+        import lightgbm as lgb
+    except OSError as e:
+        # На macOS колёса lightgbm ищут libomp из Homebrew и без неё не загружаются.
+        hint = ": поставьте libomp (brew install libomp)" if sys.platform == "darwin" else ""
+        raise ModelError(f"lightgbm не загружается{hint} ({e})") from None
 
     return lgb.Booster(model_file=str(path / "model.txt")), spec
 

@@ -124,6 +124,8 @@ uv tool install "aiw-ru[ml]"
 aiw-ru models install
 ```
 
+На macOS LightGBM нужна библиотека libomp: `brew install libomp`. Без неё `aiw-ru models` так и скажет.
+
 Файлы модели (около 10 МБ) скачиваются с [Hugging Face](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-lightgbm) в общий кэш `~/.cache/huggingface`. Карточка модели там же: результаты на LLMTrace по жанрам, длине текста и моделям-генераторам.
 
 ## Как пользоваться

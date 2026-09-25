@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import math
 import os
@@ -806,13 +807,21 @@ def main(argv: list[str]) -> int:
         return 2
 
 
+def closed_pipe(e: OSError) -> bool:
+    """Читатель закрыл канал. Windows сообщает об этом не BrokenPipeError, а EINVAL."""
+    return isinstance(e, BrokenPipeError) or (sys.platform == "win32" and e.errno == errno.EINVAL)
+
+
 def run() -> None:
     """Точка входа консольной команды `aiw-ru`."""
     try:
         code = main(sys.argv[1:])
         sys.stdout.flush()
-    except BrokenPipeError:
+    except OSError as e:
+        if not closed_pipe(e):
+            raise
         # Читатель закрыл канал (`aiw-ru scan … | head`): это не ошибка, просто выходим.
+        # Остаток буфера уходит в devnull, иначе Python споткнётся о него при выходе.
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         code = 0
     sys.exit(code)

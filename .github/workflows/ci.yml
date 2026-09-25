@@ -19,6 +19,9 @@ jobs:
         with:
           version: "0.12.18"
           python-version: ${{ matrix.python }}
+      - name: libomp для LightGBM на macOS
+        if: runner.os == 'macOS'
+        run: brew install libomp
       - run: uv run --locked --group dev --group train pytest
   checks:
     runs-on: ubuntu-latest

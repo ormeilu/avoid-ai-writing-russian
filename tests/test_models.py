@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -72,4 +73,23 @@ def test_missing_dependencies(monkeypatch: pytest.MonkeyPatch):
     assert models.missing_dependencies() == ["lightgbm", "huggingface_hub"]
     with pytest.raises(models.ModelError, match="extra ml"):
         models.install()
+    models.load.cache_clear()
+
+
+def test_lightgbm_that_does_not_load(model_dir: Path, monkeypatch: pytest.MonkeyPatch):
+    """lightgbm стоит, но не загружается (на macOS без libomp): понятная ошибка, а не трассировка"""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "lightgbm":
+            raise OSError("Library not loaded: @rpath/libomp.dylib")
+        return real_import(name, *args, **kwargs)
+
+    models.load.cache_clear()
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(models.ModelError, match="lightgbm не загружается"):
+        models.load()
+    assert not models.available()
     models.load.cache_clear()
