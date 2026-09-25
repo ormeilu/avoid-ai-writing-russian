@@ -12,12 +12,15 @@ from typing import Any
 import pytest
 import regex
 
-from aiw_ru import JUDGMENT_ONLY, PROFILE_TO_MODE, TYPE_LABELS, TYPE_TO_SECTION, WEIGHTS, ContextMode, analyze
+from aiw_ru import JUDGMENT_ONLY, PROFILE_TO_MODE, TYPE_LABELS, TYPE_TO_SECTION, WEIGHTS, ContextMode, analyze, skills
 from aiw_ru.cli import USAGE, main, parse
 
 ROOT = Path(__file__).parent.parent
 SKILLS = ROOT / "skills"
-CATALOG = SKILLS / "avoid-ai-writing-russian" / "references" / "patterns.md"
+REFERENCES = SKILLS / "avoid-ai-writing-russian" / "references"
+# Тематические файлы каталога примет; профили контекста и голоса лежат отдельно.
+CATALOG_FILES = sorted(p for p in REFERENCES.glob("*.md") if p.name != "profiles.md")
+PROFILES = REFERENCES / "profiles.md"
 PYPROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 AI_VAK = ROOT / "tests" / "fixtures" / "corpus" / "ai" / "vak.md"
 
@@ -166,9 +169,19 @@ MAIN = read(SKILLS / "avoid-ai-writing-russian" / "SKILL.md")
 
 
 def test_main_links_catalog_and_subskill():
-    """ссылается на каталог и под-скилл"""
-    assert "references/patterns.md" in MAIN
+    """ссылается на каждый файл каталога и на под-скилл"""
+    for p in REFERENCES.glob("*.md"):
+        assert f"](references/{p.name})" in MAIN, p.name
     assert "../antiplagiat/SKILL.md" in MAIN
+
+
+def test_main_does_not_load_whole_catalog():
+    """каталог читается по темам: краткий каталог в SKILL.md, файл темы — перед правкой находки"""
+    loading = MAIN[MAIN.index("<!-- reference-loading:start -->") : MAIN.index("<!-- reference-loading:end -->")]
+    assert "Целиком его не читай" in loading
+    assert "открой файл её темы" in loading
+    assert "## Уровни серьёзности" in MAIN
+    assert "### Частые ложные находки" in MAIN
 
 
 def test_main_all_modes_described():
@@ -226,11 +239,40 @@ def test_ap_all_detector_commands_mentioned():
 
 # ─── каталог ↔ детектор ─────────────────────────────────────────────────
 
-CATALOG_TEXT = read(CATALOG)
-HEADINGS = re.findall(r"^#{3,4} (.+?)\s*$", CATALOG_TEXT, re.MULTILINE)
-DETECTION_HEADINGS = re.findall(
-    r"^### (.+?)\s*$", CATALOG_TEXT[: CATALOG_TEXT.index("## Профили контекста")], re.MULTILINE
-)
+CATALOG_TEXT = "\n\n".join(read(p) for p in CATALOG_FILES)
+PROFILES_TEXT = read(PROFILES)
+HEADINGS = re.findall(r"^#{2,3} (.+?)\s*$", CATALOG_TEXT, re.MULTILINE)
+DETECTION_HEADINGS = re.findall(r"^## (.+?)\s*$", CATALOG_TEXT, re.MULTILINE)
+
+
+def test_catalog_split_into_topic_files():
+    """каталог разбит на тематические файлы: у каждого заголовок и ссылка на договор о правке"""
+    assert [p.name for p in CATALOG_FILES] == [
+        "chat.md",
+        "rhetoric.md",
+        "sentences.md",
+        "structure.md",
+        "typography.md",
+        "vocabulary.md",
+    ]
+    for p in [*CATALOG_FILES, PROFILES]:
+        text = read(p)
+        assert text.startswith("# "), p.name
+        assert "`../SKILL.md`" in text, p.name
+
+
+def test_catalog_headings_unique():
+    """раздел каталога описан в одном файле: по заголовку scan находит файл"""
+    headings = [*HEADINGS, *re.findall(r"^#{2,3} (.+?)\s*$", PROFILES_TEXT, re.MULTILINE)]
+    assert sorted(h for h in set(headings) if headings.count(h) > 1) == []
+
+
+def test_every_detector_section_has_file():
+    """scan знает файл каталога для каждого типа находки"""
+    where = skills.catalog()
+    for t, section in TYPE_TO_SECTION.items():
+        assert where.get(section, "").startswith("references/"), t
+        assert (REFERENCES.parent / where[section]).is_file(), t
 
 
 def test_every_detector_type_bound_to_section():
@@ -257,14 +299,14 @@ def test_every_catalog_section_checked_or_judgment():
 
 def test_profile_table_matches_detector():
     """таблица соответствия профилей совпадает с детектором"""
-    table = CATALOG_TEXT[CATALOG_TEXT.index("### Соответствие режимам детектора") :]
+    table = PROFILES_TEXT[PROFILES_TEXT.index("### Соответствие режимам детектора") :]
     for profile, mode in PROFILE_TO_MODE.items():
         assert re.search(rf"\| `{re.escape(profile)}` \| `{mode}` \|", table), profile
 
 
 def test_strictness_matrix_has_column_per_profile():
     """в матрице строгости есть столбец для каждого профиля"""
-    m = re.search(r"\| Правило \|(.+)\|", CATALOG_TEXT)
+    m = re.search(r"\| Правило \|(.+)\|", PROFILES_TEXT)
     assert m
     assert sorted(c.strip() for c in m[1].split("|")) == sorted(PROFILE_TO_MODE)
 

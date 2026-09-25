@@ -45,6 +45,7 @@ from aiw_ru.antiplagiat import (
     label_fragments,
     share_error,
 )
+from aiw_ru.categories import TYPE_TO_SECTION
 from aiw_ru.compat import js_round, jsre, num_str, to_fixed, trim
 from aiw_ru.detect import TYPE_LABELS, analyze
 from aiw_ru.text import plural
@@ -68,7 +69,7 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
                                transformer и lightgbm, точный modernbert только по имени
   skill [имя] [файл]           текст скилла для агента, если стоит только aiw-ru, без плагина:
                                без имени — список скиллов, с именем — SKILL.md,
-                               с файлом — файл скилла (references/patterns.md)
+                               с файлом — файл скилла (references/vocabulary.md)
 
 Параметры:
   --context РЕЖИМ   general | academic | technical | social | chat
@@ -441,13 +442,30 @@ def signal_fact(sig: Signal) -> tuple[str, Text]:
     return ("Вероятность ИИ", Text.styled(text, "red" if sig.ai else "green"))
 
 
+def catalog_refs(r: AnalysisResult) -> dict[str, list[str]]:
+    """Файлы каталога и их разделы для найденных примет, в порядке уровня серьёзности."""
+    where = skills.catalog()
+    refs: dict[str, list[str]] = {}
+    for i in sorted(r.issues, key=lambda i: (RANK[i.severity], i.index)):
+        section = TYPE_TO_SECTION.get(i.type)
+        path = where.get(section) if section else None
+        if section and path and section not in refs.setdefault(path, []):
+            refs[path].append(section)
+    return refs
+
+
+def scan_json(r: AnalysisResult) -> dict[str, Any]:
+    """Результат scan для JSON: с файлами каталога, где описаны найденные приметы."""
+    return {**r.to_dict(), "catalog": [{"file": f, "sections": s} for f, s in catalog_refs(r).items()]}
+
+
 def cmd_scan(a: Args) -> int:
     mode = a.context or "general"
     if a.jsonl:
 
         def one(text: str) -> dict[str, Any]:
             r = analyze(text, mode)
-            return with_signal(r.to_dict(), model_signal(a, text, r))
+            return with_signal(scan_json(r), model_signal(a, text, r))
 
         return jsonl(a, one)
     files = a.files or ["-"]
@@ -455,7 +473,7 @@ def cmd_scan(a: Args) -> int:
     results = [(f, analyze(t, mode)) for f, t in texts]
     signals = [model_signal(a, t, r) for (_, t), (_, r) in zip(texts, results, strict=True)]
     if a.json:
-        docs = [with_signal({"file": f, **r.to_dict()}, p) for (f, r), p in zip(results, signals, strict=True)]
+        docs = [with_signal({"file": f, **scan_json(r)}, p) for (f, r), p in zip(results, signals, strict=True)]
         sys.stdout.write(dump(docs[0] if len(docs) == 1 else docs) + "\n")
     fail = False
     for n, ((f, r), p) in enumerate(zip(results, signals, strict=True)):
@@ -518,6 +536,11 @@ def cmd_scan(a: Args) -> int:
         )
         out()
         note(LEGEND)
+        refs = catalog_refs(r)
+        if refs:
+            note(
+                "Условия и исключения в каталоге скилла: " + "; ".join(f"{f} ({', '.join(s)})" for f, s in refs.items())
+            )
     return 1 if fail else 0
 
 

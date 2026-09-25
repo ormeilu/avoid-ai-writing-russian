@@ -38,10 +38,11 @@ def _read(path: Path) -> str:
 
 
 def skill_text(name: str) -> str:
+    """SKILL.md и файлы из references/ с путями: у агента в проверке нет доступа к файлам."""
     base = ROOT / "skills" / name
     parts = [_read(base / "SKILL.md")]
-    if name == "avoid-ai-writing-russian":
-        parts.append(_read(base / "references" / "patterns.md"))
+    for path in sorted((base / "references").glob("*.md")):
+        parts.append(f'<file path="references/{path.name}">\n{_read(path)}\n</file>')
     return "\n\n".join(parts)
 
 
@@ -53,7 +54,7 @@ def build_prompt(c: EvalCase) -> str:
     )
     return "\n".join(
         [
-            "Ниже инструкции скилла. Следуй им строго. Детектор и файлы недоступны: проверки только модельные.",
+            "Ниже инструкции скилла и его файлы в тегах <file>. Следуй им строго. Детектор недоступен: проверки только модельные.",
             "<skill>",
             skills,
             "</skill>",

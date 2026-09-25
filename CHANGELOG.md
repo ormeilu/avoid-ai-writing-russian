@@ -8,6 +8,11 @@
 
 - `aiw-ru models info [имя]` сравнивает модели до скачивания: ROC AUC и accuracy на test LLMTrace, доля людей, принятых за ИИ, скорость, память и размер. Числа лежат в пакете (`aiw_ru/data/models.json`), их собирает `scripts/models_catalog.py` перед выпуском. Скилл смотрит эту справку, прежде чем предложить модель.
 - Третья необязательная модель, самая точная: дообученный RuModernBERT-small в ONNX fp32 ([toiletsandpaper/russian-ai-text-detector-modernbert](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-modernbert)). Весит около 140 МБ и в несколько раз медленнее трансформера на rubert-tiny2, поэтому ставится только по имени: `aiw-ru models install modernbert`. Если она установлена, вероятность даёт она; `--model` выбирает другую.
+- `scan` называет файлы каталога скилла с разделами, где описаны условия и исключения найденных примет: под таблицей и в поле `catalog` JSON.
+
+### Изменено
+
+- Каталог примет разбит на тематические файлы: `vocabulary.md`, `typography.md`, `sentences.md`, `rhetoric.md`, `chat.md`, `structure.md` и `profiles.md` вместо одного `patterns.md` на 87 КБ. Агент больше не читает каталог целиком. Кандидатов он ищет по краткому каталогу в SKILL.md (уровни P0–P2 и частые ложные находки), а файл темы открывает перед правкой находки из неё. Все файлы нужны только для полного аудита. Поводом стал слепой тест проекта [humanizer-ru](https://github.com/ilyautov/humanizer-ru): компактная инструкция дала смысловые ошибки в 1 правке из 65, полный каталог — в 15.
 
 ## [2.0.0rc2] — 2026-09-25
 

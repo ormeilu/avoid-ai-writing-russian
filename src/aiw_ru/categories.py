@@ -1,5 +1,5 @@
 """Связь типов находок детектора с разделами каталога
-skills/avoid-ai-writing-russian/references/patterns.md.
+skills/avoid-ai-writing-russian/references/ (по файлу на тему).
 
 Каталог шире детектора: часть правил требует понимания смысла и остаётся только
 в скилле (JUDGMENT_ONLY). tests/test_skill.py следит, чтобы каждый тип был привязан

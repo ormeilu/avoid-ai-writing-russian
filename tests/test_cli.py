@@ -139,6 +139,19 @@ def test_scan_stdin_json(cli: Cli):
     assert json.loads(r.out)["issues"][0]["type"] == "lets"
 
 
+def test_scan_names_catalog_files(cli: Cli):
+    """scan называет файл и раздел каталога для каждой приметы: агент открывает только их"""
+    text = "Надеюсь, это поможет! Данный метод является лучшим."
+    data = json.loads(cli("scan", "--json", stdin=text).out)
+    catalog = {c["file"]: c["sections"] for c in data["catalog"]}
+    assert catalog["references/chat.md"] == ["Следы чат-бота"]
+    assert "Уровень 1А — маркеры ИИ" in catalog["references/vocabulary.md"]
+    assert next(iter(catalog)) == "references/chat.md"  # P0 первым
+    out = cli("scan", stdin=text).out
+    assert "references/chat.md (Следы чат-бота)" in " ".join(out.split())
+    assert json.loads(cli("scan", "--json", stdin="Мы пришли домой.").out)["catalog"] == []
+
+
 def test_skill_profile_as_context(cli: Cli):
     """профиль скилла как --context"""
     r = cli("scan", "--json", "--context", "vak", stdin="Текст.")
@@ -561,7 +574,10 @@ def test_skill_lists_skills(cli: Cli):
     assert "aiw-ru skill ИМЯ" in r.out
     data = json.loads(cli("skill", "--json").out)
     assert [s["name"] for s in data] == ["avoid-ai-writing-russian", "antiplagiat"]
-    assert data[0]["files"] == ["references/patterns.md"]
+    assert data[0]["files"] == [
+        f"references/{n}.md"
+        for n in ("chat", "profiles", "rhetoric", "sentences", "structure", "typography", "vocabulary")
+    ]
     assert data[1]["description"].startswith("Подготовка русского текста")
 
 
@@ -570,7 +586,7 @@ def test_skill_lists_skills(cli: Cli):
     [
         ("avoid-ai-writing-russian",),
         ("antiplagiat",),
-        ("avoid-ai-writing-russian", "references/patterns.md"),
+        ("avoid-ai-writing-russian", "references/vocabulary.md"),
     ],
 )
 def test_skill_text_needs_no_repository(cli: Cli, args: tuple[str, ...]):

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 
 PACKAGED = Path(__file__).resolve().parent / "data" / "skills"
@@ -23,6 +24,8 @@ _REPO_COMMAND = re.compile(r"uv run --project \.\./\.\.(?: --extra ml)? aiw-ru")
 _FILE_LINK = re.compile(r"\[([^\]]+)\]\((?:\.\./([\w-]+)/)?(SKILL\.md|references/[^)\s]+)\)")
 _PARENT_SKILL = re.compile(r"`\.\./SKILL\.md`")
 _FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
+# Заголовок раздела каталога: темы файла (##) и подразделы (###), как уровни словаря.
+_HEADING = re.compile(r"^#{2,3} (.+?)\s*$", re.MULTILINE)
 # Фразы о расположении файлов в репозитории: без репозитория они ни к чему.
 _REPO_NOTES = (
     (" Пути к командам детектора считай от корня репозитория (`../../` от этого файла).", ""),
@@ -95,6 +98,24 @@ def all_skills() -> list[Skill]:
         if (p / "SKILL.md").is_file()
     ]
     return sorted(found, key=lambda s: s.name != MAIN)
+
+
+@cache
+def catalog() -> dict[str, str]:
+    """Раздел каталога основного скилла → файл, где он описан (`references/…`).
+
+    По этой карте `scan` называет, какой файл каталога открыть для найденной приметы.
+    Если скиллов нет, карта пустая.
+    """
+    try:
+        folder = root() / MAIN / "references"
+    except SkillError:
+        return {}
+    found: dict[str, str] = {}
+    for path in sorted(folder.glob("*.md")):
+        for m in _HEADING.finditer(path.read_text(encoding="utf-8")):
+            found.setdefault(m[1], f"references/{path.name}")
+    return found
 
 
 def _command(skill: str, file: str) -> str:
