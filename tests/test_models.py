@@ -348,6 +348,47 @@ def test_mini_frida_is_opt_in_after_transformer(
     assert chosen() is models.MINI_FRIDA
 
 
+def test_classify_all_models_side_by_side(
+    transformer_dir: Path,
+    modernbert_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    texts: dict[str, str],
+):
+    """--all: вероятности всех установленных моделей рядом; если модели расходятся, это видно сразу"""
+    monkeypatch.setenv("AIW_RU_MODEL_DIR", str(transformer_dir / "нет"))
+    # Порог ModernBERT почти 1: на том же тексте она голосует «человек», трансформер — «ИИ».
+    spec = json.loads((modernbert_dir / "inference.json").read_text(encoding="utf-8"))
+    (modernbert_dir / "inference.json").write_text(json.dumps({**spec, "threshold": 0.999999}), encoding="utf-8")
+    models.load.cache_clear()
+    code, out, _ = cli(capsys, "classify", "--all", "--json", texts["ai"])
+    data = json.loads(out)
+    assert code == 0
+    assert [m["name"] for m in data["models"]] == ["modernbert", "transformer"]
+    assert [m["ai"] for m in data["models"]] == [False, True]
+    assert data["agree"] is False
+    assert all(m["threshold"] in (0.5, 0.999999) for m in data["models"])
+    code, out, _ = cli(capsys, "classify", "--all", texts["ai"])
+    assert "ModernBERT" in out and "трансформер" in out and "Модели расходятся" in out
+    code, _, err = cli(capsys, "classify", "--all", "--model", "transformer", texts["ai"])
+    assert code == 2 and "--all" in err
+
+
+def test_probability_near_threshold_is_marked(
+    transformer_dir: Path, capsys: pytest.CaptureFixture[str], tmp_path: Path
+):
+    """вероятность у порога помечена: модель не уверена, число ничего не решает"""
+    # Крошечная модель даёт этому тексту 0,6: у порога, но по ту сторону, где «ИИ».
+    near, far = tmp_path / "near.md", tmp_path / "far.md"
+    near.write_text("типа данный еще", encoding="utf-8")
+    far.write_text("является ключевую данный", encoding="utf-8")
+    assert 0.5 < models.probability("типа данный еще", model=models.TRANSFORMER) < 0.65
+    _, out, _ = cli(capsys, "classify", str(near))
+    assert "близко к порогу" in out
+    _, out, _ = cli(capsys, "classify", str(far))
+    assert "близко к порогу" not in out
+
+
 def test_cli_unknown_model(capsys: pytest.CaptureFixture[str]):
     code, _, err = cli(capsys, "classify", "--model", "gpt")
     assert code == 2 and "неизвестная --model: gpt" in err

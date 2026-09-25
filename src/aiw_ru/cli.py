@@ -62,7 +62,8 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
   calibrate --doc Ф --marked Ф подстроить модель antiplagiat под ваши отчёты: документ и файл
                                с фрагментами, которые отчёт подсветил как ИИ
   calibrate --doc Ф --share N  то же, если известна только итоговая доля ИИ из отчёта, %
-  classify [файл…]             вероятность ИИ по необязательной модели
+  classify [файл…]             вероятность ИИ по необязательной модели;
+                               --all — по всем установленным рядом, видно, согласны ли они
   models                       необязательные модели: установлены ли и где лежат
   models info [имя]            качество, скорость, память и размер моделей до скачивания
   models install [имя…]        скачать модели с Hugging Face (нужен extra ml):
@@ -114,6 +115,8 @@ class Args:
     no_model: bool = False
     # Модель для вероятности: имя из models.MODELS или None — первая установленная.
     model_name: str | None = None
+    # classify: вероятности всех установленных моделей рядом.
+    all_models: bool = False
     help: bool = False
 
 
@@ -136,6 +139,8 @@ def parse(argv: list[str]) -> Args:
             a.jsonl = True
         elif x == "--no-model":
             a.no_model = True
+        elif x == "--all":
+            a.all_models = True
         elif x == "--model":
             v = need(i, x)
             i += 1
@@ -402,6 +407,10 @@ def jsonl(a: Args, run: Callable[[str], dict[str, Any]]) -> int:
     return 0
 
 
+# Вероятность ближе к порогу, чем на столько, модель не решает: помечается «близко к порогу».
+NEAR_THRESHOLD = 0.15
+
+
 @dataclass(frozen=True, slots=True)
 class Signal:
     """Вероятность ИИ от необязательной модели и сама модель."""
@@ -412,6 +421,10 @@ class Signal:
     @property
     def ai(self) -> bool:
         return self.probability >= self.loaded.threshold
+
+    @property
+    def near_threshold(self) -> bool:
+        return abs(self.probability - self.loaded.threshold) < NEAR_THRESHOLD
 
 
 def model_signal(a: Args, text: str, result: AnalysisResult | None = None) -> Signal | None:
@@ -427,7 +440,14 @@ def model_signal(a: Args, text: str, result: AnalysisResult | None = None) -> Si
 
 def signal_json(sig: Signal) -> dict[str, Any]:
     m = sig.loaded.model
-    return {"name": m.name, "probability": round(sig.probability, 4), "ai": sig.ai, "repo": m.repo}
+    return {
+        "name": m.name,
+        "probability": round(sig.probability, 4),
+        "threshold": round(sig.loaded.threshold, 6),
+        "ai": sig.ai,
+        "nearThreshold": sig.near_threshold,
+        "repo": m.repo,
+    }
 
 
 def with_signal(data: dict[str, Any], sig: Signal | None) -> dict[str, Any]:
@@ -437,10 +457,28 @@ def with_signal(data: dict[str, Any], sig: Signal | None) -> dict[str, Any]:
     return data
 
 
-def signal_fact(sig: Signal) -> tuple[str, Text]:
+def signal_fact(sig: Signal, label: str | None = None) -> tuple[str, Text]:
+    """«Вероятность ИИ: 97 % (трансформер, порог 50 %)»; с подписью-моделью имя в скобках не повторяется."""
     t = js_round(sig.loaded.threshold * 100)
-    text = f"{js_round(sig.probability * 100)} % ({sig.loaded.model.title}, порог {t} %)"
-    return ("Вероятность ИИ", Text.styled(text, "red" if sig.ai else "green"))
+    source = f"порог {t} %" if label else f"{sig.loaded.model.title}, порог {t} %"
+    label = label or "Вероятность ИИ"
+    text = f"{js_round(sig.probability * 100)} % ({source}"
+    if sig.near_threshold:
+        return (label, Text.styled(text + ", близко к порогу: модель не уверена)", "yellow"))
+    return (label, Text.styled(text + ")", "red" if sig.ai else "green"))
+
+
+def agreement(sigs: list[Signal]) -> Text:
+    """Согласны ли модели: одна строка под вероятностями `classify --all`."""
+    ai = sum(s.ai for s in sigs)
+    if ai == len(sigs):
+        return Text.styled("Все модели выше порога. Это сигнал, а не вывод: сверьте с находками и текстом.", "red")
+    if ai == 0:
+        return Text.styled("Все модели ниже порога.", "green")
+    return Text.styled(
+        f"Модели расходятся: {ai} из {len(sigs)} выше порога. Вероятность здесь ничего не решает, смотрите на находки.",
+        "yellow",
+    )
 
 
 def catalog_refs(r: AnalysisResult) -> dict[str, list[str]]:
@@ -751,7 +789,48 @@ def cmd_calibrate(a: Args) -> int:
     return 0
 
 
+def cmd_classify_all(a: Args) -> int:
+    """Вероятности всех установленных моделей рядом: видно, согласны ли они."""
+    if a.model_name:
+        raise UsageError("--all и --model вместе не используются: --all берёт все установленные модели")
+    loaded = [models.load(m) for m in models.MODELS.values() if models.available(m)]
+    if not loaded:
+        raise models.ModelError(
+            f"ни одна модель не установлена: поставьте пакеты ({models.INSTALL_HINT}) и скачайте модели "
+            "(aiw-ru models install)"
+        )
+
+    def one(text: str) -> list[Signal]:
+        return [Signal(m, m.probability(text)) for m in loaded]
+
+    def doc(sigs: list[Signal]) -> dict[str, Any]:
+        return {"models": [signal_json(s) for s in sigs], "agree": len({s.ai for s in sigs}) == 1}
+
+    if a.jsonl:
+        return jsonl(a, lambda text: doc(one(text)))
+    files = a.files or ["-"]
+    results = [(f, one(read(f))) for f in files]
+    if a.json:
+        docs = [{"file": f, **doc(sigs)} for f, sigs in results]
+        sys.stdout.write(dump(docs[0] if len(docs) == 1 else docs) + "\n")
+        return 0
+    for n, (f, sigs) in enumerate(results):
+        if n > 0:
+            out()
+        heading("stdin" if f == "-" else f)
+        facts([signal_fact(s, s.loaded.model.title) for s in sigs])
+        out(indented(agreement(sigs)))
+    out()
+    note(
+        "Модели обучены на русской части корпуса LLMTrace и видели не все жанры; короткие тексты они различают хуже. "
+        "Вероятность — сигнал, а не доказательство авторства."
+    )
+    return 0
+
+
 def cmd_classify(a: Args) -> int:
+    if a.all_models:
+        return cmd_classify_all(a)
     loaded = models.preferred(a.model_name)
     if loaded is None:
         raise models.ModelError(

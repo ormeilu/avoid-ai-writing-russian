@@ -176,7 +176,7 @@ def test_skill_invocations_point_at_this_package():
     """проект из вызовов объявляет команду aiw-ru"""
     assert PYPROJECT["project"]["scripts"]["aiw-ru"] == "aiw_ru.cli:run"
     used = {m[3].split()[0] for d in SKILL_DIRS for m in INVOCATION_RE.finditer(read(SKILLS / d / "SKILL.md"))}
-    assert used == {"scan", "validate", "antiplagiat", "calibrate", "models"}
+    assert used == {"scan", "validate", "antiplagiat", "calibrate", "models", "classify"}
     assert used <= COMMANDS
 
 
@@ -230,6 +230,15 @@ def test_main_answer_format_four_checks():
     """формат ответа: четыре пункта проверки"""
     for item in ("**Проходы**", "**Проверки**", "**Остатки**", "**Причина остановки**"):
         assert item in MAIN
+
+
+def test_model_probability_is_only_a_signal():
+    """вероятность модели — тоже сигнал: агент сомневается в ней и не правит текст ради цифры"""
+    assert "**Вероятность модели — тоже сигнал, а не приговор.**" in MAIN
+    for phrase in ("nearThreshold", "classify --all", "Не правь текст ради цифры", "по одной вероятности"):
+        assert phrase in MAIN, phrase
+    assert "classify --all" in AP
+    assert "--all" in USAGE
 
 
 def test_main_runs_scan_and_validate():
