@@ -63,6 +63,8 @@ uv run prek install --hook-type pre-commit --hook-type commit-msg --hook-type pr
 2. `uv run python scripts/release.py patch` (или `minor`, `major`, `X.Y.Z`; `--dry-run` покажет план). Скрипт проверит ветку и чистоту дерева, прогонит типы и тесты, перенесёт «Не выпущено» в раздел версии, обновит версию в `pyproject.toml`, манифестах, скиллах и `CITATION.cff`, обновит `uv.lock`, сделает коммит «Выпуск X.Y.Z» и тег `vX.Y.Z`.
 3. `git push --follow-tags`. По тегу GitHub Actions ещё раз прогонит проверки, соберёт пакет, опубликует его на PyPI и создаст выпуск на GitHub с архивом скиллов, контрольными суммами и заметками из CHANGELOG. На PyPI пакет уходит через доверенную публикацию: PyPI проверяет токен OIDC от workflow `release.yml` в окружении `pypi`, паролей и API-токенов в секретах нет.
 
+Если изменился вывод команд, пересоберите демо в README до выпуска: `uv run --extra ml scripts/demo.py`. Скрипт запускает `scan`, `validate`, `classify --all` и `antiplagiat` на примерах из `docs/demo/`, пишет запись terminalizer `docs/demo/aiw-demo.yml` и собирает из неё `docs/demo.gif`. Нужны terminalizer, ffmpeg и все четыре модели в кэше; рендер идёт около 10 минут.
+
 ## Поведенческие проверки скилла
 
 `uv run python evals/run.py` отправляет случаи из `evals/cases.json` живому агенту (по умолчанию `claude -p`) и оценивает ответы: сохранились ли цитаты и числа, не выдуманы ли факты, не осталось ли штампов. В CI не запускается, потому что стоит денег и зависит от модели. Меняя правила скилла, прогоните хотя бы затронутые случаи: `uv run python evals/run.py --case vak-protected`.

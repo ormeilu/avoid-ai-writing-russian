@@ -1,12 +1,12 @@
 # Запись terminalizer для docs/demo.gif. Вывод команд настоящий (aiw-ru, COLUMNS=110).
-# Пересобрать: terminalizer render docs/demo/aiw-demo.yml
+# Собрать заново: uv run --extra ml scripts/demo.py
 config:
   command: zsh -f
   cwd: null
   env:
     recording: true
   cols: 110
-  rows: 41
+  rows: 46
   repeat: 0
   quality: 100
   frameDelay: auto
@@ -54,315 +54,383 @@ records:
     content: "\e[90m$\e[0m "
   - delay: 600
     content: "\e[1;33mc\e[0m"
-  - delay: 57
-    content: "\e[1;33ma\e[0m"
-  - delay: 60
-    content: "\e[1;33mt\e[0m"
-  - delay: 40
-    content: " "
-  - delay: 46
-    content: п
-  - delay: 55
-    content: о
   - delay: 58
-    content: с
-  - delay: 39
-    content: т
-  - delay: 75
+    content: "\e[1;33ma\e[0m"
+  - delay: 47
+    content: "\e[1;33mt\e[0m"
+  - delay: 63
+    content: " "
+  - delay: 41
+    content: "п"
+  - delay: 42
+    content: "о"
+  - delay: 72
+    content: "с"
+  - delay: 44
+    content: "т"
+  - delay: 61
     content: "."
-  - delay: 62
-    content: m
-  - delay: 53
-    content: d
+  - delay: 75
+    content: "m"
+  - delay: 41
+    content: "d"
   - delay: 300
     content: "\r\n"
   - delay: 120
     content: "В современном мире искусственный интеллект играет ключевую роль в развитии бизнеса.\r\nВажно отметить, что наша платформа является не просто инструментом, а настоящим\r\nпартнёром для команды. Она позволяет осуществлять анализ данных в режиме реального\r\nвремени и обеспечивает бесшовную интеграцию с широким спектром сервисов. Эксперты\r\nсчитают, что это открывает новые горизонты. За 2025 год клиенты сократили время на\r\nотчёты на 40 %. В заключение, будущее за инновационными решениями!\r\n"
   - delay: 2200
     content: "\e[90m$\e[0m "
-  - delay: 400
+  - delay: 600
     content: "\e[1;33ma\e[0m"
-  - delay: 48
+  - delay: 70
     content: "\e[1;33mi\e[0m"
-  - delay: 70
+  - delay: 51
     content: "\e[1;33mw\e[0m"
-  - delay: 65
-    content: "\e[1;33m-\e[0m"
-  - delay: 38
-    content: "\e[1;33mr\e[0m"
-  - delay: 57
-    content: "\e[1;33mu\e[0m"
-  - delay: 46
-    content: " "
-  - delay: 65
-    content: s
-  - delay: 42
-    content: c
-  - delay: 60
-    content: a
-  - delay: 57
-    content: "n"
-  - delay: 43
-    content: " "
-  - delay: 37
-    content: п
-  - delay: 77
-    content: о
-  - delay: 79
-    content: с
   - delay: 40
-    content: т
-  - delay: 55
-    content: "."
-  - delay: 78
-    content: m
-  - delay: 44
-    content: d
-  - delay: 54
-    content: " "
-  - delay: 60
-    content: "-"
-  - delay: 65
-    content: "-"
-  - delay: 48
-    content: c
+    content: "\e[1;33m-\e[0m"
   - delay: 43
-    content: o
-  - delay: 79
-    content: "n"
-  - delay: 55
-    content: t
-  - delay: 45
-    content: e
-  - delay: 60
-    content: x
-  - delay: 50
-    content: t
-  - delay: 42
+    content: "\e[1;33mr\e[0m"
+  - delay: 65
+    content: "\e[1;33mu\e[0m"
+  - delay: 64
     content: " "
-  - delay: 70
-    content: b
-  - delay: 51
-    content: l
-  - delay: 51
-    content: o
-  - delay: 39
-    content: g
+  - delay: 42
+    content: "s"
+  - delay: 53
+    content: "c"
+  - delay: 43
+    content: "a"
+  - delay: 73
+    content: "n"
+  - delay: 65
+    content: " "
+  - delay: 41
+    content: "п"
+  - delay: 74
+    content: "о"
+  - delay: 45
+    content: "с"
+  - delay: 52
+    content: "т"
+  - delay: 75
+    content: "."
+  - delay: 41
+    content: "m"
+  - delay: 74
+    content: "d"
+  - delay: 75
+    content: " "
+  - delay: 63
+    content: "-"
+  - delay: 41
+    content: "-"
+  - delay: 52
+    content: "c"
+  - delay: 40
+    content: "o"
+  - delay: 73
+    content: "n"
+  - delay: 46
+    content: "t"
+  - delay: 56
+    content: "e"
+  - delay: 64
+    content: "x"
+  - delay: 47
+    content: "t"
+  - delay: 72
+    content: " "
+  - delay: 45
+    content: "b"
+  - delay: 74
+    content: "l"
+  - delay: 57
+    content: "o"
+  - delay: 73
+    content: "g"
   - delay: 300
     content: "\r\n"
   - delay: 120
-    content: "\e[1mпост.md\e[0m\r\n  \e[2mОценка\e[0m  \e[31m99/100, сильный ИИ-стиль\e[0m\r\n  \e[2mТекст \e[0m  65 слов, 6 предложений, режим general\r\n  \e[2mРитм  \e[0m  в среднем 10,8 слова в предложении, разброс 0,39, MATTR 0,91\r\n\r\n\e[2m  Уровень  Где   Примета                       Фрагмент                     Как исправить\e[0m\r\n\e[2m  ───────  ────  ────────────────────────────  ───────────────────────────  ──────────────────────────────────\e[0m\r\n  \e[31mP0\e[0m       \e[2m4:74\e[0m  Размытая ссылка на авторитет  «Эксперты считают»           назвать источник ([N]) или убрать\r\n                                                                            ссылку на авторитет\r\n  \e[33mP1\e[0m       \e[2m1:1\e[0m   Слово-маркер ИИ               «В современном мире»         убрать и начать с сути\r\n  \e[33mP1\e[0m       \e[2m1:44\e[0m  Слово-маркер ИИ               «играет ключевую роль»       сказать, что именно делает и с\r\n                                                                            каким результатом\r\n  \e[33mP1\e[0m       \e[2m2:1\e[0m   Подушка                       «Важно отметить, что»        убрать обёртку, оставить факт\r\n  \e[33mP1\e[0m       \e[2m2:36\e[0m  Слово-маркер ИИ               «является»                   тире, «это» или перестроить: «X\r\n                                                                            является методом» → «X — метод»\r\n  \e[33mP1\e[0m       \e[2m2:45\e[0m  «Не X, а Y»                   «не просто инструментом, а»  прямое утверждение без\r\n                                                                            противопоставления\r\n  \e[33mP1\e[0m       \e[2m4:24\e[0m  Слово-маркер ИИ               «бесшовную»                  «без переключений», «без ручных\r\n                                                                            шагов» или конкретное свойство\r\n  \e[33mP1\e[0m       \e[2m4:47\e[0m  Слово-маркер ИИ               «широким спектром»           «многие», «разные», число или\r\n                                                                            список\r\n  \e[33mP1\e[0m       \e[2m5:18\e[0m  Слово-маркер ИИ               «открывает новые горизонты»  какие именно\r\n  \e[33mP1\e[0m       \e[2m6:17\e[0m  Шаблонный переход             «В заключение,»              вывод должен быть виден сам\r\n  \e[33mP1\e[0m       \e[2m6:31\e[0m  Туманный прогноз              «будущее за инновационными»  проверяемый прогноз из источника\r\n                                                                            или удалить\r\n  \e[2mстиль\e[0m    \e[2m3:28\e[0m  Канцелярит                    «позволяет»                  что становится возможным; через\r\n                                                                            раз — «даёт», «можно»\r\n  \e[2mстиль\e[0m    \e[2m3:38\e[0m  Канцелярит                    «осуществлять анализ»        «оценить», «проанализировать»\r\n  \e[2mстиль\e[0m    \e[2m4:11\e[0m  Канцелярит                    «обеспечивает»               конкретный глагол\r\n\r\n\e[2m  P0 — исправить сразу · P1 — исправить до публикации · P2 — шлифовка · стиль — краткость, не довод об\e[0m\r\n\e[2m  авторстве\e[0m\r\n"
+    content: "\e[1mпост.md\e[0m\r\n  \e[2mОценка        \e[0m\e[2m  \e[0m\e[31m99/100, сильный ИИ-стиль\e[0m\r\n  \e[2mТекст         \e[0m\e[2m  \e[0m65 слов, 6 предложений, режим general\r\n  \e[2mРитм          \e[0m\e[2m  \e[0mв среднем 10,8 слова в предложении, разброс 0,39, MATTR 0,91\r\n  \e[2mВероятность ИИ\e[0m\e[2m  \e[0m\e[31m100 % (ModernBERT, порог 50 %)\e[0m\r\n\r\n  \e[2mУровень\e[0m\e[2m \e[0m\e[2m \e[0m\e[2mГде \e[0m\e[2m \e[0m\e[2m \e[0m\e[2mПримета                     \e[0m\e[2m \e[0m\e[2m \e[0m\e[2mФрагмент                   \e[0m\e[2m \e[0m\e[2m \e[0m\e[2mКак исправить                     \e[0m\r\n  \e[2m──────── ───── ───────────────────────────── ──────────────────────────── ──────────────────────────────────\e[0m\r\n  \e[31mP0\e[0m      \e[2m \e[0m\e[2m4:74\e[0m \e[2m \e[0mРазмытая ссылка на авторитет \e[2m \e[0m«Эксперты                   \e[2m \e[0mназвать источник ([N]) или убрать\r\n          \e[2m \e[0m     \e[2m \e[0m                             \e[2m \e[0mсчитают»                    \e[2m \e[0mссылку на авторитет\r\n  \e[33mP1\e[0m      \e[2m \e[0m\e[2m1:1\e[0m  \e[2m \e[0mСлово-маркер ИИ              \e[2m \e[0m«В современном мире»        \e[2m \e[0mубрать и начать с сути\r\n  \e[33mP1\e[0m      \e[2m \e[0m\e[2m1:44\e[0m \e[2m \e[0mСлово-маркер ИИ              \e[2m \e[0m«играет ключевую роль»      \e[2m \e[0mсказать, что именно делает и с\r\n          \e[2m \e[0m     \e[2m \e[0m                             \e[2m \e[0m                            \e[2m \e[0mкаким результатом\r\n  \e[33mP1\e[0m      \e[2m \e[0m\e[2m2:1\e[0m  \e[2m \e[0mПодушка                      \e[2m \e[0m«Важно отметить, что»       \e[2m \e[0mубрать обёртку, оставить факт\r\n  \e[33mP1\e[0m      \e[2m \e[0m\e[2m2:36\e[0m \e[2m \e[0mСлово-маркер ИИ              \e[2m \e[0m«является»                  \e[2m \e[0mтире, «это» или перестроить: «X\r\n          \e[2m \e[0m     \e[2m \e[0m                             \e[2m \e[0m                            \e[2m \e[0mявляется методом» → «X — метод»\r\n  \e[33mP1\e[0m      \e[2m \e[0m\e[2m2:45\e[0m \e[2m \e[0m«Не X, а Y»                  \e[2m \e[0m«не просто инструментом, а» \e[2m \e[0mпрямое утверждение без\r\n          \e[2m \e[0m     \e[2m \e[0m                             \e[2m \e[0m                            \e[2m \e[0mпротивопоставления\r\n  \e[33mP1\e[0m      \e[2m \e[0m\e[2m4:24\e[0m \e[2m \e[0mСлово-маркер ИИ              \e[2m \e[0m«бесшовную»                 \e[2m \e[0m«без переключений», «без ручных\r\n          \e[2m \e[0m     \e[2m \e[0m                             \e[2m \e[0m                            \e[2m \e[0mшагов» или конкретное свойство\r\n  \e[33mP1\e[0m      \e[2m \e[0m\e[2m4:47\e[0m \e[2m \e[0mСлово-маркер ИИ              \e[2m \e[0m«широким спектром»          \e[2m \e[0m«многие», «разные», число или\r\n          \e[2m \e[0m     \e[2m \e[0m                             \e[2m \e[0m                            \e[2m \e[0mсписок\r\n  \e[33mP1\e[0m      \e[2m \e[0m\e[2m5:18\e[0m \e[2m \e[0mСлово-маркер ИИ              \e[2m \e[0m«открывает новые горизонты» \e[2m \e[0mкакие именно\r\n  \e[33mP1\e[0m      \e[2m \e[0m\e[2m6:17\e[0m \e[2m \e[0mШаблонный переход            \e[2m \e[0m«В заключение,»             \e[2m \e[0mвывод должен быть виден сам\r\n  \e[33mP1\e[0m      \e[2m \e[0m\e[2m6:31\e[0m \e[2m \e[0mТуманный прогноз             \e[2m \e[0m«будущее за инновационными» \e[2m \e[0mпроверяемый прогноз из источника\r\n          \e[2m \e[0m     \e[2m \e[0m                             \e[2m \e[0m                            \e[2m \e[0mили удалить\r\n  \e[2mстиль\e[0m   \e[2m \e[0m\e[2m3:28\e[0m \e[2m \e[0mКанцелярит                   \e[2m \e[0m«позволяет»                 \e[2m \e[0mчто становится возможным; через\r\n          \e[2m \e[0m     \e[2m \e[0m                             \e[2m \e[0m                            \e[2m \e[0mраз — «даёт», «можно»\r\n  \e[2mстиль\e[0m   \e[2m \e[0m\e[2m3:38\e[0m \e[2m \e[0mКанцелярит                   \e[2m \e[0m«осуществлять анализ»       \e[2m \e[0m«оценить», «проанализировать»\r\n  \e[2mстиль\e[0m   \e[2m \e[0m\e[2m4:11\e[0m \e[2m \e[0mКанцелярит                   \e[2m \e[0m«обеспечивает»              \e[2m \e[0mконкретный глагол\r\n\r\n  \e[2mP0 — исправить сразу · P1 — исправить до публикации · P2 — шлифовка · стиль — краткость, не довод об \e[0m\r\n  \e[2mавторстве\e[0m\r\n  \e[2mУсловия и исключения в каталоге скилла: references/rhetoric.md (Размытые ссылки на авторитет, Туманные \e[0m\r\n  \e[2mпрогнозы в конце); references/vocabulary.md (Уровень 1А — маркеры ИИ, Слова-паразиты и подушки, Переходы, \e[0m\r\n  \e[2mкоторые убирать или переписывать, Уровень 1Б — правки на краткость (не доказательство авторства)); \e[0m\r\n  \e[2mreferences/sentences.md (Строение предложения)\e[0m\r\n"
   - delay: 7000
     content: "\e[90m$\e[0m "
   - delay: 0
     content: "\e[3J\e[H\e[2J\e[90m$\e[0m "
-  - delay: 500
+  - delay: 600
     content: "\e[1;33ma\e[0m"
-  - delay: 77
+  - delay: 49
     content: "\e[1;33mi\e[0m"
-  - delay: 46
+  - delay: 44
     content: "\e[1;33mw\e[0m"
   - delay: 75
     content: "\e[1;33m-\e[0m"
-  - delay: 56
+  - delay: 74
     content: "\e[1;33mr\e[0m"
-  - delay: 46
-    content: "\e[1;33mu\e[0m"
-  - delay: 62
-    content: " "
-  - delay: 53
-    content: s
-  - delay: 69
-    content: c
-  - delay: 64
-    content: a
-  - delay: 41
-    content: "n"
-  - delay: 45
-    content: " "
-  - delay: 55
-    content: п
-  - delay: 39
-    content: р
-  - delay: 37
-    content: а
-  - delay: 54
-    content: в
-  - delay: 66
-    content: к
-  - delay: 64
-    content: а
-  - delay: 78
-    content: "."
   - delay: 50
-    content: m
-  - delay: 55
-    content: d
-  - delay: 57
+    content: "\e[1;33mu\e[0m"
+  - delay: 61
     content: " "
-  - delay: 55
-    content: "-"
+  - delay: 44
+    content: "s"
   - delay: 73
-    content: "-"
-  - delay: 55
-    content: c
-  - delay: 55
-    content: o
-  - delay: 47
-    content: "n"
-  - delay: 46
-    content: t
-  - delay: 68
-    content: e
-  - delay: 41
-    content: x
-  - delay: 47
-    content: t
-  - delay: 69
-    content: " "
-  - delay: 74
-    content: b
-  - delay: 79
-    content: l
-  - delay: 77
-    content: o
-  - delay: 74
-    content: g
-  - delay: 300
-    content: "\r\n"
-  - delay: 120
-    content: "\e[1mправка.md\e[0m\r\n  \e[2mОценка\e[0m  \e[32m0/100, чисто\e[0m\r\n  \e[2mТекст \e[0m  25 слов, 2 предложения, режим general\r\n  \e[2mРитм  \e[0m  в среднем 12,5 слова в предложении, разброс 0,28, MATTR 0,96\r\n\r\n\e[32m  Примет не найдено.\e[0m\r\n"
-  - delay: 2200
-    content: "\e[90m$\e[0m "
-  - delay: 400
-    content: "\e[1;33ma\e[0m"
-  - delay: 69
-    content: "\e[1;33mi\e[0m"
-  - delay: 64
-    content: "\e[1;33mw\e[0m"
-  - delay: 60
-    content: "\e[1;33m-\e[0m"
-  - delay: 36
-    content: "\e[1;33mr\e[0m"
-  - delay: 50
-    content: "\e[1;33mu\e[0m"
-  - delay: 51
-    content: " "
-  - delay: 45
-    content: v
-  - delay: 53
-    content: a
-  - delay: 66
-    content: l
-  - delay: 68
-    content: i
-  - delay: 47
-    content: d
-  - delay: 78
-    content: a
-  - delay: 35
-    content: t
-  - delay: 51
-    content: e
-  - delay: 61
-    content: " "
-  - delay: 55
-    content: п
-  - delay: 39
-    content: о
-  - delay: 80
-    content: с
-  - delay: 56
-    content: т
-  - delay: 74
-    content: "."
-  - delay: 61
-    content: m
-  - delay: 56
-    content: d
-  - delay: 41
-    content: " "
-  - delay: 71
-    content: п
-  - delay: 75
-    content: р
-  - delay: 47
-    content: а
-  - delay: 36
-    content: в
+    content: "c"
   - delay: 42
-    content: к
-  - delay: 67
-    content: а
-  - delay: 66
-    content: "."
+    content: "a"
+  - delay: 74
+    content: "n"
+  - delay: 41
+    content: " "
+  - delay: 51
+    content: "п"
+  - delay: 69
+    content: "р"
+  - delay: 72
+    content: "а"
   - delay: 65
-    content: m
+    content: "в"
+  - delay: 58
+    content: "к"
+  - delay: 67
+    content: "а"
+  - delay: 75
+    content: "."
+  - delay: 67
+    content: "m"
+  - delay: 61
+    content: "d"
+  - delay: 57
+    content: " "
+  - delay: 53
+    content: "-"
+  - delay: 49
+    content: "-"
+  - delay: 53
+    content: "c"
+  - delay: 43
+    content: "o"
   - delay: 74
-    content: d
+    content: "n"
+  - delay: 57
+    content: "t"
+  - delay: 71
+    content: "e"
+  - delay: 69
+    content: "x"
+  - delay: 59
+    content: "t"
+  - delay: 66
+    content: " "
+  - delay: 56
+    content: "b"
+  - delay: 76
+    content: "l"
+  - delay: 42
+    content: "o"
+  - delay: 45
+    content: "g"
   - delay: 300
     content: "\r\n"
   - delay: 120
-    content: "  \e[2mСохранность\e[0m  \e[32mв порядке\e[0m\r\n  \e[2mНаходки    \e[0m  14 → 0\r\n"
+    content: "\e[1mправка.md\e[0m\r\n  \e[2mОценка        \e[0m\e[2m  \e[0m\e[32m0/100, чисто\e[0m\r\n  \e[2mТекст         \e[0m\e[2m  \e[0m25 слов, 2 предложения, режим general\r\n  \e[2mРитм          \e[0m\e[2m  \e[0mв среднем 12,5 слова в предложении, разброс 0,28, MATTR 0,96\r\n  \e[2mВероятность ИИ\e[0m\e[2m  \e[0m\e[33m44 % (ModernBERT, порог 50 %, близко к порогу: модель не уверена)\e[0m\r\n\r\n\e[32m  Примет не найдено.\e[0m\r\n"
   - delay: 2200
     content: "\e[90m$\e[0m "
-  - delay: 400
+  - delay: 600
     content: "\e[1;33ma\e[0m"
-  - delay: 45
+  - delay: 70
     content: "\e[1;33mi\e[0m"
-  - delay: 72
+  - delay: 64
     content: "\e[1;33mw\e[0m"
-  - delay: 43
+  - delay: 48
     content: "\e[1;33m-\e[0m"
-  - delay: 37
-    content: "\e[1;33mr\e[0m"
-  - delay: 39
-    content: "\e[1;33mu\e[0m"
-  - delay: 36
-    content: " "
   - delay: 59
-    content: a
-  - delay: 72
-    content: "n"
-  - delay: 73
-    content: t
-  - delay: 42
-    content: i
-  - delay: 57
-    content: p
-  - delay: 37
-    content: l
-  - delay: 48
-    content: a
-  - delay: 57
-    content: g
-  - delay: 38
-    content: i
-  - delay: 51
-    content: a
-  - delay: 45
-    content: t
-  - delay: 48
+    content: "\e[1;33mr\e[0m"
+  - delay: 47
+    content: "\e[1;33mu\e[0m"
+  - delay: 69
     content: " "
-  - delay: 71
-    content: г
-  - delay: 41
-    content: л
-  - delay: 42
-    content: а
-  - delay: 35
-    content: в
-  - delay: 63
-    content: а
-  - delay: 39
-    content: "."
-  - delay: 53
-    content: m
+  - delay: 64
+    content: "v"
   - delay: 40
-    content: d
+    content: "a"
+  - delay: 42
+    content: "l"
+  - delay: 73
+    content: "i"
+  - delay: 74
+    content: "d"
+  - delay: 58
+    content: "a"
+  - delay: 59
+    content: "t"
+  - delay: 60
+    content: "e"
+  - delay: 76
+    content: " "
+  - delay: 69
+    content: "п"
+  - delay: 75
+    content: "о"
+  - delay: 67
+    content: "с"
+  - delay: 42
+    content: "т"
+  - delay: 43
+    content: "."
+  - delay: 55
+    content: "m"
+  - delay: 68
+    content: "d"
+  - delay: 42
+    content: " "
+  - delay: 41
+    content: "п"
+  - delay: 57
+    content: "р"
+  - delay: 74
+    content: "а"
+  - delay: 66
+    content: "в"
+  - delay: 56
+    content: "к"
+  - delay: 62
+    content: "а"
+  - delay: 60
+    content: "."
+  - delay: 39
+    content: "m"
+  - delay: 67
+    content: "d"
   - delay: 300
     content: "\r\n"
   - delay: 120
-    content: "\e[1mглава.md\e[0m\r\n  \e[2mДоля ИИ-текста\e[0m  \e[31m51,6 %\e[0m\r\n  \e[2mФрагменты     \e[0m  3, похожи на ИИ: 1 (порог 0,5)\r\n  \e[2mМодель        \e[0m  по умолчанию, без калибровки\r\n\r\n\e[2m  Строки  Слов    ИИ  Начало фрагмента                             Почему похоже на ИИ\e[0m\r\n\e[2m  ──────  ────  ────  ───────────────────────────────────────────  ───────────────────────────────────────────\e[0m\r\n  \e[2m1–4\e[0m       63   \e[32m4 %\e[0m  Порог PERCLOS в литературе колеблется от 0…\r\n  \e[2m6–9\e[0m       46   \e[32m9 %\e[0m  Этот результат не стоит переносить на каби…\r\n  \e[2m11–20\e[0m     72  \e[31m98 %\e[0m  Кроме того, современные нейросетевые метод…  плотность примет, бедная пунктуация,\r\n                                                                   однообразие длины предложений\r\n\r\n\e[2m  Это приближение: классификатор «Антиплагиата» закрыт. Точнее станет после калибровки по вашим отчётам\e[0m\r\n\e[2m  (aiw-ru calibrate).\e[0m\r\n"
+    content: "  \e[2mСохранность\e[0m\e[2m  \e[0m\e[32mв порядке\e[0m\r\n  \e[2mНаходки    \e[0m\e[2m  \e[0m14 → 0\r\n"
+  - delay: 2200
+    content: "\e[90m$\e[0m "
+  - delay: 600
+    content: "\e[1;33ma\e[0m"
+  - delay: 60
+    content: "\e[1;33mi\e[0m"
+  - delay: 48
+    content: "\e[1;33mw\e[0m"
+  - delay: 45
+    content: "\e[1;33m-\e[0m"
+  - delay: 69
+    content: "\e[1;33mr\e[0m"
+  - delay: 41
+    content: "\e[1;33mu\e[0m"
+  - delay: 51
+    content: " "
+  - delay: 56
+    content: "c"
+  - delay: 46
+    content: "l"
+  - delay: 53
+    content: "a"
+  - delay: 63
+    content: "s"
+  - delay: 63
+    content: "s"
+  - delay: 69
+    content: "i"
+  - delay: 43
+    content: "f"
+  - delay: 48
+    content: "y"
+  - delay: 66
+    content: " "
+  - delay: 63
+    content: "-"
+  - delay: 73
+    content: "-"
+  - delay: 55
+    content: "a"
+  - delay: 46
+    content: "l"
+  - delay: 65
+    content: "l"
+  - delay: 73
+    content: " "
+  - delay: 55
+    content: "п"
+  - delay: 64
+    content: "р"
+  - delay: 60
+    content: "а"
+  - delay: 62
+    content: "в"
+  - delay: 52
+    content: "к"
+  - delay: 47
+    content: "а"
+  - delay: 43
+    content: "."
+  - delay: 49
+    content: "m"
+  - delay: 47
+    content: "d"
+  - delay: 300
+    content: "\r\n"
+  - delay: 120
+    content: "\e[1mправка.md\e[0m\r\n  \e[2mModernBERT \e[0m\e[2m  \e[0m\e[33m44 % (порог 50 %, близко к порогу: модель не уверена)\e[0m\r\n  \e[2mтрансформер\e[0m\e[2m  \e[0m\e[31m88 % (порог 50 %)\e[0m\r\n  \e[2mmini-frida \e[0m\e[2m  \e[0m\e[31m99 % (порог 50 %)\e[0m\r\n  \e[2mLightGBM   \e[0m\e[2m  \e[0m\e[33m54 % (порог 50 %, близко к порогу: модель не уверена)\e[0m\r\n  \e[33mМодели расходятся: 3 из 4 выше порога. Вероятность здесь ничего не решает, смотрите на находки.\e[0m\r\n\r\n  \e[2mМодели обучены на русской части корпуса LLMTrace и видели не все жанры; короткие тексты они различают хуже. \e[0m\r\n  \e[2mВероятность — сигнал, а не доказательство авторства.\e[0m\r\n"
+  - delay: 2200
+    content: "\e[90m$\e[0m "
+  - delay: 600
+    content: "\e[1;33ma\e[0m"
+  - delay: 52
+    content: "\e[1;33mi\e[0m"
+  - delay: 52
+    content: "\e[1;33mw\e[0m"
+  - delay: 38
+    content: "\e[1;33m-\e[0m"
+  - delay: 69
+    content: "\e[1;33mr\e[0m"
+  - delay: 75
+    content: "\e[1;33mu\e[0m"
+  - delay: 49
+    content: " "
+  - delay: 54
+    content: "a"
+  - delay: 56
+    content: "n"
+  - delay: 38
+    content: "t"
+  - delay: 47
+    content: "i"
+  - delay: 64
+    content: "p"
+  - delay: 72
+    content: "l"
+  - delay: 61
+    content: "a"
+  - delay: 74
+    content: "g"
+  - delay: 58
+    content: "i"
+  - delay: 46
+    content: "a"
+  - delay: 70
+    content: "t"
+  - delay: 41
+    content: " "
+  - delay: 67
+    content: "г"
+  - delay: 73
+    content: "л"
+  - delay: 63
+    content: "а"
+  - delay: 63
+    content: "в"
+  - delay: 63
+    content: "а"
+  - delay: 63
+    content: "."
+  - delay: 44
+    content: "m"
+  - delay: 68
+    content: "d"
+  - delay: 300
+    content: "\r\n"
+  - delay: 120
+    content: "\e[1mглава.md\e[0m\r\n  \e[2mДоля ИИ-текста\e[0m\e[2m  \e[0m\e[31m51,6 %\e[0m\r\n  \e[2mФрагменты     \e[0m\e[2m  \e[0m3, похожи на ИИ: 1 (порог 0,5)\r\n  \e[2mМодель        \e[0m\e[2m  \e[0mпо умолчанию, без калибровки\r\n  \e[2mВероятность ИИ\e[0m\e[2m  \e[0m\e[31m100 % (ModernBERT, порог 50 %)\e[0m\r\n\r\n  \e[2mСтроки\e[0m\e[2m \e[0m\e[2m \e[0m\e[2mСлов\e[0m\e[2m \e[0m\e[2m \e[0m\e[2m  ИИ\e[0m\e[2m \e[0m\e[2m \e[0m\e[2mНачало фрагмента                           \e[0m\e[2m \e[0m\e[2m \e[0m\e[2mПочему похоже на ИИ                        \e[0m\r\n  \e[2m─────── ───── ───── ──────────────────────────────────────────── ───────────────────────────────────────────\e[0m\r\n  \e[2m1–4\e[0m    \e[2m \e[0m  63 \e[2m \e[0m \e[32m4 %\e[0m \e[2m \e[0mПорог PERCLOS в литературе колеблется от 0… \e[2m \e[0m\r\n  \e[2m6–9\e[0m    \e[2m \e[0m  46 \e[2m \e[0m \e[32m9 %\e[0m \e[2m \e[0mЭтот результат не стоит переносить на каби… \e[2m \e[0m\r\n  \e[2m11–20\e[0m  \e[2m \e[0m  72 \e[2m \e[0m\e[31m98 %\e[0m \e[2m \e[0mКроме того, современные нейросетевые метод… \e[2m \e[0mплотность примет, бедная пунктуация,\r\n         \e[2m \e[0m     \e[2m \e[0m     \e[2m \e[0m                                            \e[2m \e[0mоднообразие длины предложений\r\n\r\n  \e[2mЭто приближение: классификатор «Антиплагиата» закрыт. Точнее станет после калибровки по вашим отчётам \e[0m\r\n  \e[2m(aiw-ru calibrate).\e[0m\r\n"
   - delay: 7000
     content: "\e[90m$\e[0m "
