@@ -28,7 +28,7 @@ claude plugin install avoid-ai-writing-russian@avoid-ai-writing-russian
 
 `uv run python evals/run.py` гоняет сценарии из `evals/cases.json` через `claude -p` и оценивает ответы `evals/grade.py`. Нужна живая сессия `claude login`; вложенный запуск без неё падает с «OAuth session expired». Один сценарий: `--case vak-protected`, только собрать промпт: `--dry`. Результаты пишутся в `evals/results/` и в git не идут.
 
-Правишь формат ответа в SKILL.md — обнови `evals/golden/` и прогони `uv run pytest tests/test_evals.py`: эталоны проверяются тем же `grade.py`.
+Правишь формат ответа в SKILL.md — обнови `evals/golden/` и прогони `uv run --group dev pytest tests/test_evals.py`: эталоны проверяются тем же `grade.py`.
 
 ## Как вести работу
 

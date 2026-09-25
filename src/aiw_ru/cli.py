@@ -30,7 +30,7 @@ from rich.padding import Padding
 from rich.table import Table
 from rich.text import Text
 
-from aiw_ru import models
+from aiw_ru import models, skills
 from aiw_ru.antiplagiat import (
     DEFAULT_MODEL,
     FEATURE_NAMES,
@@ -62,6 +62,9 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
   classify [файл…]             вероятность ИИ по необязательной модели LightGBM
   models                       необязательные модели: установлены ли и где лежат
   models install               скачать модель с Hugging Face (нужен extra ml)
+  skill [имя] [файл]           текст скилла для агента, если стоит только aiw-ru, без плагина:
+                               без имени — список скиллов, с именем — SKILL.md,
+                               с файлом — файл скилла (references/patterns.md)
 
 Параметры:
   --context РЕЖИМ   general | academic | technical | social | chat
@@ -752,6 +755,29 @@ def cmd_models(a: Args) -> int:
     return 0
 
 
+def cmd_skill(a: Args) -> int:
+    if len(a.files) > 2:
+        raise UsageError("skill: нужно не больше двух аргументов, имя скилла и файл")
+    if a.files:
+        text = skills.read(a.files[0], a.files[1] if len(a.files) > 1 else None)
+        sys.stdout.write(text if text.endswith("\n") else text + "\n")
+        return 0
+    found = skills.all_skills()
+    if a.json:
+        sys.stdout.write(
+            dump([{"name": s.name, "description": s.description, "files": list(s.files)} for s in found]) + "\n"
+        )
+        return 0
+    heading("Скиллы aiw-ru")
+    facts([(s.name, skills.first_sentence(s.description)) for s in found])
+    out()
+    note(
+        "Текст для агента: aiw-ru skill ИМЯ, файлы скилла: aiw-ru skill ИМЯ ФАЙЛ. "
+        f"Плагин для Claude Code и Codex со всеми скиллами: {skills.REPOSITORY}"
+    )
+    return 0
+
+
 def main(argv: list[str]) -> int:
     global console
     console = make_console()
@@ -767,6 +793,7 @@ def main(argv: list[str]) -> int:
             "calibrate": cmd_calibrate,
             "classify": cmd_classify,
             "models": cmd_models,
+            "skill": cmd_skill,
         }
         if a.cmd not in commands:
             raise UsageError(f"неизвестная команда: {a.cmd}")
@@ -774,7 +801,7 @@ def main(argv: list[str]) -> int:
     except UsageError as e:
         sys.stderr.write(f"aiw-ru: {e}\n\n{USAGE}")
         return 2
-    except models.ModelError as e:
+    except (models.ModelError, skills.SkillError) as e:
         sys.stderr.write(f"aiw-ru: {e}\n")
         return 2
 

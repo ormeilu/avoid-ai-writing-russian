@@ -543,3 +543,55 @@ def test_broken_pipe_is_not_an_error():
     assert p.wait(timeout=60) == 0
     assert "Traceback" not in err
     assert "BrokenPipeError" not in err
+
+
+# ── skill ──
+
+
+def test_skill_lists_skills(cli: Cli):
+    """без имени — список скиллов, основной первым"""
+    r = cli("skill")
+    assert r.code == 0
+    assert r.out.index("avoid-ai-writing-russian") < r.out.index("antiplagiat")
+    assert "aiw-ru skill ИМЯ" in r.out
+    data = json.loads(cli("skill", "--json").out)
+    assert [s["name"] for s in data] == ["avoid-ai-writing-russian", "antiplagiat"]
+    assert data[0]["files"] == ["references/patterns.md"]
+    assert data[1]["description"].startswith("Подготовка русского текста")
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("avoid-ai-writing-russian",),
+        ("antiplagiat",),
+        ("avoid-ai-writing-russian", "references/patterns.md"),
+    ],
+)
+def test_skill_text_needs_no_repository(cli: Cli, args: tuple[str, ...]):
+    """текст скилла без путей в репозитории: детектор через aiw-ru, файлы через aiw-ru skill"""
+    r = cli("skill", *args)
+    assert r.code == 0 and r.err == ""
+    assert "../" not in r.out and "uv run --project" not in r.out
+    assert "aiw-ru skill avoid-ai-writing-russian" in r.out
+
+
+def test_skill_md_keeps_frontmatter(cli: Cli):
+    """SKILL.md печатается с шапкой, пояснение идёт после неё"""
+    out = cli("skill", "antiplagiat").out
+    assert out.startswith("---\nname: antiplagiat\n")
+    assert out.index("\n---\n") < out.index("> Скилл выведен командой `aiw-ru skill`")
+    assert "aiw-ru antiplagiat <файл> --context vak" in out
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (("nope",), "нет скилла nope"),
+        (("antiplagiat", "../avoid-ai-writing-russian/SKILL.md"), "нет файла"),
+        (("avoid-ai-writing-russian", "../../pyproject.toml"), "нет файла"),
+    ],
+)
+def test_skill_unknown(cli: Cli, args: tuple[str, ...], message: str):
+    r = cli("skill", *args)
+    assert r.code == 2 and message in r.err

@@ -39,8 +39,19 @@ Issues = "https://github.com/ormeilu/avoid-ai-writing-russian/issues"
 aiw-ru = "aiw_ru.cli:run"
 
 [build-system]
-requires = ["uv_build>=0.12.18,<0.13"]
-build-backend = "uv_build"
+# hatchling, а не uv_build: скиллы из skills/ должны попасть в пакет (aiw-ru skill),
+# а uv_build кладёт в wheel только сам модуль.
+requires = ["hatchling>=1.32.4"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aiw_ru"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"skills" = "aiw_ru/data/skills"
+
+[tool.hatch.build.targets.sdist]
+include = ["/src/aiw_ru", "/skills", "/README.md", "/LICENSE", "/NOTICE.md", "/CHANGELOG.md"]
 
 [dependency-groups]
 dev = [

@@ -32,4 +32,6 @@ jobs:
       - name: Сборка пакета
         run: uv build
       - name: Собранный пакет ставится и запускается
-        run: uvx --from "$(ls dist/*.whl)" aiw-ru --help
+        run: |
+          uvx --from "$(ls dist/*.whl)" aiw-ru --help
+          uvx --from "$(ls dist/*.whl)" aiw-ru skill antiplagiat > /dev/null

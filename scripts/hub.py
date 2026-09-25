@@ -22,7 +22,7 @@ from typing import Any
 from huggingface_hub import EvalResult, HfApi, ModelCard, ModelCardData
 from huggingface_hub.errors import HfHubHTTPError, LocalTokenNotFoundError
 
-REPO = "toiletsandpaper/aiw-ru-lightgbm"
+REPO = "toiletsandpaper/russian-ai-text-detector-lightgbm"
 COLLECTION = "aiw-ru"
 COLLECTION_DESCRIPTION = "Детекторы ИИ-текста для русского языка: необязательные модели aiw-ru"
 GITHUB = "https://github.com/ormeilu/avoid-ai-writing-russian"
@@ -31,8 +31,8 @@ DATASET_NAME = "LLMTrace classification (ru)"
 TASK = "text-classification"
 TASK_NAME = "AI-generated text detection"
 ROOT = Path(__file__).resolve().parent.parent
-REPORT_PATH = "docs/models/aiw-ru-lightgbm.md"
-REPORT_METRICS = "docs/models/aiw-ru-lightgbm.json"
+REPORT_PATH = "docs/models/russian-ai-text-detector-lightgbm.md"
+REPORT_METRICS = "docs/models/russian-ai-text-detector-lightgbm.json"
 # Теги Hub: по ним модель находят в фильтре и поиске.
 TAGS = [
     "ai-text-detection",

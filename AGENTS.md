@@ -38,13 +38,13 @@
 ## Команды
 
 ```bash
-uv run pytest
+uv run --group dev --group train pytest
 ```
 
 ```bash
-uv run ty check
+uv run --group dev --group train ty check
 ```
 
 ```bash
-uv run prek run --all-files
+uv run --group dev prek run --all-files
 ```

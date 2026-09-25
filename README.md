@@ -6,7 +6,7 @@
 [![PyPI](https://img.shields.io/pypi/v/aiw-ru?label=PyPI)](https://pypi.org/project/aiw-ru/)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776ab?logo=python&logoColor=white)](pyproject.toml)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
-[![Модель на Hugging Face](https://img.shields.io/badge/Hugging%20Face-aiw--ru--lightgbm-ffd21e?logo=huggingface)](https://huggingface.co/toiletsandpaper/aiw-ru-lightgbm)
+[![Модель на Hugging Face](https://img.shields.io/badge/Hugging%20Face-russian--ai--text--detector--lightgbm-ffd21e?logo=huggingface)](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-lightgbm)
 [![prek](https://img.shields.io/badge/хуки-prek-orange)](https://prek.j178.dev)
 [![Апстрим](https://img.shields.io/badge/апстрим-avoid--ai--writing-555)](https://github.com/conorbronsdon/avoid-ai-writing)
 
@@ -98,6 +98,20 @@ uv tool install aiw-ru
 
 Или запускается без установки: `uvx aiw-ru scan статья.md`. Подойдёт и `pip install aiw-ru`.
 
+### Только команда, без плагина
+
+Скиллы лежат и в пакете. Если стоит только `aiw-ru`, их выводит сама команда:
+
+```bash
+aiw-ru skill
+```
+
+```bash
+aiw-ru skill avoid-ai-writing-russian
+```
+
+Первая показывает список скиллов, вторая печатает SKILL.md для агента. Вызовы детектора в нём уже переписаны на `aiw-ru …`, а каталог примет выводит `aiw-ru skill avoid-ai-writing-russian references/patterns.md`. Агенту достаточно сказать: «выполни `aiw-ru skill avoid-ai-writing-russian` и работай по этому скиллу».
+
 ### Необязательная модель
 
 Кроме правил, у детектора есть модель LightGBM, обученная на русской части корпуса LLMTrace: она оценивает вероятность, что текст написала модель. Вместе со скиллами она не ставится, агент предложит её сам и поставит, только если вы согласитесь. Вручную:
@@ -110,7 +124,7 @@ uv tool install "aiw-ru[ml]"
 aiw-ru models install
 ```
 
-Файлы модели (около 10 МБ) скачиваются с [Hugging Face](https://huggingface.co/toiletsandpaper/aiw-ru-lightgbm) в общий кэш `~/.cache/huggingface`. Карточка модели там же: результаты на LLMTrace по жанрам, длине текста и моделям-генераторам.
+Файлы модели (около 10 МБ) скачиваются с [Hugging Face](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-lightgbm) в общий кэш `~/.cache/huggingface`. Карточка модели там же: результаты на LLMTrace по жанрам, длине текста и моделям-генераторам.
 
 ## Как пользоваться
 
@@ -184,6 +198,8 @@ aiw-ru classify статья.md
 `validate` сравнивает исходник и правку. Код, формулы, URL, числа, ссылки `[12]` и `[@key]`, таблицы, цитаты и структура заголовков должны остаться на месте, а находок должно стать не больше. Разрешённые правки нарушением не считаются: «ёлочки» вместо прямых кавычек, запятая вместо десятичной точки, удалённый `utm_source=chatgpt.com`.
 
 `calibrate` дообучает модель `antiplagiat` на ваших отчётах. Лучше всего работает разметка фрагментов: текстовый файл с кусками, которые система подсветила как сгенерированные, по одному на абзац через пустую строку. Собирать его руками не обязательно: агент выпишет фрагменты сам из PDF отчёта или скриншотов. Если под рукой только итоговая цифра, передайте её через `--share`: так подстраивается общая строгость модели, но не веса признаков. Образцы накапливаются в `.aiw-ru.json`, и с каждым отчётом оценка точнее отражает поведение системы на ваших текстах. Отчёты, где система ничего не пометила, тоже пригодятся: это примеры человеческого текста. В файле калибровки только модель и числовые признаки фрагментов, самого текста там нет. В общий репозиторий его всё равно не коммитьте: `antiplagiat` читает `.aiw-ru.json` из текущей папки, и ваша калибровка исказит оценку соавторам (в этом репозитории файл уже в `.gitignore`). Текст есть в файлах с фрагментами из отчётов, их держите вне публичных репозиториев.
+
+`skill` печатает скиллы для агента, у которого нет плагина: без аргументов список, с именем SKILL.md, с именем и путём файл скилла (`references/patterns.md`).
 
 `classify` отвечает вероятностью от необязательной модели LightGBM: какая доля похожих текстов в корпусе LLMTrace написана моделью. Без установленной модели команда подскажет, как её поставить. Если модель есть, `scan` и `antiplagiat` показывают эту вероятность рядом со своей оценкой.
 

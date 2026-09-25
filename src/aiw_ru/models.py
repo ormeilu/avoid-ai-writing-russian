@@ -20,7 +20,7 @@ from aiw_ru.detect import analyze
 from aiw_ru.features import CONTEXT, FEATURE_NAMES, FEATURES_VERSION, features
 from aiw_ru.types import AnalysisResult
 
-LIGHTGBM_REPO = "toiletsandpaper/aiw-ru-lightgbm"
+LIGHTGBM_REPO = "toiletsandpaper/russian-ai-text-detector-lightgbm"
 FILES = ["model.txt", "features.json", "metrics.json", "README.md"]
 DEPENDENCIES = ("lightgbm", "huggingface_hub")
 INSTALL_HINT = 'uv sync --extra ml (или pip install "aiw-ru[ml]")'
