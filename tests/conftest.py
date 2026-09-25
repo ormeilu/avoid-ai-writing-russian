@@ -1,7 +1,10 @@
 """Общие пути и помощники для тестов."""
 
+import contextlib
 import os
+import sys
 from collections.abc import Callable
+from importlib.util import find_spec
 from pathlib import Path
 
 import pytest
@@ -13,6 +16,15 @@ FIXTURES = ROOT / "tests" / "fixtures"
 # через десяток секунд шлёт данные и на выходе из pytest изредка роняет процесс в abort
 # (recursive_mutex lock failed, код 134). Переменную наследуют и подпроцессы тестов.
 os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
+
+# На macOS у torch своя libomp, а LightGBM берёт её из Homebrew. Шаблонные функции OpenMP в libomp —
+# слабые символы, и dyld связывает обе копии с той, что загрузилась первой; вторая копия с чужими
+# функциями падает (SIGSEGV) или виснет, едва запустит потоки. В процессе pytest потоки OpenMP
+# запускает только LightGBM, torch считает в подпроцессах (frozen_encoder_check). Поэтому LightGBM
+# загружается здесь, раньше тестовых модулей, и порядок их сборки не важен.
+if sys.platform == "darwin" and find_spec("torch"):
+    with contextlib.suppress(ImportError, OSError):
+        import lightgbm  # noqa: F401
 
 
 @pytest.fixture

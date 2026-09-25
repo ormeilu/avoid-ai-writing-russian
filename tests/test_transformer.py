@@ -222,8 +222,8 @@ def frozen_encoder_check(tmp_path: Path) -> None:
 def test_frozen_encoder_onnx_follows_spec(tmp_path: Path):
     """Проверка frozen_encoder_check в отдельном процессе.
 
-    torch и LightGBM приносят каждый свой OpenMP: после тестов с LightGBM экспорт torch в том же
-    процессе виснет в libomp.
+    torch и LightGBM приносят каждый свою libomp, и conftest.py загружает первой копию LightGBM:
+    экспорт torch в процессе pytest виснет в libomp.
     """
     here = Path(__file__).resolve().parent
     paths = [here, here.parent / "scripts", here.parent / "evals", os.environ.get("PYTHONPATH", "")]
@@ -235,6 +235,25 @@ def test_frozen_encoder_onnx_follows_spec(tmp_path: Path):
         [sys.executable, "-c", code, str(tmp_path)], env=env, capture_output=True, text=True, timeout=600, check=False
     )
     assert r.returncode == 0, (r.stdout + r.stderr)[-4000:]
+
+
+def test_lightgbm_trains_after_torch_import(root: Path):
+    """Этот модуль собран раньше test_models.py и импортирует torch первым, а обучение бустинга не падает.
+
+    Держится на conftest.py, который загружает LightGBM раньше тестовых модулей; иначе lgb.train
+    в фикстуре model_dir роняет процесс по SIGSEGV.
+    """
+    here = Path(__file__).resolve()
+    tests = [f"{here}::test_normalize_markdown", f"{here.with_name('test_models.py')}::test_probability"]
+    r = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *tests],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
+    )
+    assert r.returncode == 0 and "2 passed" in r.stdout, (r.stdout + r.stderr)[-4000:]
 
 
 def test_pilot_rows(tmp_path: Path):
