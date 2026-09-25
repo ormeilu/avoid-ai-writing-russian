@@ -1,12 +1,15 @@
-"""Необязательные модели: трансформер в ONNX и LightGBM поверх признаков детектора.
+"""Необязательные модели: трансформеры в ONNX и LightGBM поверх признаков детектора.
 
 Модели не ставятся вместе с aiw-ru. Нужны зависимости из extra `ml`
 (`uv sync --extra ml` или `pip install "aiw-ru[ml]"`) и файлы моделей с Hugging
 Face (`aiw-ru models install`). Пока их нет, scan и antiplagiat работают как
 раньше, а здесь можно узнать, чего не хватает.
 
-Трансформер точнее, LightGBM легче и быстрее. Если стоят обе, вероятность в scan,
-antiplagiat и classify даёт трансформер, если не выбрана другая модель.
+Моделей три. ModernBERT самый точный, но тяжёлый (140 МБ, fp32) и медленный, и
+ставится только по имени. Трансформер на rubert-tiny2 (30 МБ, int8) немного уступает
+ему в точности и вчетверо быстрее. LightGBM легче всех и заметно менее точен. Если
+стоят несколько, вероятность в scan, antiplagiat и classify даёт самая точная из
+установленных, если не выбрана другая.
 """
 
 from __future__ import annotations
@@ -47,15 +50,36 @@ class Model:
     dependencies: tuple[str, ...]
     # Переменная окружения с папкой модели в обход кэша Hugging Face.
     env: str
+    # onnx — трансформер по inference.json, lightgbm — бустинг на признаках детектора.
+    kind: str = "onnx"
+    # Ставится командой models install без имени.
+    default: bool = True
+    # Одна фраза для aiw-ru models info: чем модель отличается от остальных.
+    summary: str = ""
 
 
+# model.onnx* — с внешними данными (model.onnx.data), если граф больше 2 ГБ.
+_ONNX_FILES = ("inference.json", "model.onnx*", "tokenizer.json", "metrics.json", "README.md")
+_ONNX_DEPENDENCIES = ("onnxruntime", "tokenizers", "numpy", "huggingface_hub")
+
+MODERNBERT = Model(
+    "modernbert",
+    "ModernBERT",
+    "toiletsandpaper/russian-ai-text-detector-modernbert",
+    _ONNX_FILES,
+    _ONNX_DEPENDENCIES,
+    "AIW_RU_MODERNBERT_DIR",
+    default=False,
+    summary="самая точная, но тяжёлая и в несколько раз медленнее: для мощных машин и спорных текстов",
+)
 TRANSFORMER = Model(
     "transformer",
     "трансформер",
     "toiletsandpaper/russian-ai-text-detector-bert",
-    ("inference.json", "model.onnx", "tokenizer.json", "metrics.json", "README.md"),
-    ("onnxruntime", "tokenizers", "numpy", "huggingface_hub"),
+    _ONNX_FILES,
+    _ONNX_DEPENDENCIES,
     "AIW_RU_TRANSFORMER_DIR",
+    summary="почти так же точна, лёгкая и быстрая: выбор по умолчанию",
 )
 LIGHTGBM = Model(
     "lightgbm",
@@ -64,9 +88,11 @@ LIGHTGBM = Model(
     ("model.txt", "features.json", "metrics.json", "README.md"),
     ("lightgbm", "huggingface_hub"),
     "AIW_RU_MODEL_DIR",
+    kind="lightgbm",
+    summary="самая лёгкая, работает и без onnxruntime (Mac на Intel), но заметно менее точна",
 )
 # Порядок — предпочтение: первая установленная модель даёт вероятность по умолчанию.
-MODELS: dict[str, Model] = {m.name: m for m in (TRANSFORMER, LIGHTGBM)}
+MODELS: dict[str, Model] = {m.name: m for m in (MODERNBERT, TRANSFORMER, LIGHTGBM)}
 LIGHTGBM_REPO = LIGHTGBM.repo
 
 
@@ -86,6 +112,17 @@ class Loaded(Protocol):
     def probability(self, text: str, result: AnalysisResult | None = None) -> float: ...
 
 
+def catalog() -> dict[str, Any]:
+    """Замеры моделей из пакета (aiw_ru/data/models.json): качество, скорость, память, размер.
+
+    Файл собирает scripts/models_catalog.py перед выпуском, поэтому посмотреть модели
+    можно до того, как что-то скачивать.
+    """
+    from importlib.resources import files
+
+    return json.loads(files("aiw_ru").joinpath("data", "models.json").read_text(encoding="utf-8"))
+
+
 def get(name: str) -> Model:
     if name not in MODELS:
         raise ModelError(f"нет модели {name}; есть: {', '.join(MODELS)}")
@@ -100,8 +137,8 @@ def local_path(model: Model = LIGHTGBM) -> Path | None:
     """Скачанная модель в кэше Hugging Face, без обращения к сети.
 
     Переменная окружения модели (AIW_RU_MODEL_DIR для LightGBM, AIW_RU_TRANSFORMER_DIR
-    для трансформера) указывает на папку с моделью напрямую: так проверяют только что
-    обученную модель до выкладки и так работают тесты.
+    и AIW_RU_MODERNBERT_DIR для трансформеров) указывает на папку с моделью напрямую: так
+    проверяют только что обученную модель до выкладки и так работают тесты.
     """
     if override := os.environ.get(model.env):
         path = Path(override).expanduser()
@@ -175,10 +212,22 @@ def _load_lightgbm(model: Model, path: Path) -> _LightGBM:
 # ── Трансформер ──
 
 
-def windows(ids: Sequence[int], max_length: int, cls_id: int, sep_id: int, limit: int) -> list[list[int]]:
-    """Окна по max_length токенов подряд, без перекрытия; ids — токены текста без [CLS] и [SEP]."""
-    width = max_length - 2
-    return [[cls_id, *ids[i : i + width], sep_id] for i in range(0, max(len(ids), 1), width)][:limit]
+def windows(
+    ids: Sequence[int], max_length: int, prefix: Sequence[int], suffix: Sequence[int], limit: int
+) -> list[list[int]]:
+    """Окна по max_length токенов подряд, без перекрытия; ids — токены текста без служебных.
+
+    prefix и suffix обрамляют каждое окно: [CLS] и [SEP] у BERT, префикс задачи и </s> у T5.
+    """
+    width = max_length - len(prefix) - len(suffix)
+    return [[*prefix, *ids[i : i + width], *suffix] for i in range(0, max(len(ids), 1), width)][:limit]
+
+
+def _frame(spec: dict[str, Any]) -> tuple[list[int], list[int]]:
+    """Служебные токены вокруг окна: prefix_ids и suffix_ids или [cls_id] и [sep_id]."""
+    if "prefix_ids" in spec or "suffix_ids" in spec:
+        return list(spec.get("prefix_ids", [])), list(spec.get("suffix_ids", []))
+    return [spec["cls_id"]], [spec["sep_id"]]
 
 
 @dataclass(slots=True)
@@ -202,7 +251,8 @@ class _Transformer:
 
         s = self.spec
         ids = self.tokenizer.encode(self.normalize(text[: s["max_chars"]]), add_special_tokens=False).ids
-        ws = windows(ids, s["max_length"], s["cls_id"], s["sep_id"], s["max_windows"])
+        prefix, suffix = _frame(s)
+        ws = windows(ids, s["max_length"], prefix, suffix, s["max_windows"])
         batch = np.full((len(ws), max(len(w) for w in ws)), s["pad_id"], dtype=np.int64)
         mask = np.zeros_like(batch)
         for k, w in enumerate(ws):
@@ -245,7 +295,7 @@ def load(model: Model = LIGHTGBM) -> Loaded:
     path = local_path(model)
     if path is None:
         raise ModelError(f"модель {model.name} не скачана: aiw-ru models install {model.name}")
-    return _load_transformer(model, path) if model is TRANSFORMER else _load_lightgbm(model, path)
+    return _load_transformer(model, path) if model.kind == "onnx" else _load_lightgbm(model, path)
 
 
 def available(model: Model = LIGHTGBM) -> bool:

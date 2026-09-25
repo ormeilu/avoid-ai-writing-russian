@@ -62,8 +62,10 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
   calibrate --doc Ф --share N  то же, если известна только итоговая доля ИИ из отчёта, %
   classify [файл…]             вероятность ИИ по необязательной модели (трансформер или LightGBM)
   models                       необязательные модели: установлены ли и где лежат
+  models info [имя]            качество, скорость, память и размер моделей до скачивания
   models install [имя…]        скачать модели с Hugging Face (нужен extra ml):
-                               transformer, lightgbm; без имени — обе
+                               modernbert, transformer, lightgbm; без имени —
+                               transformer и lightgbm, точный modernbert только по имени
   skill [имя] [файл]           текст скилла для агента, если стоит только aiw-ru, без плагина:
                                без имени — список скиллов, с именем — SKILL.md,
                                с файлом — файл скилла (references/patterns.md)
@@ -77,7 +79,7 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
   --min P0|P1|P2    показывать находки не ниже уровня (scan)
   --fail-above N    scan: код выхода 1, если оценка выше N
   --config ПУТЬ     файл калибровки (по умолчанию ./.aiw-ru.json, затем ~/.config/aiw-ru.json)
-  --model ИМЯ       scan, antiplagiat, classify: transformer или lightgbm
+  --model ИМЯ       scan, antiplagiat, classify: modernbert, transformer или lightgbm
                     (по умолчанию первая установленная в этом порядке)
   --no-model        scan, antiplagiat: не показывать вероятность от модели, даже если она есть
   -h, --help        справка
@@ -769,9 +771,102 @@ def model_state(model: models.Model) -> dict[str, Any]:
     }
 
 
+GITHUB = "https://github.com/ormeilu/avoid-ai-writing-russian/blob/master"
+
+
+def mb(x: float | None) -> str:
+    return "—" if x is None else f"{js_round(x)} МБ"
+
+
+def ms(x: float | None) -> str:
+    return "—" if x is None else f"{ru(x, 0) if x >= 10 else ru(x, 1)} мс"
+
+
+def cmd_models_info(a: Args) -> int:
+    """Справка по моделям до скачивания: из каталога в пакете."""
+    cat = models.catalog()
+    entries = {e["name"]: e for e in cat["models"]}
+    if len(a.files) > 2:
+        raise UsageError("models info: нужно не больше одного имени модели")
+    if len(a.files) == 2:
+        name = a.files[1]
+        if name not in entries:
+            raise UsageError(f"models info: нет модели {name}; есть: {', '.join(entries)}")
+        e = entries[name]
+        if a.json:
+            sys.stdout.write(dump(e) + "\n")
+            return 0
+        q, meas = e["quality"], e.get("measured", {})
+        heading(f"{e['name']}: {e['summary']}")
+        facts(
+            [
+                ("Основа", e.get("base") or "LightGBM на признаках детектора aiw-ru"),
+                ("Лицензия", e["license"]),
+                ("ROC AUC", f"{ru(q['roc_auc'], 3)} на test, {ru(q['valid_roc_auc'], 3)} на valid"),
+                ("Accuracy", ru(q["accuracy"], 3)),
+                ("Людей за ИИ", f"{ru(q['human_as_ai'] * 100, 1)} % человеческих текстов test"),
+                ("Тексты с нуля", f"ROC AUC {ru(q['roc_auc_created'], 3)}, если модель не правила текст человека"),
+                ("Скорость", f"{ms(meas.get('short_ms'))} на 60 слов, {ms(meas.get('long_ms'))} на 800 слов"),
+                ("Загрузка", ms(meas.get("load_ms"))),
+                ("Память", f"{mb(meas.get('ram_mb'))}, пик процесса aiw-ru"),
+                ("Скачать", mb(e.get("download_mb"))),
+                ("Поставить", f"aiw-ru models install {name}"),
+                ("Карточка", f"https://huggingface.co/{e['repo']}"),
+                ("Отчёт", f"{GITHUB}/{e['report']}"),
+            ]
+        )
+        return 0
+    if a.json:
+        sys.stdout.write(dump(cat) + "\n")
+        return 0
+    rows: list[list[str | Text]] = []
+    for e in cat["models"]:
+        q, meas = e["quality"], e.get("measured", {})
+        rows.append(
+            [
+                e["name"],
+                ru(q["roc_auc"], 3),
+                ru(q["accuracy"], 3),
+                f"{ru(q['human_as_ai'] * 100, 1)} %",
+                ms(meas.get("long_ms")),
+                mb(e.get("download_mb")),
+                mb(meas.get("ram_mb")),
+                "да" if e["default"] else "по имени",
+            ]
+        )
+    heading("Необязательные модели aiw-ru")
+    table(
+        [
+            Col("Модель"),
+            Col("ROC AUC", "right"),
+            Col("Accuracy", "right"),
+            Col("Людей за ИИ", "right"),
+            Col("800 слов", "right"),
+            Col("Скачать", "right"),
+            Col("Память", "right"),
+            Col("Ставится"),
+        ],
+        rows,
+    )
+    out()
+    facts([(e["name"], e["summary"]) for e in cat["models"]])
+    out()
+    packages = f"около {mb(cat['packages_mb'])}" if cat.get("packages_mb") else "пакеты"
+    note(
+        f"Качество — на test русской части LLMTrace ({plural(cat['models'][0]['quality']['test_texts'], 'текст', 'текста', 'текстов')}): ROC AUC 1 — "
+        "модель всегда ставит ИИ-текст выше человеческого, 0,5 — угадывает. Скорость и память замерены на "
+        f"{cat['measured_on']}, память — пик процесса aiw-ru вместе с детектором. Для любой модели нужны "
+        f"{packages} из extra ml (общие для всех): {models.INSTALL_HINT}. «Ставится: да» — входит в "
+        "aiw-ru models install без имени. Подробнее о модели: aiw-ru models info ИМЯ."
+    )
+    return 0
+
+
 def cmd_models(a: Args) -> int:
+    if a.files and a.files[0] == "info":
+        return cmd_models_info(a)
     if a.files and a.files[0] == "install":
-        chosen = [models.get(name) for name in a.files[1:]] or list(models.MODELS.values())
+        chosen = [models.get(name) for name in a.files[1:]] or [m for m in models.MODELS.values() if m.default]
         for model in chosen:
             try:
                 path = models.install(model)

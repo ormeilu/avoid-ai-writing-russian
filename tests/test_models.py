@@ -110,15 +110,15 @@ VOCAB = {
 }
 
 
-@pytest.fixture
-def transformer_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """Крошечный классификатор из tests/fixtures/tiny-transformer и словарь на восемь слов."""
+def onnx_bundle(folder: Path) -> Path:
+    """Папка модели как на Hugging Face: крошечный ONNX-граф, словарь на восемь слов, inference.json."""
     pytest.importorskip("onnxruntime")
     tokenizers = pytest.importorskip("tokenizers")
+    folder.mkdir(parents=True, exist_ok=True)
     tok = tokenizers.Tokenizer(tokenizers.models.WordLevel(VOCAB, unk_token="[UNK]"))
     tok.pre_tokenizer = tokenizers.pre_tokenizers.Whitespace()
-    tok.save(str(tmp_path / "tokenizer.json"))
-    (tmp_path / "model.onnx").write_bytes((FIXTURE / "model.onnx").read_bytes())
+    tok.save(str(folder / "tokenizer.json"))
+    (folder / "model.onnx").write_bytes((FIXTURE / "model.onnx").read_bytes())
     spec = {
         "version": 1,
         "format": "onnx",
@@ -135,10 +135,27 @@ def transformer_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator
         "max_windows": 8,
         "normalize": [{"pattern": "ё", "replacement": "е", "why": "ё"}],
     }
-    (tmp_path / "inference.json").write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
-    monkeypatch.setenv("AIW_RU_TRANSFORMER_DIR", str(tmp_path))
+    (folder / "inference.json").write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+    return folder
+
+
+@pytest.fixture
+def transformer_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """Трансформер из крошечного графа; ModernBERT из кэша разработчика не подхватывается."""
+    folder = onnx_bundle(tmp_path / "transformer")
+    monkeypatch.setenv("AIW_RU_TRANSFORMER_DIR", str(folder))
+    monkeypatch.setenv("AIW_RU_MODERNBERT_DIR", str(tmp_path / "нет"))
     models.load.cache_clear()
-    yield tmp_path
+    yield folder
+    models.load.cache_clear()
+
+
+@pytest.fixture
+def modernbert_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    folder = onnx_bundle(tmp_path / "modernbert")
+    monkeypatch.setenv("AIW_RU_MODERNBERT_DIR", str(folder))
+    models.load.cache_clear()
+    yield folder
     models.load.cache_clear()
 
 
@@ -153,13 +170,15 @@ def test_transformer_probability(transformer_dir: Path):
 
 def test_transformer_averages_windows(transformer_dir: Path):
     """длинный текст режется на окна по max_length токенов, вероятность — среднее по окнам"""
-    assert models.windows(list(range(10, 20)), 6, 2, 3, 8) == [
+    assert models.windows(list(range(10, 20)), 6, [2], [3], 8) == [
         [2, 10, 11, 12, 13, 3],
         [2, 14, 15, 16, 17, 3],
         [2, 18, 19, 3],
     ]
-    assert models.windows([], 6, 2, 3, 8) == [[2, 3]]
-    assert len(models.windows(list(range(100)), 6, 2, 3, 8)) == 8
+    assert models.windows([], 6, [2], [3], 8) == [[2, 3]]
+    assert len(models.windows(list(range(100)), 6, [2], [3], 8)) == 8
+    # T5: префикс задачи из нескольких токенов и </s> в конце, без [CLS]
+    assert models.windows(list(range(10, 14)), 6, [7, 8], [1], 8) == [[7, 8, 10, 11, 12, 1], [7, 8, 13, 1]]
     t = models.TRANSFORMER
     ai, human = (
         models.probability("является ключевую данный еще", model=t),
@@ -167,6 +186,31 @@ def test_transformer_averages_windows(transformer_dir: Path):
     )
     mixed = models.probability("является ключевую данный еще ну вот короче типа", model=t)
     assert mixed == pytest.approx((ai + human) / 2, abs=1e-6)
+
+
+def test_prefix_and_suffix_ids(transformer_dir: Path):
+    """inference.json с prefix_ids и suffix_ids вместо cls_id и sep_id, как у T5"""
+    spec = json.loads((transformer_dir / "inference.json").read_text(encoding="utf-8"))
+    base = models.probability("является ключевую", model=models.TRANSFORMER)
+    del spec["cls_id"], spec["sep_id"]
+    spec["prefix_ids"], spec["suffix_ids"] = [2], [3]
+    (transformer_dir / "inference.json").write_text(json.dumps(spec), encoding="utf-8")
+    models.load.cache_clear()
+    assert models.probability("является ключевую", model=models.TRANSFORMER) == base
+    # префикс из слов конца словаря тянет вероятность к ИИ
+    spec["prefix_ids"] = [15, 15]
+    (transformer_dir / "inference.json").write_text(json.dumps(spec), encoding="utf-8")
+    models.load.cache_clear()
+    assert models.probability("является ключевую", model=models.TRANSFORMER) > base
+
+
+def test_onnx_external_data_is_downloaded():
+    """большой граф лежит в model.onnx и model.onnx.data: оба попадают в загрузку"""
+    from fnmatch import fnmatch
+
+    for name in ("model.onnx", "model.onnx.data"):
+        assert any(fnmatch(name, p) for p in models.MODERNBERT.files)
+    assert not any(fnmatch("model_fp32.onnx", p) for p in models.MODERNBERT.files)
 
 
 def test_transformer_format_mismatch(transformer_dir: Path):
@@ -245,10 +289,61 @@ def test_cli_models_status(model_dir: Path, transformer_dir: Path, capsys: pytes
     code, out, _ = cli(capsys, "models", "--json")
     data = json.loads(out)
     assert code == 0 and data["ready"]
-    assert [m["name"] for m in data["models"]] == ["transformer", "lightgbm"]
-    assert all(m["ready"] and m["error"] is None for m in data["models"])
+    ready = {m["name"]: m["ready"] for m in data["models"]}
+    assert ready == {"modernbert": False, "transformer": True, "lightgbm": True}
+    assert "models install modernbert" in data["models"][0]["error"]
+
+
+def test_modernbert_is_opt_in_and_preferred(
+    model_dir: Path,
+    transformer_dir: Path,
+    modernbert_dir: Path,
+    texts: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
+):
+    """точная модель ставится только по имени, а установленная даёт вероятность по умолчанию"""
+    assert [m.name for m in models.MODELS.values() if m.default] == ["transformer", "lightgbm"]
+    assert chosen() is models.MODERNBERT
+    _, out, _ = cli(capsys, "classify", "--json", texts["ai"])
+    assert json.loads(out)["name"] == "modernbert"
+    _, out, _ = cli(capsys, "classify", "--json", "--model", "transformer", texts["ai"])
+    assert json.loads(out)["name"] == "transformer"
 
 
 def test_cli_unknown_model(capsys: pytest.CaptureFixture[str]):
     code, _, err = cli(capsys, "classify", "--model", "gpt")
     assert code == 2 and "неизвестная --model: gpt" in err
+
+
+# ── каталог для models info ──
+
+REPORTS = Path(__file__).parent.parent / "docs" / "models"
+
+
+def test_catalog_matches_reports():
+    """каталог в пакете: каждая модель с отчётом в docs/models, качество — из отчёта"""
+    cat = models.catalog()
+    names = [e["name"] for e in cat["models"]]
+    assert set(names) <= set(models.MODELS)
+    for model in models.MODELS.values():
+        path = REPORTS / f"{model.repo.split('/')[-1]}.json"
+        if not path.exists():
+            continue
+        entry = next(e for e in cat["models"] if e["name"] == model.name)
+        report = json.loads(path.read_text(encoding="utf-8"))
+        assert entry["quality"]["roc_auc"] == round(report["test"]["roc_auc"], 4)
+        assert entry["quality"]["accuracy"] == round(report["test"]["accuracy"], 4)
+        assert entry["repo"] == model.repo and entry["default"] == model.default
+        assert set(entry.get("measured", {})) <= {"load_ms", "short_ms", "long_ms", "ram_mb"}
+
+
+def test_cli_models_info(capsys: pytest.CaptureFixture[str]):
+    """справка по моделям без скачивания: таблица, одна модель, JSON"""
+    code, out, _ = cli(capsys, "models", "info")
+    assert code == 0 and "ROC AUC" in out and "Память" in out and "transformer" in out
+    code, out, _ = cli(capsys, "models", "info", "lightgbm")
+    assert code == 0 and "aiw-ru models install lightgbm" in out
+    _, out, _ = cli(capsys, "models", "info", "--json")
+    assert {e["name"] for e in json.loads(out)["models"]} >= {"transformer", "lightgbm"}
+    code, _, err = cli(capsys, "models", "info", "gpt")
+    assert code == 2 and "нет модели gpt" in err

@@ -1,0 +1,64 @@
+{
+  "created": "2026-09-25",
+  "measured_on": "Apple M1, 8 ядер",
+  "python": "3.14.6",
+  "long_text_words": 800,
+  "short_text_words": 60,
+  "packages_mb": null,
+  "packages_platform": null,
+  "dataset": "iitolstykh/LLMTrace_classification (ru), test",
+  "models": [
+    {
+      "name": "transformer",
+      "title": "трансформер",
+      "summary": "почти так же точна, лёгкая и быстрая: выбор по умолчанию",
+      "repo": "toiletsandpaper/russian-ai-text-detector-bert",
+      "default": true,
+      "base": "cointegrated/rubert-tiny2",
+      "license": "mit",
+      "weights": "int8",
+      "report": "docs/models/russian-ai-text-detector-bert.md",
+      "quality": {
+        "roc_auc": 0.9869,
+        "accuracy": 0.9449,
+        "f1_macro": 0.9429,
+        "human_as_ai": 0.0723,
+        "roc_auc_created": 0.9889,
+        "valid_roc_auc": 0.9877,
+        "test_texts": 52521
+      },
+      "measured": {
+        "load_ms": 363.6,
+        "short_ms": 4.8,
+        "long_ms": 82.7,
+        "ram_mb": 228.6
+      }
+    },
+    {
+      "name": "lightgbm",
+      "title": "LightGBM",
+      "summary": "самая лёгкая, работает и без onnxruntime (Mac на Intel), но заметно менее точна",
+      "repo": "toiletsandpaper/russian-ai-text-detector-lightgbm",
+      "default": true,
+      "base": null,
+      "license": "MIT",
+      "weights": null,
+      "report": "docs/models/russian-ai-text-detector-lightgbm.md",
+      "quality": {
+        "roc_auc": 0.9431,
+        "accuracy": 0.8678,
+        "f1_macro": 0.8631,
+        "human_as_ai": 0.1649,
+        "roc_auc_created": 0.9464,
+        "valid_roc_auc": 0.9422,
+        "test_texts": 52521
+      },
+      "measured": {
+        "load_ms": 1600.2,
+        "short_ms": 4.1,
+        "long_ms": 18.2,
+        "ram_mb": 183.2
+      }
+    }
+  ]
+}
