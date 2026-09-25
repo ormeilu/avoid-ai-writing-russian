@@ -33,7 +33,8 @@
         "short_ms": 16.5,
         "long_ms": 93.4,
         "ram_mb": 386.9
-      }
+      },
+      "revision": "36fbd6ce9a31a8fb3f3904e9c7952a1d07242b7f"
     },
     {
       "name": "mini-frida",
@@ -60,7 +61,8 @@
         "short_ms": 5.8,
         "long_ms": 56.1,
         "ram_mb": 504.8
-      }
+      },
+      "revision": "70ccd5beb99ec3a4e4c0957c03f2bebe8e27f632"
     },
     {
       "name": "transformer",
@@ -87,7 +89,8 @@
         "short_ms": 1.7,
         "long_ms": 20.8,
         "ram_mb": 211.2
-      }
+      },
+      "revision": "732b6b7400b8b340357f0ab01d382206852180af"
     },
     {
       "name": "lightgbm",
@@ -114,7 +117,8 @@
         "short_ms": 1.5,
         "long_ms": 11.4,
         "ram_mb": 186.7
-      }
+      },
+      "revision": "6b804542a6d5b99c97b1be8ad1ea4dff65396443"
     }
   ]
 }
