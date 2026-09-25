@@ -47,6 +47,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
+from itertools import pairwise
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -94,6 +95,7 @@ LICENSES = {
     "cointegrated/rubert-tiny2": "mit",
     "sergeyzh/rubert-mini-frida": "mit",
     "deepvk/RuModernBERT-small": "apache-2.0",
+    "ai-forever/FRIDA": "mit",
 }
 LABELS = ("human", "ai")
 THRESHOLD = 0.5
@@ -722,13 +724,26 @@ def cmd_fit(args: argparse.Namespace, pilot: bool) -> None:
 
 
 def export_onnx(model_dir: Path, path: Path) -> None:
-    """PyTorch → ONNX с переменной длиной пачки и текста."""
-    model: Any = AutoModelForSequenceClassification.from_pretrained(model_dir)
-    model = model.eval().float()
-    tok = load_tokenizer(model_dir)
-    sample = tok(["Короткий пример.", "Пример подлиннее, чтобы в пачке были тексты разной длины."], padding=True)
+    """PyTorch → ONNX с переменной длиной пачки и текста; веса больше 2 ГБ — во внешнем файле model.onnx.data."""
+    model = load_torch_classifier(model_dir)
+    texts = ["Короткий пример.", "Пример подлиннее, чтобы в пачке были тексты разной длины."]
+    if is_frozen(model_dir):
+        wrap = model_wrap(model_dir)
+        prefix, suffix = spec_wrap(wrap)
+        btok = inference_tokenizer(model_dir / "tokenizer.json")
+        seqs = [[*prefix, *e.ids, *suffix] for e in btok.encode_batch(texts, add_special_tokens=False)]
+        width = max(len(x) for x in seqs)
+        sample = {
+            "input_ids": [[*x, *[wrap["pad_id"]] * (width - len(x))] for x in seqs],
+            "attention_mask": [[1] * len(x) + [0] * (width - len(x)) for x in seqs],
+        }
+        max_seq = 4096
+    else:
+        sample = load_tokenizer(model_dir)(texts, padding=True)
+        max_seq = int(model.config.max_position_embeddings)
+    big = sum(x.numel() for x in model.parameters()) * 4 > 1.8e9
     batch = torch.export.Dim("batch", min=1, max=1024)
-    seq = torch.export.Dim("sequence", min=2, max=int(model.config.max_position_embeddings))
+    seq = torch.export.Dim("sequence", min=2, max=max_seq)
     torch.onnx.export(
         model,
         (),
@@ -741,7 +756,7 @@ def export_onnx(model_dir: Path, path: Path) -> None:
         output_names=["logits"],
         dynamic_shapes={"input_ids": {0: batch, 1: seq}, "attention_mask": {0: batch, 1: seq}},
         dynamo=True,
-        external_data=False,
+        external_data=big,
         optimize=True,
     )
 
@@ -756,7 +771,9 @@ def quantize_int8(src: Path, dst: Path) -> None:
     model = onnx.load(src)
     del model.graph.value_info[:]
     bare = dst.with_suffix(".bare.onnx")
-    onnx.save(model, bare)
+    big = onnx_size(src) > 1.8e9
+    onnx.save(model, bare, save_as_external_data=big, location=bare.name + ".data")
+    del model
     try:
         # Масштаб на каждый столбец весов и 7 бит вместо 8: на valid ROC AUC как у fp32,
         # и нет переполнения на старых x86 без VNNI.
@@ -770,6 +787,13 @@ def quantize_int8(src: Path, dst: Path) -> None:
         )
     finally:
         bare.unlink(missing_ok=True)
+        bare.with_name(bare.name + ".data").unlink(missing_ok=True)
+
+
+def onnx_size(path: Path) -> float:
+    """Байты ONNX вместе с внешним файлом весов, если он есть."""
+    data = path.with_name(path.name + ".data")
+    return path.stat().st_size + (data.stat().st_size if data.exists() else 0)
 
 
 def session(path: Path, threads: int) -> ort.InferenceSession:
@@ -812,8 +836,12 @@ def predict_onnx(sess: Session, enc: Encoded, pad_id: int, size: int = 32) -> np
 
 
 def timed(fn: Callable[[], object], warmup: int = 5, runs: int = 30) -> float:
-    """Медиана времени вызова в миллисекундах."""
-    for _ in range(warmup):
+    """Медиана времени вызова в миллисекундах; для вызовов дольше секунды прогонов меньше."""
+    t = time.perf_counter()
+    fn()
+    if time.perf_counter() - t > 1:
+        warmup, runs = 1, 5
+    for _ in range(warmup - 1):
         fn()
     times = []
     for _ in range(runs):
@@ -828,22 +856,20 @@ def run_torch(model: Any, ids: torch.Tensor, mask: torch.Tensor) -> None:
         model(input_ids=ids, attention_mask=mask)
 
 
-def latency_inputs(enc: Encoded, length: int, sep_id: int) -> tuple[np.ndarray, np.ndarray]:
-    """Настоящий текст ровно на length токенов: самый длинный из части, обрезанный с [SEP] в конце."""
+def latency_inputs(enc: Encoded, length: int, suffix: Sequence[int]) -> tuple[np.ndarray, np.ndarray]:
+    """Настоящий текст ровно на length токенов: самый длинный из части, обрезанный со служебным хвостом."""
     s = enc.seq(int(np.argmax(enc.lengths)))
     if len(s) > length:
-        s = np.concatenate([s[: length - 1], [sep_id]])
+        s = np.concatenate([s[: length - len(suffix)], suffix]) if suffix else s[:length]
     ids = s.astype(np.int64)[None, :]
     return ids, np.ones_like(ids)
 
 
-def measure_latency(model_dir: Path, onnx_files: dict[str, Path], enc: Encoded, sep_id: int) -> list[dict]:
+def measure_latency(model: Any, onnx_files: dict[str, Path], enc: Encoded, suffix: Sequence[int]) -> list[dict]:
     """Задержка на один текст: ONNX Runtime и PyTorch на CPU, один поток и все ядра."""
     out: list[dict] = []
-    model: Any = AutoModelForSequenceClassification.from_pretrained(model_dir)
-    model = model.eval().float()
     for length in LATENCY_LENGTHS:
-        ids, mask = latency_inputs(enc, length, sep_id)
+        ids, mask = latency_inputs(enc, length, suffix)
         for threads in sorted({1, os.cpu_count() or 1}):
             for variant, path in onnx_files.items():
                 ms = timed(partial(run_logits, session(path, threads), ids, mask))
@@ -869,18 +895,18 @@ def cmd_export(args: argparse.Namespace) -> None:
     quantize_int8(fp32, int8)
     print(f"ONNX: {fp32} и {int8} за {time.perf_counter() - started:.0f} с", flush=True)
 
-    tok = load_tokenizer(model_dir)
-    _, sep_id, pad_id = special_ids(tok)
+    wrap = model_wrap(model_dir)
+    _, suffix = spec_wrap(wrap)
+    pad_id = wrap["pad_id"]
     p = run["params"]
-    raw = not p["normalize"]
     eval_limit = run["dataset"]["eval_limit"]
-    valid = encode_split(args.data, "valid", eval_limit, tok, p["max_length"], raw, args.out_root / "cache")
+    valid = eval_split(args.data, "valid", eval_limit, model_dir, p, args.out_root / "cache")
     # Сверка на текстах всех длин: равномерно по отсортированному списку.
     order = np.argsort(valid.lengths, kind="stable")
     pick = order[np.linspace(0, len(order) - 1, min(PARITY_TEXTS, len(order))).astype(int)]
     sub = valid.subset(pick)
-    model: Any = AutoModelForSequenceClassification.from_pretrained(model_dir)
-    ref = predict_torch(model.eval().float(), sub, torch.device("cpu"), "fp32", 16, pad_id)
+    model = load_torch_classifier(model_dir)
+    ref = predict_torch(model, sub, torch.device("cpu"), "fp32", 16, pad_id)
     parity: dict[str, Any] = {}
     for variant, path in (("fp32", fp32), ("int8", int8)):
         got = predict_onnx(session(path, os.cpu_count() or 1), sub, pad_id, 1 if variant == "int8" else 32)
@@ -891,7 +917,7 @@ def cmd_export(args: argparse.Namespace) -> None:
             "same_label": float(((got >= THRESHOLD) == (ref >= THRESHOLD)).mean()),
         }
     # Вывод по спецификации (tokenizers без transformers) даёт то же, что пакетная оценка.
-    spec = inference_spec(p, tok, "head", "fp32")
+    spec = inference_spec(p, wrap, "head", "fp32")
     lines = load(args.data, "classification", "valid", eval_limit)
     texts = [json.loads(lines[int(k)])["text"] for k in pick[:50]]
     btok = inference_tokenizer(model_dir / "tokenizer.json")
@@ -903,27 +929,36 @@ def cmd_export(args: argparse.Namespace) -> None:
     if parity["fp32"]["max_abs_diff"] > 1e-3 or parity["spec_vs_batch_max_abs_diff"] > 1e-3:
         raise SystemExit("ONNX fp32 или вывод по спецификации расходятся с PyTorch, см. сверку выше")
 
-    latency = measure_latency(model_dir, {"fp32": fp32, "int8": int8}, valid, sep_id)
+    latency = measure_latency(model, {"fp32": fp32, "int8": int8}, valid, suffix)
     table(
         "Задержка на один текст, мс",
         ["Среда", "Токенов", "Потоков", "мс"],
         [[r["runtime"], str(r["tokens"]), str(r["threads"]), f"{r['ms']:.1f}"] for r in latency],
     )
-    weights = next(model_dir.glob("*.safetensors"))
+    weights = sum(f.stat().st_size for f in model_dir.glob("*.safetensors"))
     export = {
         "parity": parity,
         "latency": latency,
         "cpu": cpu_name(),
         "sizes_mb": {
-            "onnx_fp32": fp32.stat().st_size / 1e6,
-            "onnx_int8": int8.stat().st_size / 1e6,
-            "safetensors": weights.stat().st_size / 1e6,
+            "onnx_fp32": onnx_size(fp32) / 1e6,
+            "onnx_int8": onnx_size(int8) / 1e6,
+            "safetensors": (weights or sum(x.numel() for x in model.parameters()) * 4) / 1e6,
             "tokenizer": sum(f.stat().st_size for f in model_dir.glob("tokenizer*")) / 1e6,
         },
         "environment": environment(),
     }
     (run_dir / args.json).write_text(json.dumps(export, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"Готово: {run_dir / args.json}", flush=True)
+
+
+def eval_split(data: Path, split: str, limit: int, model_dir: Path, p: dict, cache: Path) -> Encoded:
+    """Часть корпуса в токенах: как при обучении у дообученной модели, как при выводе у замороженной."""
+    if is_frozen(model_dir):
+        return encode_split_spec(
+            data, split, limit, model_dir / "tokenizer.json", model_wrap(model_dir), p["max_length"], cache
+        )[0]
+    return encode_split(data, split, limit, load_tokenizer(model_dir), p["max_length"], not p["normalize"], cache)
 
 
 def cpu_name() -> str:
@@ -942,9 +977,11 @@ def cpu_name() -> str:
 # ─── Вывод на CPU ───────────────────────────────────────────────────────
 
 
-def inference_spec(p: dict, tok: Any, long_texts: str, weights: str = "int8") -> dict:
-    """Всё, что нужно выводу без transformers: файл, токены, нормализация, порог, правило для длинных текстов."""
-    cls_id, sep_id, pad_id = special_ids(tok)
+def inference_spec(p: dict, wrap: dict, long_texts: str, weights: str = "int8") -> dict:
+    """Всё, что нужно выводу без transformers: файл, токены, нормализация, порог, правило для длинных текстов.
+
+    wrap — токены вокруг окна: cls_id, sep_id и pad_id у BERT или prefix_ids, suffix_ids и pad_id.
+    """
     windows = MAX_WINDOWS if long_texts == "mean_of_windows" else 1
     return {
         "version": INFERENCE_VERSION,
@@ -958,9 +995,7 @@ def inference_spec(p: dict, tok: Any, long_texts: str, weights: str = "int8") ->
         "threshold": THRESHOLD,
         "max_length": p["max_length"],
         "max_chars": p["max_length"] * CHARS_PER_TOKEN * MAX_WINDOWS,
-        "cls_id": cls_id,
-        "sep_id": sep_id,
-        "pad_id": pad_id,
+        **wrap,
         "long_texts": long_texts,
         "max_windows": windows,
         "normalize": [{"pattern": pat, "replacement": rep, "why": why} for pat, rep, why in NORMALIZE_RULES]
@@ -969,14 +1004,20 @@ def inference_spec(p: dict, tok: Any, long_texts: str, weights: str = "int8") ->
     }
 
 
-def windows(ids: Sequence[int], max_length: int, cls_id: int, sep_id: int, limit: int) -> list[list[int]]:
-    """Окна по max_length токенов подряд, без перекрытия; ids — токены текста без [CLS] и [SEP]."""
-    width = max_length - 2
-    return [[cls_id, *ids[i : i + width], sep_id] for i in range(0, max(len(ids), 1), width)][:limit]
+def windows(
+    ids: Sequence[int], max_length: int, prefix: Sequence[int], suffix: Sequence[int], limit: int
+) -> list[list[int]]:
+    """Окна по max_length токенов подряд, без перекрытия; ids — токены текста без служебных.
+
+    prefix и suffix — то, что ставится вокруг каждого окна: [CLS] и [SEP] у BERT, служебные
+    токены и префикс задачи у замороженного энкодера.
+    """
+    width = max_length - len(prefix) - len(suffix)
+    return [[*prefix, *ids[i : i + width], *suffix] for i in range(0, max(len(ids), 1), width)][:limit]
 
 
 def window_probs(sess: Session, ids: Sequence[int], spec: dict) -> np.ndarray:
-    ws = windows(ids, spec["max_length"], spec["cls_id"], spec["sep_id"], spec["max_windows"])
+    ws = windows(ids, spec["max_length"], *spec_wrap(spec), spec["max_windows"])
     arr = np.full((len(ws), max(len(w) for w in ws)), spec["pad_id"], dtype=np.int64)
     mask = np.zeros_like(arr)
     for k, w in enumerate(ws):
@@ -999,16 +1040,440 @@ def predict_text(text: str, sess: Session, tok: tokenizers.Tokenizer, spec: dict
 
 
 def long_texts(
-    sess: ort.InferenceSession, data: Path, split: str, limit: int, enc: Encoded, head: np.ndarray, tok: Any, p: dict
+    sess: Session, data: Path, split: str, limit: int, enc: Encoded, head: np.ndarray, model_dir: Path, p: dict
 ) -> tuple[dict, np.ndarray, np.ndarray]:
     """Начало текста против среднего по окнам на текстах длиннее max_length."""
     idx = np.flatnonzero(enc.truncated)
     lines = load(data, "classification", split, limit)
-    spec = inference_spec(p, tok, "mean_of_windows")
-    btok = inference_tokenizer(Path(tok.name_or_path) / "tokenizer.json")
+    spec = inference_spec(p, model_wrap(model_dir), "mean_of_windows")
+    btok = inference_tokenizer(model_dir / "tokenizer.json")
     mean = np.array([predict_text(json.loads(lines[int(k)])["text"], sess, btok, spec) for k in idx])
     y = enc.y[idx]
     return {"texts": len(idx), "head": quick(y, head[idx]), "mean_of_windows": quick(y, mean)}, idx, mean
+
+
+def spec_vs_eval(
+    sess: Session, data: Path, limit: int, enc: Encoded, probs: np.ndarray, tokenizer: Path, spec: dict
+) -> dict:
+    """Вывод по inference.json, текст за текстом, как в aiw-ru, против итоговых вероятностей оценки.
+
+    Тексты берутся равномерно по длине, чтобы попали и короткие, и обрезанные.
+    """
+    order = np.argsort(enc.lengths, kind="stable")
+    pick = order[np.linspace(0, len(order) - 1, min(PARITY_TEXTS, len(order))).astype(int)]
+    lines = load(data, "classification", "valid", limit)
+    btok = inference_tokenizer(tokenizer)
+    one = np.array([predict_text(json.loads(lines[int(k)])["text"], sess, btok, spec) for k in pick])
+    diff = np.abs(one - probs[pick])
+    return {"texts": len(pick), "max_abs_diff": float(diff.max()), "mean_abs_diff": float(diff.mean())}
+
+
+# ─── Замороженный энкодер ───────────────────────────────────────────────
+# Большую модель (FRIDA, 823 млн параметров) на бесплатной T4 целиком не дообучить: не хватает
+# ни памяти на AdamW, ни времени. Энкодер остаётся как есть, эмбеддинги один раз считаются на
+# GPU, по ним учится логистическая регрессия. В ONNX энкодер, пулинг, нормировка и голова
+# собраны в один граф: input_ids, attention_mask → logits.
+
+FROZEN = "frozen.json"
+C_GRID = (0.1, 1.0, 10.0, 100.0)
+EMBED_TOKENS = 16384  # токенов в пачке при расчёте эмбеддингов
+
+
+def is_frozen(model_dir: Path) -> bool:
+    return (model_dir / FROZEN).exists()
+
+
+def wrap_ids(tok: tokenizers.Tokenizer, prefix: str) -> tuple[list[int], list[int]]:
+    """Токены до и после текста: служебные токены токенизатора и префикс задачи.
+
+    Текст токенизируется отдельно от префикса, как при выводе по inference.json.
+    """
+    probe = tok.encode("проверка", add_special_tokens=False).ids
+    full = tok.encode("проверка").ids
+    k = next((i for i in range(len(full) - len(probe) + 1) if full[i : i + len(probe)] == probe), None)
+    if k is None:
+        raise SystemExit(f"токенизатор меняет текст рядом со служебными токенами: {full} против {probe}")
+    pre = tok.encode(prefix, add_special_tokens=False).ids if prefix else []
+    return [*full[:k], *pre], full[k + len(probe) :]
+
+
+def model_wrap(model_dir: Path) -> dict:
+    """Токены вокруг окна для inference.json: cls_id и sep_id у BERT, prefix_ids и suffix_ids у замороженного."""
+    if is_frozen(model_dir):
+        f = json.loads((model_dir / FROZEN).read_text(encoding="utf-8"))
+        return {"prefix_ids": f["prefix_ids"], "suffix_ids": f["suffix_ids"], "pad_id": f["pad_id"]}
+    cls_id, sep_id, pad_id = special_ids(load_tokenizer(model_dir))
+    return {"cls_id": cls_id, "sep_id": sep_id, "pad_id": pad_id}
+
+
+def spec_wrap(spec: dict) -> tuple[list[int], list[int]]:
+    if "prefix_ids" in spec:
+        return list(spec["prefix_ids"]), list(spec["suffix_ids"])
+    return [spec["cls_id"]], [spec["sep_id"]]
+
+
+def encode_split_spec(
+    data: Path, split: str, limit: int, tokenizer: Path, wrap: dict, max_length: int, cache_dir: Path
+) -> tuple[Encoded, list[list[int]]]:
+    """Первое окно каждого текста так, как его строит вывод по inference.json, и токены целиком.
+
+    Нужен моделям с prefix_ids/suffix_ids; кэш — по хэшу tokenizer.json, окружению окна и нормализации.
+    """
+    prefix, suffix = spec_wrap(wrap)
+    h = hashlib.sha1(tokenizer.read_bytes() + repr((prefix, suffix)).encode()).hexdigest()[:8]
+    cache = cache_dir / f"spec-{split}{f'-{limit}' if limit else ''}-{h}-{max_length}-{normalize_key()}.npz"
+    lines = load(data, "classification", split, limit)
+    tok = inference_tokenizer(tokenizer)
+    max_chars = max_length * CHARS_PER_TOKEN * MAX_WINDOWS
+    if cache.exists():
+        z = np.load(cache, allow_pickle=False)
+        full = np.split(z["full"], z["full_offsets"][1:-1])
+        return Encoded(**{f: z[f] for f in Encoded.__dataclass_fields__}), [x.tolist() for x in full]
+    rs = [json.loads(line) for line in lines]
+    full = [e.ids for e in tok.encode_batch([normalize(r["text"][:max_chars]) for r in rs], add_special_tokens=False)]
+    width = max_length - len(prefix) - len(suffix)
+    heads = [windows(x, max_length, prefix, suffix, 1)[0] for x in full]
+    enc = Encoded(
+        ids=np.concatenate([np.asarray(s, dtype=np.int32) for s in heads]),
+        offsets=np.concatenate([[0], np.cumsum([len(s) for s in heads])]).astype(np.int64),
+        truncated=np.array([len(x) > width for x in full], dtype=bool),
+        y=np.array([r["label"] == "ai" for r in rs], dtype=np.int8),
+        genre=np.array([r["data_type"] for r in rs]),
+        prompt=np.array([r["prompt_type"] or "" for r in rs]),
+        generator=np.array([r["model"] if r["label"] == "ai" else "" for r in rs]),
+    )
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    np.savez(
+        cache,
+        **{f: getattr(enc, f) for f in Encoded.__dataclass_fields__},
+        full=np.concatenate([np.asarray(x, dtype=np.int32) for x in full]),
+        full_offsets=np.concatenate([[0], np.cumsum([len(x) for x in full])]).astype(np.int64),
+    )
+    return enc, full
+
+
+def load_encoder(base: str, revision: str | None = None, dtype: torch.dtype | None = None) -> Any:
+    """Энкодер без головы; у T5 — только энкодерная половина.
+
+    Внимание eager и на GPU, и при экспорте: T5 с sdpa torch.onnx (dynamo) не раскладывает,
+    а одна реализация везде убирает расхождение между эмбеддингами для головы и ONNX.
+    """
+    from transformers import AutoConfig, AutoModel, T5EncoderModel
+
+    cfg = AutoConfig.from_pretrained(base, revision=revision)
+    cls: Any = T5EncoderModel if cfg.model_type in ("t5", "mt5", "umt5") else AutoModel
+    kw = {"dtype": dtype} if dtype is not None else {}
+    return cls.from_pretrained(base, revision=revision, attn_implementation="eager", **kw)
+
+
+class FrozenClassifier(torch.nn.Module):
+    """Замороженный энкодер, пулинг, L2-нормировка и линейная голова: логиты «человек» и «ИИ»."""
+
+    def __init__(self, encoder: Any, pooling: str, weight: np.ndarray, bias: float) -> None:
+        super().__init__()
+        self.encoder = encoder
+        self.pooling = pooling
+        self.head = torch.nn.Linear(len(weight), 2)
+        with torch.no_grad():
+            self.head.weight.zero_()
+            self.head.bias.zero_()
+            self.head.weight[1] = torch.from_numpy(np.asarray(weight, dtype=np.float32))
+            self.head.bias[1] = float(bias)
+
+    def embed(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        h = self.encoder(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+        if self.pooling == "cls":
+            e = h[:, 0]
+        else:
+            m = attention_mask.unsqueeze(-1).to(h.dtype)
+            e = (h * m).sum(dim=1) / m.sum(dim=1).clamp_min(1)
+        return torch.nn.functional.normalize(e.float(), dim=-1)
+
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> Any:
+        from transformers.modeling_outputs import SequenceClassifierOutput
+
+        return SequenceClassifierOutput(logits=self.head(self.embed(input_ids, attention_mask)))
+
+    @classmethod
+    def load(cls, model_dir: Path) -> FrozenClassifier:
+        f = json.loads((model_dir / FROZEN).read_text(encoding="utf-8"))
+        head = np.load(model_dir / "head.npz")
+        encoder = load_encoder(f["base"], f.get("base_revision") or None)
+        return cls(encoder, f["pooling"], head["weight"], float(head["bias"]))
+
+
+def load_torch_classifier(model_dir: Path) -> Any:
+    """Модель для сверки с ONNX и замера задержки: дообученная или замороженная с головой."""
+    if is_frozen(model_dir):
+        return FrozenClassifier.load(model_dir).eval().float()
+    model: Any = AutoModelForSequenceClassification.from_pretrained(model_dir)
+    return model.eval().float()
+
+
+def embed_windows(
+    model: FrozenClassifier, wins: Sequence[Sequence[int]], pad_id: int, device: torch.device, precision: str
+) -> np.ndarray:
+    """Нормированные эмбеддинги окон, float16; пачки по числу токенов, от коротких к длинным."""
+    lengths = np.array([len(w) for w in wins])
+    order = np.argsort(lengths, kind="stable")
+    out = np.zeros((len(wins), model.head.in_features), dtype=np.float16)
+    i, done, started = 0, 0, time.perf_counter()
+    while i < len(order):
+        j = i + 1
+        while j < len(order) and (j - i + 1) * lengths[order[j]] <= EMBED_TOKENS:
+            j += 1
+        idx = order[i:j]
+        width = int(-(-int(lengths[idx].max()) // 8) * 8)
+        ids = np.full((len(idx), width), pad_id, dtype=np.int64)
+        mask = np.zeros_like(ids)
+        for row, k in enumerate(idx):
+            ids[row, : lengths[k]] = wins[int(k)]
+            mask[row, : lengths[k]] = 1
+        # fp16-wo32: веса уже в fp16 (кроме wo у T5), autocast не нужен.
+        with torch.no_grad(), autocast(device, "fp32" if precision == "fp16-wo32" else precision):
+            e = model.embed(torch.from_numpy(ids).to(device), torch.from_numpy(mask).to(device))
+        out[idx] = e.cpu().numpy().astype(np.float16)
+        done += len(idx)
+        if done // 10000 != (done - len(idx)) // 10000:
+            rate = done / (time.perf_counter() - started)
+            print(f"  {done}/{len(order)} окон, {rate:.0f} в секунду", flush=True)
+        i = j
+    return out
+
+
+def stitch_windows(
+    head_emb: np.ndarray, long: np.ndarray, rest: Sequence[int], more: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Эмбеддинги окон длинных текстов подряд: начало текста из head_emb, затем его остальные окна из more."""
+    ends = np.cumsum(rest).astype(int)
+    chunks = [
+        x
+        for k, a, b in zip(long, ends - np.asarray(rest, dtype=int), ends, strict=True)
+        for x in (head_emb[k : k + 1], more[a:b])
+    ]
+    emb = np.concatenate(chunks) if chunks else np.zeros((0, head_emb.shape[1]), dtype=head_emb.dtype)
+    return emb, np.asarray(rest, dtype=int) + 1
+
+
+def precision_check(
+    ref: FrozenClassifier,
+    model: FrozenClassifier,
+    precision: str,
+    wins: Sequence[Sequence[int]],
+    pad_id: int,
+    device: torch.device,
+) -> dict:
+    """Эмбеддинги в fp16 против fp32 на окнах разной длины: T5 в fp16 бывает переполняется."""
+    order = np.argsort([len(w) for w in wins], kind="stable")
+    sample = [wins[int(k)] for k in order[np.linspace(0, len(order) - 1, min(64, len(order))).astype(int)]]
+    a = embed_windows(ref, sample, pad_id, device, "fp32").astype(np.float32)
+    b = embed_windows(model, sample, pad_id, device, precision).astype(np.float32)
+    finite = bool(np.isfinite(b).all())
+    cos = float((a * b).sum(axis=1).min()) if finite else 0.0
+    return {
+        "precision": precision,
+        "texts": len(sample),
+        "finite": finite,
+        "min_cos": cos,
+        "ok": finite and cos > 0.999,
+    }
+
+
+def cmd_embed(args: argparse.Namespace) -> None:
+    """Эмбеддинги замороженного энкодера на GPU: valid и test целиком с окнами длинных текстов, выборка train."""
+    from huggingface_hub import snapshot_download
+    from transformers import AutoConfig
+
+    device = pick_device(args.device)
+    hf_logging.set_verbosity_error()
+    out: Path = args.out or args.out_root / "runs" / short_name(args.base)
+    (out / "model").mkdir(parents=True, exist_ok=True)
+    print(f"Папка запуска: {out}", flush=True)
+    revision = base_revision(args.base)
+    snap = Path(snapshot_download(args.base, revision=revision or None, allow_patterns=["*.json", "*.txt"]))
+    for name in ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "config.json"):
+        if (snap / name).exists():
+            shutil.copy2(snap / name, out / "model" / name)
+    tok = inference_tokenizer(snap / "tokenizer.json")
+    prefix, suffix = wrap_ids(tok, args.prefix)
+    pad_id = int(AutoConfig.from_pretrained(args.base, revision=revision or None).pad_token_id or 0)
+    encoder = load_encoder(args.base, revision or None)
+    parameters = sum(p.numel() for p in encoder.parameters())
+    dim = int(encoder.config.d_model if hasattr(encoder.config, "d_model") else encoder.config.hidden_size)
+    model = FrozenClassifier(encoder, args.pooling, np.zeros(dim, dtype=np.float32), 0.0).to(device).eval()
+    del encoder
+    wrap = {"prefix_ids": prefix, "suffix_ids": suffix, "pad_id": pad_id}
+    frozen = {
+        "base": args.base,
+        "base_revision": revision,
+        "prefix": args.prefix,
+        "pooling": args.pooling,
+        "normalize_embeddings": True,
+        "dim": dim,
+        **wrap,
+    }
+    (out / "model" / FROZEN).write_text(json.dumps(frozen, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    cache = args.out_root / "cache"
+    tokenizer = out / "model" / "tokenizer.json"
+    width = args.max_length - len(prefix) - len(suffix)
+    stats: dict[str, Any] = {}
+    check: dict[str, Any] = {}
+    precision = args.precision
+    for split, limit in (("valid", 0), ("test", 0), ("train", args.limit)):
+        # Готовые части после обрыва не пересчитываются: VM на бесплатной T4 могут отобрать.
+        done = out / f"embed-{split}.json"
+        if done.exists():
+            stats[split] = json.loads(done.read_text(encoding="utf-8"))["stats"]
+            print(f"Эмбеддинги {split} уже посчитаны", flush=True)
+            continue
+        enc, full = encode_split_spec(args.data, split, limit, tokenizer, wrap, args.max_length, cache)
+        heads = [enc.seq(k).tolist() for k in range(len(enc))]
+        if not check and precision == "auto":
+            # Сначала autocast fp16; если T5 переполняется — веса в fp16 с wo в fp32, как их грузит
+            # transformers; иначе fp32.
+            precision, check = "fp32", {"ok": False, "reason": "нет GPU"}
+            if device.type == "cuda":
+                check = precision_check(model, model, "fp16", heads, pad_id, device)
+                print(f"Сверка fp16 с fp32: {check}", flush=True)
+                if check["ok"]:
+                    precision = "fp16"
+                else:
+                    half = FrozenClassifier(
+                        load_encoder(args.base, revision or None, torch.float16),
+                        args.pooling,
+                        np.zeros(dim, dtype=np.float32),
+                        0.0,
+                    )
+                    half = half.to(device).eval()
+                    check = precision_check(model, half, "fp16-wo32", heads, pad_id, device)
+                    print(f"Сверка fp16-wo32 с fp32: {check}", flush=True)
+                    if check["ok"]:
+                        model, precision = half, "fp16-wo32"
+                        torch.cuda.empty_cache()
+            print(f"Точность эмбеддингов: {precision}", flush=True)
+        started = time.perf_counter()
+        head_emb = embed_windows(model, heads, pad_id, device, precision)
+        np.save(out / f"emb-{split}.npy", head_emb)
+        np.save(out / f"y-{split}.npy", enc.y)
+        np.save(out / f"trunc-{split}.npy", enc.truncated)
+        if split != "train":
+            # Первое окно длинного текста — то же, что его начало: берётся готовый эмбеддинг.
+            long = np.flatnonzero(enc.truncated)
+            rest = [windows(full[k], args.max_length, prefix, suffix, MAX_WINDOWS)[1:] for k in long]
+            more = embed_windows(model, [w for ws in rest for w in ws], pad_id, device, precision)
+            emb, counts = stitch_windows(head_emb, long, [len(ws) for ws in rest], more)
+            np.savez(out / f"win-{split}.npz", idx=long, counts=counts, emb=emb)
+        seconds = time.perf_counter() - started
+        stats[split] = {"texts": len(enc), "seconds": seconds, "truncated_share": float(enc.truncated.mean())}
+        done.write_text(json.dumps({"stats": stats[split], "precision": precision}) + "\n", encoding="utf-8")
+        print(f"Эмбеддинги {split}: {len(enc)} текстов за {seconds:.0f} с", flush=True)
+    embed = {
+        "created": datetime.now(UTC).strftime("%Y-%m-%d"),
+        "git_commit": git_commit(),
+        "environment": environment(str(device), gpu_name(device)),
+        "base": args.base,
+        "base_revision": revision,
+        "parameters": parameters,
+        "prefix": args.prefix,
+        "pooling": args.pooling,
+        "max_length": args.max_length,
+        "window_tokens": width,
+        "limit": args.limit,
+        "device": str(device),
+        "gpu": gpu_name(device),
+        "precision": precision,
+        "precision_check": check,
+        "splits": stats,
+    }
+    (out / "embed.json").write_text(json.dumps(embed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"Готово: {out / 'embed.json'}", flush=True)
+
+
+def sigmoid(z: np.ndarray) -> np.ndarray:
+    return 1 / (1 + np.exp(-z))
+
+
+def cmd_head(args: argparse.Namespace) -> None:
+    """Логистическая регрессия на эмбеддингах; C выбирается по ROC AUC на valid, test только для итога."""
+    from sklearn.linear_model import LogisticRegression
+
+    run_dir: Path = args.folder
+    embed = json.loads((run_dir / "embed.json").read_text(encoding="utf-8"))
+    x = {s: np.load(run_dir / f"emb-{s}.npy").astype(np.float32) for s in ("train", "valid", "test")}
+    y = {s: np.load(run_dir / f"y-{s}.npy") for s in ("train", "valid", "test")}
+    curve, best, best_auc = [], None, -1.0
+    started = time.perf_counter()
+    for c in C_GRID:
+        t0 = time.perf_counter()
+        clf = LogisticRegression(C=c, max_iter=3000)
+        clf.fit(x["train"], y["train"])
+        q = quick(y["valid"], clf.predict_proba(x["valid"])[:, 1])
+        curve.append({"C": c, **q, "seconds": time.perf_counter() - t0})
+        print(f"C={c:g}: valid {q}", flush=True)
+        if (q["roc_auc"] or 0) > best_auc:
+            best, best_auc = clf, q["roc_auc"] or 0
+    assert best is not None
+    weight, bias = best.coef_[0].astype(np.float32), float(best.intercept_[0])
+    np.savez(run_dir / "model" / "head.npz", weight=weight, bias=np.float32(bias))
+    frozen = json.loads((run_dir / "model" / FROZEN).read_text(encoding="utf-8"))
+    frozen |= {"head": "logistic regression", "C": float(best.C)}
+    (run_dir / "model" / FROZEN).write_text(json.dumps(frozen, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    probs = {s: sigmoid(x[s] @ weight + bias).astype(np.float32) for s in ("valid", "test")}
+    for s in ("valid", "test"):
+        np.save(run_dir / f"{s}-probs.npy", probs[s])
+        w = np.load(run_dir / f"win-{s}.npz")
+        per_window = sigmoid(w["emb"].astype(np.float32) @ weight + bias)
+        bounds = np.concatenate([[0], np.cumsum(w["counts"])])
+        mean = np.array([per_window[a:b].mean() for a, b in pairwise(bounds)], dtype=np.float32)
+        np.savez(run_dir / f"{s}-windows-probs.npz", idx=w["idx"], mean=mean)
+    sp = embed["splits"]
+    total = sum(v["texts"] for v in sp.values()) + sum(
+        len(np.load(run_dir / f"win-{s}.npz")["emb"]) for s in ("valid", "test")
+    )
+    embed_seconds = sum(v["seconds"] for v in sp.values())
+    run = {
+        "created": datetime.now(UTC).strftime("%Y-%m-%d"),
+        "kind": "frozen",
+        "git_commit": embed["git_commit"],
+        "environment": embed["environment"],
+        "dataset": {
+            "repo": "iitolstykh/LLMTrace_classification",
+            "revision": REVISIONS["classification"],
+            "language": "ru",
+            "limit": embed["limit"],
+            "eval_limit": 0,
+            "train": len(y["train"]),
+            "valid": len(y["valid"]),
+            "test": len(y["test"]),
+        },
+        "params": {
+            "base": embed["base"],
+            "base_revision": embed["base_revision"],
+            "base_license": LICENSES.get(embed["base"], ""),
+            "parameters": embed["parameters"],
+            "max_length": embed["max_length"],
+            "normalize": True,
+            "normalize_rules": normalize_key(),
+            "prefix": embed["prefix"],
+            "pooling": embed["pooling"],
+            "head": "logistic regression",
+            "C": float(best.C),
+            "c_grid": list(C_GRID),
+            "device": embed["device"],
+            "gpu": embed["gpu"],
+            "precision": embed["precision"],
+            "precision_reason": f"сверка с fp32 на GPU: {embed['precision_check']}",
+            "embed_seconds": embed_seconds,
+            "train_seconds": time.perf_counter() - started,
+            "texts_per_second": total / embed_seconds,
+            "truncated_share": {s: v["truncated_share"] for s, v in sp.items()},
+        },
+        "valid": quick(y["valid"], probs["valid"]),
+        "curve": curve,
+        "torch_test": quick(y["test"], probs["test"]),
+    }
+    (run_dir / "run.json").write_text(json.dumps(run, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"Готово: {run_dir / 'run.json'}; valid {run['valid']}, test {run['torch_test']}", flush=True)
 
 
 # ─── Оценка ─────────────────────────────────────────────────────────────
@@ -1091,7 +1556,8 @@ def lightgbm_block() -> dict | None:
             return None
     m = json.loads(path.read_text(encoding="utf-8"))
     keep = ("created", "git_commit", "test", "valid", "genres", "lengths", "prompt_types", "generators")
-    return {"repo": LIGHTGBM_REPO, **{k: m[k] for k in keep if k in m}}
+    size = m.get("params", {}).get("size_kb")
+    return {"repo": LIGHTGBM_REPO, "size_mb": size / 1024 if size else None, **{k: m[k] for k in keep if k in m}}
 
 
 def pilot_rows(out_root: Path) -> list[dict]:
@@ -1153,10 +1619,10 @@ def _onnx_version() -> str:
 
 
 def bundle_hub(run_dir: Path, shipped_file: str) -> Path:
-    """Папка hub/ для репозитория модели: model.onnx — то, что в поставке, рядом fp32, токенизатор и метрики.
+    """Папка hub/ для репозитория модели: model.onnx — то, что в поставке, рядом другой вариант весов.
 
     aiw-ru скачивает inference.json, model.onnx, tokenizer.json, metrics.json и README.md;
-    model_fp32.onnx лежит для тех, кому int8 не подходит.
+    model_fp32.onnx или model_int8.onnx лежит для тех, кому нужен другой вариант.
     """
     hub_dir = run_dir / "hub"
     shutil.rmtree(hub_dir, ignore_errors=True)
@@ -1164,12 +1630,34 @@ def bundle_hub(run_dir: Path, shipped_file: str) -> Path:
     files = {"model.onnx": shipped_file}
     if shipped_file != "onnx/model.onnx":
         files["model_fp32.onnx"] = "onnx/model.onnx"
+    elif (run_dir / "onnx" / "model_int8.onnx").exists():
+        files["model_int8.onnx"] = "onnx/model_int8.onnx"
     for name in ("tokenizer.json", "tokenizer_config.json", "config.json"):
         files[name] = f"model/{name}"
     files |= {"inference.json": "inference.json", "metrics.json": "metrics.json"}
     for dst, src in files.items():
-        shutil.copy2(run_dir / src, hub_dir / dst)
+        if (run_dir / src).exists():
+            copy_onnx(run_dir / src, hub_dir / dst) if dst.endswith(".onnx") else shutil.copy2(
+                run_dir / src, hub_dir / dst
+            )
     return hub_dir
+
+
+def copy_onnx(src: Path, dst: Path) -> None:
+    """Копия ONNX; внешний файл весов получает имя по новому файлу, чтобы model.onnx* не тянул чужие веса.
+
+    torch.onnx.export кладёт веса больше 2 ГБ рядом, в файл с именем модели и суффиксом .data.
+    """
+    data = src.with_name(src.name + ".data")
+    if not data.exists():
+        shutil.copy2(src, dst)
+    elif dst.name == src.name:
+        shutil.copy2(src, dst)
+        shutil.copy2(data, dst.with_name(dst.name + ".data"))
+    else:
+        import onnx
+
+        onnx.save(onnx.load(src), dst, save_as_external_data=True, location=dst.name + ".data")
 
 
 def x86_latency(run_dir: Path) -> dict:
@@ -1182,63 +1670,121 @@ def x86_latency(run_dir: Path) -> dict:
 
 
 def cmd_evaluate(args: argparse.Namespace) -> None:
-    """ONNX на CPU по valid и test, разрезы как у LightGBM, metrics.json и inference.json."""
+    """ONNX на CPU по valid и test, разрезы как у LightGBM, metrics.json и inference.json.
+
+    С --onnx-texts N итоговые вероятности берутся от PyTorch на GPU (valid-probs.npy, test-probs.npy,
+    окна длинных текстов — из {часть}-windows-probs.npz), а ONNX сверяется с ними на N текстах valid:
+    для модели, которую на CPU по всему корпусу пришлось бы считать сутки.
+    """
     run_dir: Path = args.folder
+    model_dir = run_dir / "model"
     run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     export = json.loads((run_dir / "export.json").read_text(encoding="utf-8"))
     p = run["params"]
     limit = run["dataset"]["eval_limit"]
     hf_logging.set_verbosity_error()
-    tok = load_tokenizer(run_dir / "model")
-    _, _, pad_id = special_ids(tok)
+    pad_id = model_wrap(model_dir)["pad_id"]
     cache = args.out_root / "cache"
-    raw = not p["normalize"]
-    valid = encode_split(args.data, "valid", limit, tok, p["max_length"], raw, cache)
-    test = encode_split(args.data, "test", limit, tok, p["max_length"], raw, cache)
+    valid = eval_split(args.data, "valid", limit, model_dir, p, cache)
+    test = eval_split(args.data, "test", limit, model_dir, p, cache)
+    parts = {"valid": valid, "test": test}
+    subset = args.onnx_texts > 0
+    order = np.argsort(valid.lengths, kind="stable")
+    pick = order[np.linspace(0, len(order) - 1, min(args.onnx_texts, len(order))).astype(int)] if subset else None
 
     probs: dict[str, dict[str, np.ndarray]] = {"torch": {}}
     for split in ("valid", "test"):
         if (run_dir / f"{split}-probs.npy").exists():
             probs["torch"][split] = np.load(run_dir / f"{split}-probs.npy")
     threads = os.cpu_count() or 1
-    for variant, file in (("onnx_fp32", "model.onnx"), ("onnx_int8", "model_int8.onnx")):
-        sess = session(run_dir / "onnx" / file, threads)
-        probs[variant] = {}
-        for split, enc in (("valid", valid), ("test", test)):
-            cached = run_dir / f"{split}-probs-{variant}.npy"
-            if not cached.exists():
-                t0 = time.perf_counter()
-                np.save(cached, predict_onnx(sess, enc, pad_id, 1 if variant == "onnx_int8" else 32))
-                print(f"{variant} {split}: {time.perf_counter() - t0:.0f} с", flush=True)
-            probs[variant][split] = np.load(cached)
-    parts = {"valid": valid, "test": test}
-    variants = {v: {s: quick(parts[s].y, q) for s, q in ps.items()} for v, ps in probs.items()}
+    splits: dict[str, tuple[Encoded, np.ndarray]] = (
+        {"valid_subset": (valid.subset(pick), valid.y[pick])}
+        if pick is not None
+        else {s: (e, e.y) for s, e in parts.items()}
+    )
+    if pick is not None:
+        probs["torch"]["valid_subset"] = probs["torch"]["valid"][pick]
+    files = {"onnx_fp32": "model.onnx", "onnx_int8": "model_int8.onnx"}
+    sessions: dict[str, Session] = {}
+
+    def run_variant(variant: str, split: str) -> None:
+        """Вероятности варианта на части: из кэша или ONNX на CPU; int8 по одному тексту, как в aiw-ru."""
+        enc = splits[split][0]
+        cached = run_dir / f"{split}-probs-{variant}{f'-{len(enc)}' if subset else ''}.npy"
+        if not cached.exists():
+            if variant not in sessions:
+                sessions[variant] = session(run_dir / "onnx" / files[variant], threads)
+            t0 = time.perf_counter()
+            np.save(cached, predict_onnx(sessions[variant], enc, pad_id, 1 if variant == "onnx_int8" else 32))
+            print(f"{variant} {split}: {time.perf_counter() - t0:.0f} с", flush=True)
+        probs.setdefault(variant, {})[split] = np.load(cached)
+
+    for variant in files:
+        for split in splits:
+            # С --int8-valid-only int8 на test считается, только если он пойдёт в поставку.
+            if not (variant == "onnx_int8" and split == "test" and args.int8_valid_only):
+                run_variant(variant, split)
+    cols = ("valid_subset",) if subset else ("valid", "test")
+    # int8 идёт в поставку, если на valid теряет не больше --int8-max-drop ROC AUC и меняет метку не больше
+    # чем у --int8-max-changes текстов; test в решении не участвует. --weights задаёт веса заранее.
+    ref = cols[0]
+    ys0 = splits[ref][1]
+    drop = (quick(ys0, probs["onnx_fp32"][ref])["roc_auc"] or 0) - (quick(ys0, probs["onnx_int8"][ref])["roc_auc"] or 0)
+    changes = {
+        s: float(((probs["onnx_int8"][s] >= THRESHOLD) != (probs["onnx_fp32"][s] >= THRESHOLD)).mean())
+        for s in cols
+        if s in probs["onnx_int8"]
+    }
+    if args.weights == "auto":
+        ok = drop <= args.int8_max_drop and changes[ref] <= args.int8_max_changes
+        shipped = "onnx_int8" if ok else "onnx_fp32"
+    else:
+        shipped = f"onnx_{args.weights}"
+    shipped_file = f"onnx/{files[shipped]}"
+    print(f"В поставку: {shipped} (int8 теряет {drop:.4f} ROC AUC, меняет метку у {changes})", flush=True)
+    for split in splits:
+        if split not in probs[shipped]:
+            run_variant(shipped, split)
+    ys = {s: y for s, (_, y) in splits.items()} | {s: e.y for s, e in parts.items()}
+    variants = {v: {s: quick(ys[s], q) for s, q in ps.items()} for v, ps in probs.items()}
     table(
         "Варианты модели: ROC AUC и accuracy",
-        ["Вариант", "valid AUC", "valid acc", "test AUC", "test acc"],
+        ["Вариант", *(f"{s} {k}" for s in cols for k in ("AUC", "acc"))],
         [
-            [v, *(fmt(m.get(s, {}).get(k), 4) for s in ("valid", "test") for k in ("roc_auc", "accuracy"))]
+            [v, *(fmt(m.get(s, {}).get(k), 4) for s in cols for k in ("roc_auc", "accuracy"))]
             for v, m in variants.items()
         ],
     )
-    # int8 идёт в поставку, если на valid теряет не больше --int8-max-drop ROC AUC; test в решении не участвует.
-    drop = (variants["onnx_fp32"]["valid"]["roc_auc"] or 0) - (variants["onnx_int8"]["valid"]["roc_auc"] or 0)
-    shipped = "onnx_int8" if drop <= args.int8_max_drop else "onnx_fp32"
-    shipped_file = "onnx/model_int8.onnx" if shipped == "onnx_int8" else "onnx/model.onnx"
-    print(f"В поставку: {shipped} (int8 теряет на valid {drop:.4f} ROC AUC)", flush=True)
     sess = session(run_dir / shipped_file, threads)
+    main = probs["torch"] if subset else probs[shipped]
 
     # Длинные тексты: начало или среднее по окнам, выбор по valid.
-    lv, idx_v, mean_v = long_texts(sess, args.data, "valid", limit, valid, probs[shipped]["valid"], tok, p)
+    if subset:
+        lng: dict[str, tuple[dict, np.ndarray, np.ndarray]] = {}
+        for split, enc in parts.items():
+            w = np.load(run_dir / f"{split}-windows-probs.npz")
+            y = enc.y[w["idx"]]
+            q = {
+                "texts": len(w["idx"]),
+                "head": quick(y, main[split][w["idx"]]),
+                "mean_of_windows": quick(y, w["mean"]),
+            }
+            lng[split] = (q, w["idx"], w["mean"])
+        (lv, idx_v, mean_v), (lt, idx_t, mean_t) = lng["valid"], lng["test"]
+    else:
+        lv, idx_v, mean_v = long_texts(sess, args.data, "valid", limit, valid, main["valid"], model_dir, p)
+        lt, idx_t, mean_t = long_texts(sess, args.data, "test", limit, test, main["test"], model_dir, p)
     use_windows = (lv["mean_of_windows"]["roc_auc"] or 0) > (lv["head"]["roc_auc"] or 0)
-    lt, idx_t, mean_t = long_texts(sess, args.data, "test", limit, test, probs[shipped]["test"], tok, p)
     print(f"Длинные тексты, valid: {lv}\nДлинные тексты, test: {lt}", flush=True)
-    final = probs[shipped]["test"].copy()
-    pv = probs[shipped]["valid"].copy()
+    final = main["test"].copy()
+    pv = main["valid"].copy()
     if use_windows:
         final[idx_t] = mean_t
         pv[idx_v] = mean_v
-    spec = inference_spec(p, tok, "mean_of_windows" if use_windows else "head", shipped.removeprefix("onnx_"))
+    wrap = model_wrap(model_dir)
+    spec = inference_spec(p, wrap, "mean_of_windows" if use_windows else "head", shipped.removeprefix("onnx_"))
+    spec_parity = spec_vs_eval(sess, args.data, limit, valid, pv, model_dir / "tokenizer.json", spec)
+    print(f"Вывод по inference.json против оценки: {spec_parity}", flush=True)
 
     _, res = detect(args.data, "classification", "test", limit, "scan", "general", args.jobs)
     score = np.array([r["score"] for r in res], dtype=np.float32)
@@ -1255,7 +1801,10 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
     model_test = classes(test.y, (final >= THRESHOLD).astype(np.int8))
     print_classes("Модель на test, порог вероятности 0,5", model_test)
 
-    install = [] if args.skip_install else install_sizes()
+    if args.reuse_install:
+        install = json.loads((args.reuse_install / "metrics.json").read_text(encoding="utf-8"))["install"]
+    else:
+        install = [] if args.skip_install else install_sizes()
     metrics = {
         "created": datetime.now(UTC).strftime("%Y-%m-%d"),
         "aiw_ru_version": aiw_ru.__version__,
@@ -1267,7 +1816,15 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
             "license": p["base_license"],
             "shipped": shipped,
             "shipped_file": shipped_file,
+            "weights_choice": args.weights,
+            "int8_max_drop": args.int8_max_drop,
+            "int8_max_changes": args.int8_max_changes,
+            "int8_label_changes": changes,
+            "int8_valid_only": args.int8_valid_only,
+            "probs_source": "torch" if subset else "onnx",
+            "onnx_texts": len(pick) if pick is not None else None,
             "size_mb": export["sizes_mb"][shipped],
+            "external_data": (run_dir / f"{shipped_file}.data").exists(),
             "hardware": f"обучение: {p['gpu']}; оценка и задержка: {export['cpu']}",
         },
         "test": {**model_test, "roc_auc": auc(test.y, final), "roc_auc_created": auc(test.y[created], final[created])},
@@ -1281,7 +1838,7 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
         **breakdowns(part, final),
         "variants": variants,
         "long_texts": {"rule": spec["long_texts"], "valid": lv, "test": lt},
-        "parity": export["parity"],
+        "parity": {**export["parity"], "spec_vs_eval": spec_parity},
         "sizes_mb": export["sizes_mb"],
         "latency": export["latency"],
         "latency_cpu": export["cpu"],
@@ -1302,6 +1859,35 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
 
 REPO = "toiletsandpaper/russian-ai-text-detector-bert"
 DOCS = Path("docs") / "models"
+
+
+@dataclass(frozen=True)
+class Bundle:
+    """Модель aiw-ru: репозиторий на Hub, имя для `aiw-ru models install`, имя лога в Colab."""
+
+    repo: str
+    name: str
+    log: str
+    # Ставится командой `aiw-ru models install` без имени и отвечает в classify по умолчанию.
+    default: bool = False
+
+
+BUNDLES = {
+    "cointegrated/rubert-tiny2": Bundle(REPO, "transformer", "tiny2", default=True),
+    "deepvk/RuModernBERT-small": Bundle(
+        "toiletsandpaper/russian-ai-text-detector-modernbert", "modernbert", "modernbert"
+    ),
+    "sergeyzh/rubert-mini-frida": Bundle(
+        "toiletsandpaper/russian-ai-text-detector-mini-frida", "mini-frida", "mini-frida"
+    ),
+    "ai-forever/FRIDA": Bundle("toiletsandpaper/russian-ai-text-detector-frida", "frida", "frida"),
+}
+
+
+def bundle_for(base: str) -> Bundle:
+    return BUNDLES.get(base, Bundle(REPO, "transformer", short_name(base), default=True))
+
+
 LICENSE_NAMES = {"mit": "MIT", "apache-2.0": "Apache 2.0"}
 # Как ссылаться на базу: BibTeX из карточки базы, если он там есть, иначе ссылка на описание.
 BASE_CITATIONS = {
@@ -1319,6 +1905,17 @@ BASE_CITATIONS = {
   year = {2025},
 }
 ```""",
+    "sergeyzh/rubert-mini-frida": (
+        "`sergeyzh/rubert-mini-frida` получен дистилляцией эмбеддингов "
+        "[ai-forever/FRIDA](https://huggingface.co/ai-forever/FRIDA) в "
+        "[sergeyzh/rubert-mini-sts](https://huggingface.co/sergeyzh/rubert-mini-sts); "
+        "статьи с BibTeX у модели нет."
+    ),
+    "ai-forever/FRIDA": (
+        "FRIDA описана в [статье SberDevices на Хабре](https://habr.com/ru/companies/sberdevices/articles/909924/), "
+        "её энкодер взят из FRED-T5 ([arXiv:2309.10931](https://arxiv.org/abs/2309.10931)). "
+        "BibTeX в карточке FRIDA пока не заполнен."
+    ),
 }
 
 
@@ -1378,6 +1975,152 @@ def _weights(m: dict) -> str:
     return "int8" if m["params"]["shipped"] == "onnx_int8" else "fp32"
 
 
+def _lat(rows_: list[dict] | None, runtime: str, tokens: int = 512, threads: int = 1) -> float | None:
+    for r in rows_ or []:
+        if (r["runtime"], r["tokens"], r["threads"]) == (runtime, tokens, threads):
+            return r["ms"]
+    return None
+
+
+def _shipped_ms(m: dict, x86: bool = False) -> float | None:
+    """Задержка того, что в поставке, на $512$ токенах в один поток: M1 или два ядра x86."""
+    return _lat(m.get("latency_x86") if x86 else m.get("latency"), f"onnxruntime {_weights(m)}")
+
+
+def _hub_link(repo: str) -> str:
+    return f"[`{repo.split('/')[-1]}`](https://huggingface.co/{repo})"
+
+
+def _classify_cmd(b: Bundle) -> str:
+    return "aiw-ru classify текст.md" if b.default else f"aiw-ru classify --model {b.name} текст.md"
+
+
+def related_row(run_dir: Path) -> dict:
+    """Другая модель aiw-ru для сравнения в карточке: её metrics.json после evaluate."""
+    m = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+    m |= x86_latency(run_dir)
+    b = bundle_for(m["params"]["base"])
+    return {
+        "name": b.name,
+        "repo": b.repo,
+        "base": m["params"]["base"],
+        "weights": _weights(m),
+        "size_mb": m["params"]["size_mb"],
+        "ms_512_1": _shipped_ms(m),
+        "x86_ms_512_1": _shipped_ms(m, x86=True),
+        "test": {k: m["test"][k] for k in ("accuracy", "roc_auc", "roc_auc_created", "macro", "classes")},
+    }
+
+
+def _models_md(m: dict, repo: str) -> str:
+    """Все модели aiw-ru рядом: точность на test против размера и задержки."""
+    b, t = bundle_for(m["params"]["base"]), m["test"]
+
+    def fpr(r: dict) -> str:
+        return pct(1 - r["classes"]["human"]["recall"])
+
+    rows = [
+        [
+            f"{_hub_link(repo)}, эта модель",
+            f"`{b.name}`",
+            _num4(t["roc_auc"]),
+            num(t["accuracy"]),
+            fpr(t),
+            _mb(m["params"]["size_mb"]),
+            _ms(_shipped_ms(m)),
+            _ms(_shipped_ms(m, x86=True)),
+        ]
+    ]
+    for r in sorted(m.get("related", []), key=lambda r: -r["test"]["roc_auc"]):
+        rows.append(
+            [
+                _hub_link(r["repo"]),
+                f"`{r['name']}`",
+                _num4(r["test"]["roc_auc"]),
+                num(r["test"]["accuracy"]),
+                fpr(r["test"]),
+                _mb(r["size_mb"]),
+                _ms(r["ms_512_1"]),
+                _ms(r["x86_ms_512_1"]),
+            ]
+        )
+    lg = m.get("lightgbm") or {}
+    if lg.get("test"):
+        rows.append(
+            [
+                _hub_link(lg["repo"]),
+                "`lightgbm`",
+                _num4(lg["test"]["roc_auc"]),
+                num(lg["test"]["accuracy"]),
+                fpr(lg["test"]),
+                _mb(lg.get("size_mb")),
+                "—",
+                "—",
+            ]
+        )
+    head = ["Модель", "Имя в aiw-ru", "ROC AUC", "Accuracy", "Людей принято за ИИ", "Файл, МБ", "мс, M1", "мс, x86"]
+    return md_table(head, rows)
+
+
+def _times(k: float) -> str:
+    """«$6.8$ раза», «$150$ раз»: дробное — с одним знаком, от десяти — целое."""
+    if k < 10:
+        return f"${k:.1f}$ раза"
+    n = round(k)
+    return f"${n}$ {plural(n, 'раз', 'раза', 'раз').split(' ', 1)[1]}"
+
+
+def _position(m: dict) -> str:
+    """Место модели среди трансформеров aiw-ru: точнее или быстрее и какой ценой."""
+    rel = m.get("related", [])
+    if not rel:
+        return ""
+    auc_, ms, mb = m["test"]["roc_auc"], _shipped_ms(m), m["params"]["size_mb"]
+    most_accurate = all(auc_ >= r["test"]["roc_auc"] for r in rel)
+    fastest = ms is not None and all(r["ms_512_1"] is None or ms <= r["ms_512_1"] for r in rel)
+    slowest = ms is not None and all(r["ms_512_1"] is None or ms >= r["ms_512_1"] for r in rel)
+    better = [f"`{r['name']}`" for r in rel if r["test"]["roc_auc"] > auc_]
+    lead = (
+        "Это самый точный трансформер aiw-ru и самый быстрый."
+        if most_accurate and fastest
+        else "Это точный вариант среди трансформеров aiw-ru, за точность он платит скоростью и размером."
+        if most_accurate
+        else "Это быстрый вариант среди трансформеров aiw-ru, за скорость он платит точностью."
+        if fastest
+        else f"Это самый тяжёлый трансформер aiw-ru, но не самый точный: на test его обходит {', '.join(better)}."
+        if slowest and len(better) == 1
+        else f"Это самый тяжёлый трансформер aiw-ru, но не самый точный: на test его обходят {', '.join(better)}."
+        if slowest
+        else "Это промежуточный вариант среди трансформеров aiw-ru."
+    )
+    if mb >= 1000:
+        lead += (
+            f" Модель тяжёлая, для мощных машин: {_mb(mb)} МБ на диске и {_ms(ms)} мс на текст в $512$ токенов "
+            "на M1 в один поток."
+        )
+    parts = []
+    for r in sorted(rel, key=lambda r: -r["test"]["roc_auc"]):
+        other = _hub_link(r["repo"])
+        cmp_auc = f"ROC AUC на test {num(auc_)} против {num(r['test']['roc_auc'])}"
+        if ms and r["ms_512_1"]:
+            k = ms / r["ms_512_1"]
+            speed = (
+                f"в {_times(k)} медленнее"
+                if k >= 1.05
+                else f"в {_times(1 / k)} быстрее"
+                if k <= 0.95
+                else "так же быстр"
+            )
+            cmp_ms = f"{speed}: {_ms(ms)} мс против {_ms(r['ms_512_1'])} мс на $512$ токенов на M1"
+        else:
+            cmp_ms = ""
+        cmp_mb = f"файл {_mb(mb)} МБ против {_mb(r['size_mb'])} МБ"
+        fpr = (pct(1 - m["test"]["classes"]["human"]["recall"]), pct(1 - r["test"]["classes"]["human"]["recall"]))
+        cmp_auc += f", людей принято за ИИ {fpr[0]} против {fpr[1]}"
+        parts.append(f"Против {other}: {cmp_auc}, {', '.join(x for x in (cmp_ms, cmp_mb) if x)}.")
+    return " ".join([lead, *parts])
+
+
 def _pilot_md(m: dict) -> str:
     return md_table(
         ["База", "Лицензия", "Нормализация", "Параметров", "ROC AUC valid", "Accuracy valid", "int8, МБ", "int8, мс"],
@@ -1401,51 +2144,75 @@ def _finalists_md(m: dict) -> str:
     return md_table(
         [
             "База",
+            "Имя в aiw-ru",
             "ROC AUC valid",
             "Accuracy valid",
             "ROC AUC int8",
-            "Accuracy int8",
             "int8 сменил метку",
-            "int8, МБ",
-            "int8, мс, M1",
-            "int8, мс, x86",
+            "Веса в поставке",
+            "Файл, МБ",
+            "мс, M1",
+            "мс, x86",
         ],
         [
             [
                 f"`{r['base']}`",
+                f"`{bundle_for(r['base']).name}`",
                 _num4(r["valid_roc_auc"]),
                 num(r["valid_accuracy"]),
                 _num4(r.get("valid_roc_auc_int8")),
-                _auc(r.get("valid_accuracy_int8")),
                 pct(r["int8_label_changes"]) if r.get("int8_label_changes") is not None else "—",
-                _mb(r.get("onnx_int8_mb")),
-                _ms(r.get("int8_ms_512_1")),
-                _ms(r.get("x86_int8_ms_512_1")),
+                r.get("weights", "int8"),
+                _mb(r.get("shipped_mb", r.get("onnx_int8_mb"))),
+                _ms(r.get("shipped_ms_512_1", r.get("int8_ms_512_1"))),
+                _ms(r.get("x86_shipped_ms_512_1", r.get("x86_int8_ms_512_1"))),
             ]
             for r in m.get("finalists", [])
         ],
     )
 
 
+def _finalists_intro(m: dict) -> str:
+    """Какие базы дошли до полного train и чем стала каждая."""
+    rows = m["finalists"]
+    if len(rows) < 3:
+        return (
+            "Дальше на полном train обучены две базы: самая точная в пилоте и самая быстрая. Середина, "
+            "`sergeyzh/rubert-mini-frida`, медленнее tiny2 больше чем вдвое при небольшом выигрыше в ROC AUC."
+        )
+    fast = min(rows, key=lambda r: r.get("int8_ms_512_1") or float("inf"))
+    best = max(rows, key=lambda r: r["valid_roc_auc"])
+    mid = [r for r in rows if r is not fast and r is not best]
+
+    def name(r: dict) -> str:
+        return f"`{bundle_for(r['base']).name}`"
+
+    bases = ", ".join(f"`{r['base']}`" for r in mid)
+    names = ", ".join(name(r) for r in mid)
+    return (
+        f"На полном train обучены {_nw(len(rows), 'база', 'базы', 'баз')} из пилота: самая быстрая, "
+        f"`{fast['base']}`, самая точная, `{best['base']}`, и средняя по обоим, {bases}. Все они выпущены "
+        f"как модели aiw-ru: {name(fast)} ставится по умолчанию и считает быстрее всех, {name(best)} точнее "
+        f"всех, {names} — промежуточный вариант."
+    )
+
+
 def _compare_md(m: dict) -> str:
-    t, d, lt = m["test"], m["detector"], (m.get("lightgbm") or {}).get("test", {})
+    rel = sorted(m.get("related", []), key=lambda r: -r["test"]["roc_auc"])
+    cols = [m["test"], *(r["test"] for r in rel), (m.get("lightgbm") or {}).get("test", {}), m["detector"]]
 
     def fpr(r: dict) -> str:
         return pct(1 - r["classes"]["human"]["recall"]) if r else "—"
 
     rows = [
-        ["Accuracy", num(t["accuracy"]), _auc(lt.get("accuracy")), num(d["accuracy"])],
-        ["ROC AUC", _auc(t["roc_auc"]), _auc(lt.get("roc_auc")), _auc(d["roc_auc"])],
-        [
-            "ROC AUC, люди против текстов с нуля",
-            _auc(t["roc_auc_created"]),
-            _auc(lt.get("roc_auc_created")),
-            _auc(d["roc_auc_created"]),
-        ],
-        ["F1, среднее по классам", num(t["macro"]["f1"]), _auc(lt.get("macro", {}).get("f1")), num(d["macro"]["f1"])],
-        ["Людей принято за ИИ", fpr(t), fpr(lt), fpr(d)],
+        ["Accuracy", *(_auc(c.get("accuracy")) for c in cols)],
+        ["ROC AUC", *(_auc(c.get("roc_auc")) for c in cols)],
+        ["ROC AUC, люди против текстов с нуля", *(_auc(c.get("roc_auc_created")) for c in cols)],
+        ["F1, среднее по классам", *(_auc(c.get("macro", {}).get("f1")) for c in cols)],
+        ["Людей принято за ИИ", *(fpr(c) for c in cols)],
     ]
-    return md_table(["На test", "Эта модель", "LightGBM", "Правила aiw-ru"], rows)
+    head = ["На test", "Эта модель", *(f"`{r['name']}`" for r in rel), "LightGBM", "Правила aiw-ru"]
+    return md_table(head, rows)
 
 
 def _cuts_md(m: dict, level: str) -> str:
@@ -1556,6 +2323,33 @@ def _install_md(m: dict) -> str:
 
 def _variants_md(m: dict) -> str:
     names = {"torch": "PyTorch на GPU", "onnx_fp32": "ONNX fp32 на CPU", "onnx_int8": "ONNX int8 на CPU"}
+    if m["params"].get("probs_source") == "torch":
+        n = m["params"]["onnx_texts"]
+        return md_table(
+            ["Вариант", f"ROC AUC на {n} текстах valid", "Accuracy", "ROC AUC на всём valid", "ROC AUC на test"],
+            [
+                [
+                    names.get(v, v),
+                    _num4(x.get("valid_subset", {}).get("roc_auc")),
+                    _auc(x.get("valid_subset", {}).get("accuracy")),
+                    _num4(x.get("valid", {}).get("roc_auc")),
+                    _num4(x.get("test", {}).get("roc_auc")),
+                ]
+                for v, x in m["variants"].items()
+            ],
+        )
+    if not all("test" in x for x in m["variants"].values()):
+        table_ = md_table(
+            ["Вариант", "ROC AUC valid", "Accuracy valid"],
+            [
+                [names.get(v, v), _num4(x["valid"]["roc_auc"]), _num4(x["valid"]["accuracy"])]
+                for v, x in m["variants"].items()
+            ],
+        )
+        return (
+            f"{table_}\n\nВарианты сравнивались только на valid, по нему выбираются веса. "
+            f"На test посчитан только вариант из поставки, ONNX {_weights(m)}."
+        )
     return md_table(
         ["Вариант", "ROC AUC valid", "Accuracy valid", "ROC AUC test", "Accuracy test"],
         [
@@ -1610,8 +2404,30 @@ def _ablation(m: dict) -> str:
     )
 
 
+def _frozen_params_md(m: dict) -> str:
+    p, ds = m["params"], m["dataset"]
+    pooling = "эмбеддинг первого токена" if p["pooling"] == "cls" else "среднее по токенам"
+    return md_table(
+        ["Параметр", "Значение"],
+        [
+            ["База", f"[`{p['base']}`](https://huggingface.co/{p['base']}), ревизия `{p['base_revision'][:12]}`"],
+            ["Параметров", f"{_params_count(p['parameters'])}, энкодер не дообучался"],
+            ["Префикс", _code(p["prefix"])],
+            ["Эмбеддинг", f"{pooling}, L2-нормировка, как в карточке базы"],
+            ["Голова", f"логистическая регрессия, `C` из {', '.join(f'`{c:g}`' for c in p['c_grid'])}: `{p['C']:g}`"],
+            ["Обучение головы", f"{_texts_loc(ds['train'])} train, равномерная выборка"],
+            ["Эмбеддинги считались", f"{p['gpu']}, `{p['precision']}`, ${p['embed_seconds'] / 60:.0f}$ мин"],
+            ["`max_length`", _nw(p["max_length"], "токен", "токена", "токенов") + " вместе с префиксом"],
+            ["Файл модели", f"`model.onnx`, веса {_weights(m)}, {_mb(p['size_mb'])} МБ"],
+            ["Обучено", f"{m['created']}, коммит `{m['git_commit']}`"],
+        ],
+    )
+
+
 def _params_md(m: dict) -> str:
     p = m["params"]
+    if "head" in p:
+        return _frozen_params_md(m)
     stop = ", сработала" if p["early_stopped"] else ", не понадобилась"
     return md_table(
         ["Параметр", "Значение"],
@@ -1645,6 +2461,11 @@ def _params_md(m: dict) -> str:
 
 
 def _curve_md(m: dict) -> str:
+    if "head" in m["params"]:
+        return md_table(
+            ["`C`", "ROC AUC valid", "Accuracy valid", "logloss valid"],
+            [[f"`{c['C']:g}`", _num4(c["roc_auc"]), num(c["accuracy"]), num(c["logloss"], 4)] for c in m["curve"]],
+        )
     return md_table(
         ["Шаг", "Эпоха", "loss train", "ROC AUC valid", "Accuracy valid", "logloss valid"],
         [
@@ -1670,7 +2491,9 @@ def _speed_md(m: dict) -> str:
 {m["latency_x86_cpu"]}:
 
 {_latency_md(m["latency_x86"])}"""
-    return f"""Задержка на один текст в миллисекундах, медиана $30$ прогонов, {m["latency_cpu"]}:
+    slow = any(r["ms"] > 1000 for r in [*m["latency"], *(m.get("latency_x86") or [])])
+    runs = "медиана $30$ прогонов" + (", у вызовов дольше секунды $5$" if slow else "")
+    return f"""Задержка на один текст в миллисекундах, {runs}, {m["latency_cpu"]}:
 
 {_latency_md(m["latency"])}{x86}
 
@@ -1687,7 +2510,7 @@ huggingface-hub, которые aiw-ru с extra `ml` и так ставит дл
 def _onnx_choice(m: dict) -> str:
     """Почему в поставке ONNX, а не PyTorch: задержка на этой машине против размера установки."""
     lat = {(r["runtime"], r["tokens"], r["threads"]): r["ms"] for r in m["latency"]}
-    torch_ms, int8_ms = lat.get(("torch fp32", 512, 1)), lat.get(("onnxruntime int8", 512, 1))
+    torch_ms, onnx_ms = lat.get(("torch fp32", 512, 1)), _shipped_ms(m)
     sizes = {(x["stack"], x["platform"]): x["mb"] for x in m["install"] if x["mb"]}
     onnx = {plat: mb for (stack, plat), mb in sizes.items() if stack.startswith("onnxruntime")}
     ratios = [
@@ -1699,7 +2522,7 @@ def _onnx_choice(m: dict) -> str:
     if cpu and "x86_64-manylinux_2_28" in onnx:
         ratios.append(cpu / onnx["x86_64-manylinux_2_28"])
     cuda = sizes.get(("torch + transformers", "x86_64-manylinux_2_28"))
-    if not (torch_ms and int8_ms and ratios):
+    if not (torch_ms and onnx_ms and ratios):
         return ""
     v = m["variants"]
     shipped, ref = v.get(m["params"]["shipped"], {}).get("test", {}), v.get("torch", {}).get("test", {})
@@ -1711,11 +2534,12 @@ def _onnx_choice(m: dict) -> str:
             if diff < 5e-5
             else f"ROC AUC на test отличается от PyTorch на {_num4(diff)}"
         )
-    faster = "быстрее" if torch_ms < int8_ms else "медленнее"
+    faster = "быстрее" if torch_ms < onnx_ms else "медленнее"
     span = f"${min(ratios):.1f}\\text{{–}}{max(ratios):.1f}$"
     linux = f", а на Linux со сборкой torch под CUDA по умолчанию — {_mb(cuda)} МБ" if cuda else ""
     return (
-        f"На этой машине torch считает {faster} onnxruntime: {_ms(torch_ms)} мс против {_ms(int8_ms)} мс у int8 "
+        f"На этой машине torch считает {faster} onnxruntime: {_ms(torch_ms)} мс против {_ms(onnx_ms)} мс "
+        f"у ONNX {_weights(m)} "
         f"на $512$ токенах в один поток. Но torch с transformers занимает на диске в {span} раза больше{linux}. "
         f"aiw-ru ставят и на слабые ноутбуки, поэтому в поставке ONNX: установка лёгкая, а {same}."
     )
@@ -1736,15 +2560,16 @@ def _limitations_md(m: dict) -> str:
 
 
 def _usage_md(m: dict, repo: str) -> str:
+    b = bundle_for(m["params"]["base"])
     return f"""Из командной строки:
 
 ```bash
 uv tool install "aiw-ru[ml]"
-aiw-ru models install transformer
-aiw-ru classify текст.md
+aiw-ru models install {b.name}
+{_classify_cmd(b)}
 ```
 
-Из Python без aiw-ru нужны только onnxruntime, tokenizers, numpy и huggingface-hub:
+Из Python без aiw-ru нужны только onnxruntime, tokenizers и numpy:
 
 ```python
 import json
@@ -1755,7 +2580,7 @@ import onnxruntime as ort
 from huggingface_hub import snapshot_download
 from tokenizers import Tokenizer
 
-files = ["inference.json", "model.onnx", "tokenizer.json"]
+files = ["inference.json", "model.onnx*", "tokenizer.json"]
 path = snapshot_download("{repo}", allow_patterns=files)
 spec = json.load(open(f"{{path}}/inference.json", encoding="utf-8"))
 session = ort.InferenceSession(f"{{path}}/{{spec['file']}}", providers=["CPUExecutionProvider"])
@@ -1770,9 +2595,11 @@ def probability(text: str) -> float:
     for rule in spec["normalize"]:
         text = re.sub(rule["pattern"], rule["replacement"], text, flags=re.MULTILINE)
     ids = tokenizer.encode(text.strip(), add_special_tokens=False).ids
-    width = spec["max_length"] - 2
+    prefix = spec["prefix_ids"] if "prefix_ids" in spec else [spec["cls_id"]]
+    suffix = spec["suffix_ids"] if "suffix_ids" in spec else [spec["sep_id"]]
+    width = spec["max_length"] - len(prefix) - len(suffix)
     windows = [ids[i : i + width] for i in range(0, max(len(ids), 1), width)][: spec["max_windows"]]
-    windows = [[spec["cls_id"], *w, spec["sep_id"]] for w in windows]
+    windows = [[*prefix, *w, *suffix] for w in windows]
     batch = np.full((len(windows), max(map(len, windows))), spec["pad_id"], dtype=np.int64)
     mask = np.zeros_like(batch)
     for k, w in enumerate(windows):
@@ -1787,8 +2614,58 @@ print(probability(open("текст.md", encoding="utf-8").read()))
 ```
 
 `inference.json` описывает вывод целиком: файл ONNX, токенизатор,
-`max_length`, служебные токены, правила нормализации из обучения, порог
+`max_length`, токены вокруг окна, правила нормализации из обучения, порог
 {num(m["inference"]["threshold"], 1)} и число окон для длинных текстов."""
+
+
+def _int8_changes(m: dict) -> float | None:
+    ch = m["params"].get("int8_label_changes") or {}
+    return ch.get("valid", ch.get("valid_subset"))
+
+
+def _extra_weights(m: dict) -> tuple[str, str]:
+    """Второй файл весов рядом с model.onnx: по-русски и по-английски."""
+    if _weights(m) == "int8":
+        fp32 = _mb(m["sizes_mb"]["onnx_fp32"])
+        return (
+            f" Рядом лежит `model_fp32.onnx` на {fp32} МБ с весами fp32, aiw-ru его не скачивает.",
+            f" An fp32 export, `model_fp32.onnx`, is an optional extra file of {fp32} MB.",
+        )
+    int8, ch = _mb(m["sizes_mb"]["onnx_int8"]), _int8_changes(m)
+    why_ru = f": int8 меняет ответ у {pct(ch)} текстов valid" if ch is not None else ""
+    why_en = f" because int8 flips the label on {pct(ch)} of validation texts" if ch is not None else ""
+    return (
+        f" Рядом лежит `model_int8.onnx` на {int8} МБ с весами int8, aiw-ru его не скачивает{why_ru}.",
+        f" An int8 export, `model_int8.onnx`, is an optional extra file of {int8} MB; aiw-ru uses fp32{why_en}.",
+    )
+
+
+def _probs_note(m: dict) -> str:
+    p = m["params"]
+    if p.get("probs_source") != "torch":
+        return ""
+    return (
+        f" Итоговые цифры этой модели посчитаны по эмбеддингам с GPU ({p['precision']}): ONNX на CPU по "
+        f"всем текстам valid и test занял бы много часов. ONNX сверен с ними на {_texts_loc(p['onnx_texts'])} "
+        "valid разной длины, расхождение — ниже."
+    )
+
+
+def _weights_rule(m: dict) -> str:
+    p = m["params"]
+    if p.get("weights_choice", "auto") == "auto":
+        changes = p.get("int8_max_changes")
+        tail = f" и меняет ответ не больше чем у {pct(changes)} текстов" if changes is not None else ""
+        verdict = f" Здесь в поставке {_weights(m)}"
+        ch = _int8_changes(m)
+        verdict += f": int8 меняет ответ у {pct(ch)} текстов valid." if ch is not None else "."
+        return (
+            f"int8 идёт в поставку, если на valid теряет не больше {num(p.get('int8_max_drop', 0.002))} ROC AUC{tail}; "
+            f"test в этом решении не участвует.{verdict}"
+        )
+    ch = _int8_changes(m)
+    tail = f": int8 меняет ответ у {pct(ch)} текстов valid по сравнению с fp32" if ch is not None else ""
+    return f"Веса {_weights(m)} выбраны заранее, эту модель выпускают ради точности{tail}."
 
 
 def _long_rule(m: dict) -> str:
@@ -1801,6 +2678,41 @@ def _long_rule(m: dict) -> str:
     return f"Текст длиннее {n} модель читает только до этой границы: среднее по окнам на valid не точнее."
 
 
+def _trained_on(m: dict) -> str:
+    ds = m["dataset"]
+    valid = _nw(ds["valid"], "тексту", "текстам", "текстам")
+    if "head" in m["params"]:
+        return (
+            f"Голова обучена на равномерной выборке train, это {_nw(ds['train'], 'текст', 'текста', 'текстов')}; "
+            f"`C` выбран по ROC AUC на всех {valid.replace('текстам', 'текстах').replace('тексту', 'тексте')} valid."
+        )
+    return (
+        f"Модель обучена на {_texts_loc(ds['train'])} из train, лучший шаг и ранняя остановка — по ROC AUC "
+        f"на {_texts_loc(ds['valid'])} из valid."
+    )
+
+
+def _what_ru(m: dict) -> str:
+    p = m["params"]
+    base = f"[`{p['base']}`](https://huggingface.co/{p['base']})"
+    if "head" in p:
+        return (
+            f"Это энкодер {base} на {_params_count(p['parameters'])} параметров без дообучения: по его "
+            f"эмбеддингам с префиксом {_code(p['prefix'])} обучена логистическая регрессия, всё вместе"
+        )
+    return f"Это дообученный энкодер {base} на\n{_params_count(p['parameters'])} параметров"
+
+
+def _what_en(m: dict) -> str:
+    p = m["params"]
+    if "head" in p:
+        return (
+            f"The model is the frozen `{p['base']}` encoder with a logistic regression head over its "
+            f"{_code(p['prefix'])} embeddings"
+        )
+    return f"The model is `{p['base']}` fine-tuned"
+
+
 def card_body(m: dict, repo: str) -> str:
     """Карточка модели на Hugging Face: формулы в $…$, для Hub их переписывает hub_math."""
     p, ds, t, v = m["params"], m["dataset"], m["test"], m["valid"]
@@ -1808,11 +2720,37 @@ def card_body(m: dict, repo: str) -> str:
     name = repo.split("/")[-1]
     report = f"{GITHUB}/blob/master/{DOCS.as_posix()}/{name}.md"
     lgb_line = f" У LightGBM на признаках aiw-ru ROC AUC {num(lt['roc_auc'])}." if lt else ""
-    fp32_ru = fp32_en = ""
-    if _weights(m) == "int8":
-        fp32 = _mb(m["sizes_mb"]["onnx_fp32"])
-        fp32_ru = f" Рядом лежит `model_fp32.onnx` на {fp32} МБ с весами fp32, aiw-ru его не скачивает."
-        fp32_en = f" An fp32 export, `model_fp32.onnx`, is an optional extra file of {fp32} MB."
+    extra_ru, extra_en = _extra_weights(m)
+    files_ru, files_en = (
+        (
+            "Модель — `model.onnx` с весами в `model.onnx.data`, вместе",
+            "`model.onnx` with its weights in `model.onnx.data` takes",
+        )
+        if p.get("external_data")
+        else ("Файл `model.onnx` занимает", "`model.onnx` takes")
+    )
+    b = bundle_for(p["base"])
+    install = (
+        f"Ставится она командой `aiw-ru models install {b.name}`, только если пользователь попросит."
+        if b.default
+        else f"Ставится она только по имени, командой `aiw-ru models install {b.name}`, и только если "
+        f"пользователь попросит; в `aiw-ru classify` её выбирают ключом `--model {b.name}`."
+    )
+    others = [f"{_hub_link(r['repo'])} (`{r['name']}`)" for r in m.get("related", [])]
+    others.append(f"[LightGBM на признаках aiw-ru](https://huggingface.co/{LIGHTGBM_REPO}) (`lightgbm`)")
+    choose = ""
+    if m.get("related"):
+        choose = f"""
+
+## Какую модель выбрать
+
+{_position(m)}
+
+{_models_md(m, repo)}
+
+Задержка — один текст на $512$ токенов в один поток: M1 и два ядра Xeon
+виртуальной машины Colab. Размер у LightGBM — файл модели, признаки для неё
+считает сам детектор aiw-ru."""
     return f"""# Детектор ИИ-текста для русского языка
 
 `{name}` оценивает вероятность, что русский текст написала нейросеть, а не
@@ -1820,36 +2758,32 @@ def card_body(m: dict, repo: str) -> str:
 LLMTrace. Помогает проверить текст на ИИ: статью, новость, отзыв, пост, ответ
 на вопрос.
 
-Это дообученный энкодер [`{p["base"]}`](https://huggingface.co/{p["base"]}) на
-{_params_count(p["parameters"])} параметров, переведённый в ONNX с весами {_weights(m)}.
-Файл `model.onnx` занимает {_mb(p["size_mb"])} МБ и работает на CPU через onnxruntime, без
-torch и GPU.{fp32_ru} На отложенной части корпуса ROC AUC {num(t["roc_auc"])}, accuracy
+{_what_ru(m)}, переведённый в ONNX с весами {_weights(m)}.
+{files_ru} {_mb(p["size_mb"])} МБ и работает на CPU через onnxruntime, без
+torch и GPU.{extra_ru} На отложенной части корпуса ROC AUC {num(t["roc_auc"])}, accuracy
 {num(t["accuracy"])}.{lgb_line}
 
-Модель необязательная: детектор и скиллы [aiw-ru]({GITHUB}) работают без неё. Ставится
-она командой `aiw-ru models install transformer`, только если пользователь попросит.
-Вариант легче — [LightGBM на признаках aiw-ru](https://huggingface.co/{LIGHTGBM_REPO}),
-`aiw-ru models install lightgbm`.
+Модель необязательная: детектор и скиллы [aiw-ru]({GITHUB}) работают без неё. {install}
+Другие модели aiw-ru: {", ".join(others)}.
 
 ## In English
 
 A Russian AI-generated text detector. It estimates the probability that a
 Russian text was written by a person or by an LLM such as {GENERATORS}
 and others, which makes it usable as an AI text detector, a ChatGPT detector or an
-"AI slop" filter for Russian. The model is `{p["base"]}` fine-tuned on the
+"AI slop" filter for Russian. {_what_en(m)}, trained on the
 Russian part of the LLMTrace corpus and exported to ONNX with {_weights(m)} weights:
-`model.onnx` is a {_mb(p["size_mb"])} MB file that runs on CPU with onnxruntime, no torch
-or GPU needed.{fp32_en}
-Test ROC AUC {num(t["roc_auc"])}, accuracy {num(t["accuracy"])}. The rest of the card
-is in Russian; usage is below.
+{files_en} {_mb(p["size_mb"])} MB and runs on CPU with onnxruntime, no torch
+or GPU needed.{extra_en}
+Test ROC AUC {num(t["roc_auc"])}, accuracy {num(t["accuracy"])}. Install it with
+`aiw-ru models install {b.name}`. The rest of the card is in Russian; usage is below.{choose}
 
 ## Данные
 
 Русская часть [LLMTrace classification](https://huggingface.co/datasets/{DATASET})
-([статья](https://arxiv.org/abs/2509.21269)), ревизия `{ds["revision"][:12]}`. Модель обучена на
-{_texts_loc(ds["train"])} из train, лучший шаг выбран по ROC AUC на {_texts_loc(ds["valid"])}
-из valid, итоговые цифры посчитаны на {_texts_loc(ds["test"])} из test, которые модель при
-обучении не видела. Отчёт об обучении с выбором базы и командами для
+([статья](https://arxiv.org/abs/2509.21269)), ревизия `{ds["revision"][:12]}`. {_trained_on(m)}
+Итоговые цифры посчитаны по test, это {_nw(ds["test"], "текст", "текста", "текстов")}: эту часть
+корпуса модель при обучении не видела. Отчёт об обучении с выбором базы и командами для
 воспроизведения лежит [на GitHub]({report}).
 
 ## Результаты на test
@@ -1912,12 +2846,36 @@ is in Russian; usage is below.
 def _reproduce_md(m: dict) -> str:
     p = m["params"]
     run = short_name(p["base"])
+    b = bundle_for(p["base"])
     vm_run = f"/content/data/transformer/runs/{run}"
-    local = f"~/.cache/aiw-ru/llmtrace/transformer/runs/{run}"
-    train_args = (
-        f"train --base {p['base']} --epochs {p['epochs']:g} --lr {p['lr']:g} --batch {p['batch']} "
-        f"--max-length {p['max_length']} --evals-per-epoch {p['evals_per_epoch']} --patience {p['patience']}"
+    full = "~/.cache/aiw-ru/llmtrace/transformer/full"
+    local = f"{full}/{run}"
+    ra = m.get("report_args", {})
+    eval_flags = "" if p.get("weights_choice", "auto") == "auto" else f" --weights {p['weights_choice']}"
+    if p.get("int8_valid_only"):
+        eval_flags += " --int8-valid-only"
+    report_flags = "".join(
+        [
+            *(f" --finalist {full}/{d}" for d in ra.get("finalist", [])),
+            *(f" --related {full}/{d}" for d in ra.get("related", [])),
+        ]
     )
+    why_note = (
+        " Абзац о выборе базы передаётся ключом `--why`, его текст приведён в этом отчёте." if p.get("why") else ""
+    )
+    if "head" in p:
+        train_args = (
+            f"embed --base {p['base']} --prefix '{p['prefix']}' --pooling {p['pooling']} "
+            f'--limit {m["dataset"]["train"]} --max-length {p["max_length"]}" --job "head {vm_run}'
+        )
+    else:
+        train_args = (
+            f"train --base {p['base']} --epochs {p['epochs']:g} --lr {p['lr']:g} --batch {p['batch']} "
+            f"--max-length {p['max_length']} --evals-per-epoch {p['evals_per_epoch']} --patience {p['patience']}"
+        )
+    fetch_flags = " --exclude 'emb-*' --exclude 'win-*'" if "head" in p else ""
+    if p.get("probs_source") == "torch":
+        eval_flags += f" --onnx-texts {p['onnx_texts']}"
     uv = "uv run --group train --group transformer"
     dirty = m["git_commit"].endswith("+правки")
     commit = m["git_commit"].removesuffix("+правки")
@@ -1942,10 +2900,15 @@ def _reproduce_md(m: dict) -> str:
 ```bash
 uv run scripts/colab_transformer.py up --gpu T4
 uv run scripts/colab_transformer.py setup
-uv run scripts/colab_transformer.py start --name full --job "{train_args}"
-uv run scripts/colab_transformer.py status --name full
-uv run scripts/colab_transformer.py fetch {vm_run} ~/.cache/aiw-ru/llmtrace/transformer/runs
+uv run scripts/colab_transformer.py start --name {b.log} --job "{train_args}"
+uv run scripts/colab_transformer.py status --name {b.log}
+uv run scripts/colab_transformer.py fetch {vm_run} {full}{fetch_flags}
 ```
+
+Colab CLI через час после `up` может счесть VM потерянной, когда у него истекает
+токен прокси, и перестать её поддерживать; тогда VM отбирают. Поэтому перед
+каждым вызовом CLI токен обновлялся из ответа Colab, а лучший шаг забирался
+на этот компьютер после каждой проверки на valid.
 
 Задержка на x86 меряется на CPU той же VM, после обучения, пока GPU свободен:
 
@@ -1961,21 +2924,34 @@ uv run scripts/colab_transformer.py down
 uv run --group train scripts/llmtrace.py fetch --set classification --split train
 uv run --group train scripts/llmtrace.py fetch --set classification --split valid
 uv run --group train scripts/llmtrace.py fetch --set classification --split test
-{uv} scripts/train_transformer.py {train_args}
+{uv} scripts/train_transformer.py {train_args.replace('" --job "', f"\n{uv} scripts/train_transformer.py ").replace(vm_run, local)}
 ```
 
 Дальше на своём CPU: ONNX и сверка с PyTorch, задержка, оценка на valid и test,
-карточка и этот отчёт.
+карточка и этот отчёт.{why_note}
 
 ```bash
 {uv} scripts/train_transformer.py export {local}
-{uv} scripts/train_transformer.py evaluate {local}
-{uv} scripts/train_transformer.py report {local}
+{uv} scripts/train_transformer.py evaluate {local}{eval_flags}
+{uv} scripts/train_transformer.py report {local}{report_flags}
 ```
 
 Обучение на GPU не детерминировано до бита, повтор может разойтись в третьем
 знаке. Пилот повторяется командой `pilot --base ИМЯ` с настройками по умолчанию
 (`--limit 20000 --epochs 1`)."""
+
+
+def _spec_parity(m: dict) -> str:
+    sp = m["parity"].get("spec_vs_eval")
+    if not sp:
+        return ""
+    return (
+        f" Вывод по `inference.json`, текст за текстом, как в aiw-ru, расходится с итоговыми вероятностями "
+        f"оценки на {_texts_loc(sp['texts'])} valid не больше чем на {_sci(sp['max_abs_diff'])}."
+        if sp["max_abs_diff"] > 0
+        else f" Вывод по `inference.json`, текст за текстом, как в aiw-ru, на {_texts_loc(sp['texts'])} valid "
+        "даёт те же вероятности, что оценка."
+    )
 
 
 def report_body(m: dict, repo: str) -> str:
@@ -1988,16 +2964,44 @@ def report_body(m: dict, repo: str) -> str:
     if m.get("finalists"):
         finalists = f"""
 
-Дальше на полном train обучены две базы: самая точная в пилоте и самая быстрая.
-Середина, `sergeyzh/rubert-mini-frida`, медленнее tiny2 больше чем вдвое при
-небольшом выигрыше в ROC AUC. ROC AUC и accuracy
-посчитаны на полном valid у PyTorch и у ONNX int8; «сменил метку» — доля текстов
-valid, где int8 и PyTorch расходятся по порогу $0.5$. Задержка — ONNX int8 на $512$
-токенах в один поток: на M1 и на двух ядрах Xeon виртуальной машины Colab.
+{_finalists_intro(m)}
+
+ROC AUC и accuracy посчитаны на полном valid у PyTorch, «ROC AUC int8» — у ONNX int8;
+«сменил метку» — доля текстов valid, где int8 и PyTorch расходятся по порогу $0.5$.
+Размер и задержка — у варианта из поставки, на $512$ токенах в один поток: на M1 и на
+двух ядрах Xeon виртуальной машины Colab.
 
 {_finalists_md(m)}"""
     why = f"\n\n{p['why']}" if p.get("why") else ""
     parity = m["parity"]
+    b = bundle_for(p["base"])
+    choose = ""
+    if m.get("related"):
+        choose = f"""
+
+{_position(m)}
+
+{_models_md(m, repo)}"""
+    what = (
+        f"замороженный энкодер `{p['base']}` с обученной логистической головой"
+        if "head" in p
+        else f"дообученный энкодер `{p['base']}`"
+    )
+    sizes = [r["parameters"] / 1e6 for r in m["pilot"] if r.get("parameters")]
+    lo, hi = (round(min(sizes)), round(max(sizes))) if sizes else (0, 0)
+    span = (
+        ""
+        if not sizes
+        else f", а у кандидатов ниже ${lo}$ млн"
+        if lo == hi
+        else f", а у кандидатов ниже ${lo}\\text{{–}}{hi}$ млн"
+    )
+    frida = (
+        "Эта модель — сам FRIDA для мощных машин: энкодер заморожен, обучена только голова поверх эмбеддингов."
+        if p["base"] == "ai-forever/FRIDA"
+        else "Сам FRIDA готовится отдельной моделью для мощных машин: энкодер без дообучения и обученная "
+        "поверх него голова."
+    )
     return f"""# Отчёт об обучении: {name}
 
 Файл пишет `scripts/train_transformer.py report` после полного обучения, руками
@@ -2007,20 +3011,20 @@ valid, где int8 и PyTorch расходятся по порогу $0.5$. За
 
 ## Что это
 
-Необязательная модель aiw-ru: дообученный энкодер `{p["base"]}` оценивает
+Необязательная модель aiw-ru: {what} оценивает
 вероятность, что русский текст написала языковая модель. Пользователь ставит её
-командой `aiw-ru models install transformer`, после чего `aiw-ru classify`
+командой `aiw-ru models install {b.name}`, после чего `{_classify_cmd(b)}`
 выдаёт вероятность. В поставке ONNX с весами {_weights(m)} на {_mb(p["size_mb"])} МБ и
 `inference.json`; для вывода нужны onnxruntime и tokenizers, torch не нужен.
 На test ROC AUC {num(m["test"]["roc_auc"])}, у LightGBM на признаках aiw-ru {_auc(lgb)},
-у оценки правил {num(m["detector"]["roc_auc"])}.
+у оценки правил {num(m["detector"]["roc_auc"])}.{choose}
 
 ## Выбор базы
 
 Кандидаты — небольшие русские энкодеры с открытой лицензией, которые можно
 запускать на CPU. Полный [FRIDA](https://huggingface.co/ai-forever/FRIDA)
-от ai-forever (MIT) — энкодер T5 на $823$ млн параметров, для CPU пользователя
-он слишком тяжёл, поэтому в пилоте его дистилляция `sergeyzh/rubert-mini-frida`.
+от ai-forever (MIT) — энкодер T5 на $823$ млн параметров{span}. В пилоте вместо
+FRIDA взята его дистилляция `sergeyzh/rubert-mini-frida`. {frida}
 
 В пилоте все базы учились одинаково: {_nw(pilot.get("train", 0), "текст", "текста", "текстов")} train,
 эпох {count(int(pilot.get("epochs") or 1))}, скорость `{pilot.get("lr") or 0:g}`, пачка {count(pilot.get("batch") or 0)},
@@ -2033,10 +3037,8 @@ valid, где int8 и PyTorch расходятся по порогу $0.5$. За
 
 Русская часть [LLMTrace classification](https://huggingface.co/datasets/{ds["repo"]})
 под Apache 2.0, [статья](https://arxiv.org/abs/2509.21269), ревизия набора
-`{ds["revision"]}`. Части корпуса используются как есть. Модель учится на
-{_texts_loc(ds["train"])} train. По {_nw(ds["valid"], "тексту", "текстам", "текстам")} valid выбирается лучший
-шаг и срабатывает ранняя остановка. Test нужен только для итоговых цифр, в нём
-{_nw(ds["test"], "текст", "текста", "текстов")}.
+`{ds["revision"]}`. Части корпуса используются как есть. {_trained_on(m)} Test нужен только для
+итоговых цифр, в нём {_nw(ds["test"], "текст", "текста", "текстов")}.
 
 Метка «ИИ» стоит на любом тексте с участием модели: написанном с нуля
 (`create`) и на человеческом тексте, который модель правила, сокращала или
@@ -2064,7 +3066,7 @@ ROC AUC каждой приметы по отдельности на valid: $0.5
 
 {_params_md(m)}
 
-Проверки на valid по ходу обучения:
+{"Подбор `C` на valid:" if "head" in p else "Проверки на valid по ходу обучения:"}
 
 {_curve_md(m)}
 
@@ -2088,14 +3090,13 @@ ROC AUC каждой приметы по отдельности на valid: $0.5
 
 ## Вывод на CPU
 
-Ниже варианты одной и той же модели. int8 идёт в поставку, если на valid
-теряет не больше $0.002$ ROC AUC; test в этом решении не участвует.
+Ниже варианты одной и той же модели. {_weights_rule(m)}{_probs_note(m)}
 
 {_variants_md(m)}
 
 Сверка с PyTorch на {_texts_loc(parity["fp32"]["texts"])} valid: у ONNX fp32 наибольшая
 разница вероятностей {_sci(parity["fp32"]["max_abs_diff"])}, у int8 {num(parity["int8"]["max_abs_diff"])},
-метки int8 совпадают у {pct(parity["int8"]["same_label"])} текстов.
+метки int8 совпадают у {pct(parity["int8"]["same_label"])} текстов.{_spec_parity(m)}
 
 Правило для длинных текстов выбрано по valid, в test таких текстов
 {count(m["long_texts"]["test"]["texts"])}:
@@ -2124,14 +3125,16 @@ ROC AUC каждой приметы по отдельности на valid: $0.5
 """
 
 
-def card(m: dict, repo: str = REPO) -> ModelCard:
+def card(m: dict, repo: str | None = None) -> ModelCard:
+    repo = repo or bundle_for(m["params"]["base"]).repo
     p = m["params"]
     results = eval_results(m)
     for r in results:
         r.source_name = "aiw-ru scripts/train_transformer.py"
         r.source_url = f"{GITHUB}/blob/master/scripts/train_transformer.py"
     tags = [t for t in TAGS if t not in ("lightgbm", "tabular-features")]
-    tags += ["modernbert" if "modernbert" in p["base"].lower() else "bert", "onnx"]
+    arch = "modernbert" if "modernbert" in p["base"].lower() else "t5" if p["base"] == "ai-forever/FRIDA" else "bert"
+    tags += [arch, "onnx"]
     if _weights(m) == "int8":
         tags.append("int8")
     data = ModelCardData(
@@ -2140,7 +3143,6 @@ def card(m: dict, repo: str = REPO) -> ModelCard:
         library_name="onnx",
         pipeline_tag=TASK,
         base_model=p["base"],
-        # Иначе Hub по ONNX int8 считает модель квантованной копией базы, а она дообучена.
         base_model_relation="finetune",
         tags=tags,
         datasets=[DATASET],
@@ -2172,10 +3174,23 @@ def finalist(run_dir: Path, data: Path) -> dict:
         "int8_ms_512_1": lat.get(("onnxruntime int8", 512, 1)),
         "fp32_ms_512_1": lat.get(("onnxruntime fp32", 512, 1)),
     }
+    # Веса в поставке — из metrics.json после evaluate; до него считаем, что int8.
+    metrics = run_dir / "metrics.json"
+    w = (
+        json.loads(metrics.read_text(encoding="utf-8"))["params"]["shipped"].removeprefix("onnx_")
+        if metrics.exists()
+        else "int8"
+    )
+    row |= {
+        "weights": w,
+        "shipped_mb": exp["sizes_mb"][f"onnx_{w}"],
+        "shipped_ms_512_1": lat.get((f"onnxruntime {w}", 512, 1)),
+    }
     x86 = run_dir / "export-x86.json"
     if x86.exists():
         lx = {(r["runtime"], r["tokens"], r["threads"]): r["ms"] for r in json.loads(x86.read_text())["latency"]}
         row["x86_int8_ms_512_1"] = lx.get(("onnxruntime int8", 512, 1))
+        row["x86_shipped_ms_512_1"] = lx.get((f"onnxruntime {w}", 512, 1))
     int8 = run_dir / "valid-probs-onnx_int8.npy"
     if int8.exists():
         y = np.array([json.loads(line)["label"] == "ai" for line in load(data, "classification", "valid", 0)])
@@ -2192,25 +3207,33 @@ def cmd_report(args: argparse.Namespace) -> None:
     """README.md в hub/ рядом с файлами модели, отчёт и метрики в docs/models/."""
     run_dir: Path = args.folder
     m = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
-    # Замер на x86 мог появиться после evaluate.
+    repo = args.repo or bundle_for(m["params"]["base"]).repo
+    # Замер на x86 мог появиться после evaluate, метрики LightGBM — обновиться.
     m |= x86_latency(run_dir)
+    m["lightgbm"] = lightgbm_block() or m.get("lightgbm")
     if args.why:
         m["params"]["why"] = args.why
     if args.finalist:
         m["finalists"] = [finalist(d, args.data) for d in args.finalist]
+    if args.related:
+        m["related"] = [related_row(d) for d in args.related]
+    m["report_args"] = {
+        "finalist": [d.name for d in args.finalist or []],
+        "related": [d.name for d in args.related or []],
+    }
     (run_dir / "metrics.json").write_text(json.dumps(m, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     hub_dir = bundle_hub(run_dir, m["params"]["shipped_file"])
-    card(m, args.repo).save(hub_dir / "README.md")
+    card(m, repo).save(hub_dir / "README.md")
     print(f"Для Hugging Face: {hub_dir}", flush=True)
-    name = args.repo.split("/")[-1]
+    name = repo.split("/")[-1]
     if m["dataset"]["limit"]:
         # Пилот на выборке в docs/ не идёт: отчёт только в папке запуска.
-        (run_dir / "report.md").write_text(report_body(m, args.repo), encoding="utf-8")
+        (run_dir / "report.md").write_text(report_body(m, repo), encoding="utf-8")
         print(f"Обучение на выборке: отчёт только в {run_dir / 'report.md'}", flush=True)
         return
     docs = ROOT / DOCS
     docs.mkdir(parents=True, exist_ok=True)
-    (docs / f"{name}.md").write_text(report_body(m, args.repo), encoding="utf-8")
+    (docs / f"{name}.md").write_text(report_body(m, repo), encoding="utf-8")
     (docs / f"{name}.json").write_text(json.dumps(m, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"Отчёт: {DOCS / f'{name}.md'} и {DOCS / f'{name}.json'}", flush=True)
 
@@ -2248,6 +3271,19 @@ def main(argv: list[str] | None = None) -> None:
     sub = ap.add_subparsers(dest="command", required=True)
     add_fit(sub.add_parser("pilot", help="короткое обучение на выборке, без test"), pilot=True)
     add_fit(sub.add_parser("train", help="полное обучение и ответы PyTorch на test"), pilot=False)
+    em = sub.add_parser("embed", help="эмбеддинги замороженного энкодера на GPU")
+    add_common(em)
+    em.add_argument("--base", default="ai-forever/FRIDA", help="энкодер с Hugging Face")
+    em.add_argument("--prefix", default="categorize: ", help="префикс задачи из карточки энкодера")
+    em.add_argument("--pooling", choices=("cls", "mean"), default="cls", help="как свести токены в эмбеддинг")
+    em.add_argument("--limit", type=int, default=80000, help="сколько текстов train взять для головы")
+    em.add_argument("--max-length", type=int, default=512, help="токенов в окне вместе с префиксом")
+    em.add_argument("--device", default="auto", help="auto, cuda, mps или cpu")
+    em.add_argument("--precision", choices=("auto", "fp16", "fp32"), default="auto", help="точность на GPU")
+    em.add_argument("--out", type=Path, help="папка запуска")
+    hd = sub.add_parser("head", help="логистическая регрессия на эмбеддингах из embed")
+    add_common(hd)
+    hd.add_argument("folder", type=Path, help="папка запуска после embed")
     ex = sub.add_parser("export", help="ONNX fp32 и int8, сверка с PyTorch, задержка на CPU")
     add_common(ex)
     ex.add_argument("folder", type=Path, help="папка запуска с model/ и run.json")
@@ -2257,17 +3293,45 @@ def main(argv: list[str] | None = None) -> None:
     ev.add_argument("folder", type=Path, help="папка запуска после export")
     ev.add_argument("--jobs", type=int, default=0, help="процессов детектора (по умолчанию по числу ядер)")
     ev.add_argument("--int8-max-drop", type=float, default=0.002, help="допустимая потеря ROC AUC у int8 на valid")
+    ev.add_argument(
+        "--weights",
+        choices=("auto", "fp32", "int8"),
+        default="auto",
+        help="веса в поставке: auto — int8, если он теряет не больше --int8-max-drop",
+    )
+    ev.add_argument(
+        "--int8-valid-only",
+        action="store_true",
+        help="int8 считать только на valid: веса выбираются по нему, а int8 по одному тексту на CPU долог",
+    )
     ev.add_argument("--skip-install", action="store_true", help="не мерить размер установки зависимостей")
+    ev.add_argument("--reuse-install", type=Path, help="взять размер установки из metrics.json другого запуска")
+    ev.add_argument(
+        "--int8-max-changes", type=float, default=0.005, help="допустимая доля текстов valid, где int8 меняет метку"
+    )
+    ev.add_argument(
+        "--onnx-texts",
+        type=int,
+        default=0,
+        help="итог по вероятностям PyTorch с GPU, ONNX — только на стольких текстах valid (для больших моделей)",
+    )
     rep = sub.add_parser("report", help="карточка для Hugging Face и отчёт в docs/models/ из metrics.json")
     add_common(rep)
     rep.add_argument("folder", type=Path, help="папка запуска после evaluate")
-    rep.add_argument("--repo", default=REPO, help="репозиторий модели на Hugging Face")
+    rep.add_argument("--repo", help="репозиторий модели на Hugging Face; по умолчанию по базе")
     rep.add_argument("--why", help="почему выбрана эта база: абзац для отчёта")
     rep.add_argument("--finalist", type=Path, action="append", help="папка полного запуска для сравнения баз")
+    rep.add_argument(
+        "--related", type=Path, action="append", help="папка другой модели aiw-ru после evaluate: сравнение в карточке"
+    )
     args = ap.parse_args(argv)
     args.out_root = args.out_root or args.data / "transformer"
     if args.command in ("pilot", "train"):
         cmd_fit(args, pilot=args.command == "pilot")
+    elif args.command == "embed":
+        cmd_embed(args)
+    elif args.command == "head":
+        cmd_head(args)
     elif args.command == "export":
         cmd_export(args)
     elif args.command == "report":

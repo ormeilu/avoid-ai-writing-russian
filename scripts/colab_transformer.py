@@ -5,7 +5,7 @@
     uv run scripts/colab_transformer.py setup    [--session ИМЯ] [--torch ВЕРСИЯ] [--code-only]
     uv run scripts/colab_transformer.py start    [--session ИМЯ] --name ИМЯ --job "pilot --base ..." [--job ...]
     uv run scripts/colab_transformer.py status   [--session ИМЯ] --name ИМЯ
-    uv run scripts/colab_transformer.py fetch    [--session ИМЯ] ПАПКА_НА_VM ЛОКАЛЬНАЯ_ПАПКА
+    uv run scripts/colab_transformer.py fetch    [--session ИМЯ] ПАПКА_НА_VM ЛОКАЛЬНАЯ_ПАПКА [--exclude ШАБЛОН]
     uv run scripts/colab_transformer.py down     [--session ИМЯ]
 
 up берёт VM с GPU (по умолчанию T4). Если Colab не даёт GPU из-за квоты, скрипт
@@ -177,7 +177,7 @@ print(subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used", "
 def cmd_fetch(args: argparse.Namespace) -> None:
     remote = args.remote.rstrip("/")
     archive = f"/content/{Path(remote).name}.tar.gz"
-    exclude = " ".join(f"--exclude={shlex.quote(x)}" for x in ("*.pt", "cache"))
+    exclude = " ".join(f"--exclude={shlex.quote(x)}" for x in ("*.pt", "cache", *args.exclude))
     code = f"""
 import subprocess
 subprocess.run("tar {exclude} -czf {archive} -C {Path(remote).parent} {Path(remote).name}", shell=True, check=True)
@@ -217,6 +217,7 @@ def main(argv: list[str] | None = None) -> None:
     fetch = sub.add_parser("fetch", help="забрать папку с VM")
     fetch.add_argument("remote", help="папка на VM")
     fetch.add_argument("local", type=Path, help="куда распаковать")
+    fetch.add_argument("--exclude", action="append", default=[], help="шаблон файлов, которые не забирать")
     sub.add_parser("down", help="освободить VM")
     args = ap.parse_args(argv)
     {

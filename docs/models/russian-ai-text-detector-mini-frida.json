@@ -1,7 +1,7 @@
 {
   "created": "2026-09-25",
   "aiw_ru_version": "2.0.0rc2",
-  "git_commit": "60cb897+правки",
+  "git_commit": "a4e6d3f+правки",
   "environment": {
     "python": "3.13.15",
     "torch": "2.14.0+cu130",
@@ -30,10 +30,10 @@
     "test": 52521
   },
   "params": {
-    "base": "cointegrated/rubert-tiny2",
-    "base_revision": "e8ed3b0c8bbf4fb6984c3de043bf7d2f4e5969ae",
+    "base": "sergeyzh/rubert-mini-frida",
+    "base_revision": "32a82388a9f99c99eca74494731f7ee6e9a9fe3a",
     "base_license": "mit",
-    "parameters": 29194394,
+    "parameters": 32263130,
     "max_length": 512,
     "normalize": true,
     "normalize_rules": "3eae208e",
@@ -43,7 +43,7 @@
     "warmup": 0.06,
     "weight_decay": 0.01,
     "patience": 3,
-    "evals_per_epoch": 4,
+    "evals_per_epoch": 2,
     "seed": 1,
     "optimizer": "AdamW",
     "scheduler": "linear with warmup",
@@ -57,60 +57,59 @@
     "gpu": "Tesla T4",
     "precision": "fp16",
     "precision_reason": "GPU без bf16 (T4): fp16 с масштабированием потерь (GradScaler)",
-    "steps": 20449,
+    "steps": 22308,
     "steps_total": 22308,
     "steps_per_epoch": 7436,
-    "eval_every": 1859,
-    "best_step": 14872,
-    "best_epoch": 2.0,
-    "train_seconds": 1936.4027962449998,
-    "texts_per_second": 337.89405864771123,
-    "early_stopped": true,
+    "eval_every": 3718,
+    "best_step": 22308,
+    "best_epoch": 3.0,
+    "train_seconds": 3993.633776411,
+    "texts_per_second": 178.73121071243202,
+    "early_stopped": false,
     "license": "mit",
-    "shipped": "onnx_int8",
-    "shipped_file": "onnx/model_int8.onnx",
+    "shipped": "onnx_fp32",
+    "shipped_file": "onnx/model.onnx",
     "weights_choice": "auto",
     "int8_max_drop": 0.002,
     "int8_max_changes": 0.005,
     "int8_label_changes": {
-      "valid": 0.0033770880656119966,
-      "test": 0.0030273604843776775
+      "valid": 0.0059903109735260415
     },
-    "int8_valid_only": false,
+    "int8_valid_only": true,
     "probs_source": "onnx",
     "onnx_texts": null,
-    "size_mb": 29.670516,
+    "size_mb": 130.002897,
     "external_data": false,
     "hardware": "обучение: Tesla T4; оценка и задержка: Apple M1, 8 ядер",
-    "why": "Выбрана `cointegrated/rubert-tiny2`. Правило выбора задано до полного обучения: задержка на CPU весит столько же, сколько точность. RuModernBERT-small точнее: на полном valid ROC AUC $0.9935$ против $0.9878$, accuracy $0.963$ против $0.946$. В int8 разрыв чуть меньше, $0.9926$ против $0.9877$, и квантование RuModernBERT вредит заметнее: метка меняется у $1.1\\%$ текстов valid, у tiny2 у $0.3\\%$. Квантование только весов, без эмбеддингов и классификатора, на подвыборке valid меняет почти столько же меток, сколько обычное. При этом RuModernBERT в int8 в $4$ раза медленнее на M1, $160$ мс против $40$ мс на $512$ токенов, и в $3$ раза медленнее на двух ядрах Xeon, $318$ мс против $101$ мс. В fp32 она обходится без потерь от квантования, но весит $140$ МБ и тратит $272$ мс на M1. Ошибок ранжирования у RuModernBERT в int8 в $1.7$ раза меньше, а задержка в $3\\text{–}4$ раза больше, поэтому в поставке tiny2 в int8. RuModernBERT выпущена отдельно, как более точная модель `modernbert` с весами fp32."
+    "why": "`sergeyzh/rubert-mini-frida` — середина пилота, дистилляция FRIDA в BERT на $7$ слоёв. В первый финал она не прошла. Позже её дообучили на полном train по тому же рецепту, что tiny2 и RuModernBERT, чтобы между быстрой и точной моделью был промежуточный вариант."
   },
   "test": {
-    "accuracy": 0.9449363111898098,
+    "accuracy": 0.9476971116315379,
     "classes": {
       "human": {
-        "precision": 0.9366837961435105,
-        "recall": 0.9276742774431527,
-        "f1": 0.9321572675236933,
+        "precision": 0.9641046037585761,
+        "recall": 0.9054489424289116,
+        "f1": 0.9338566372107582,
         "support": 21417
       },
       "ai": {
-        "precision": 0.9505269881826892,
-        "recall": 0.9568222736625515,
-        "f1": 0.9536642419969878,
+        "precision": 0.9375135001697165,
+        "recall": 0.9767875514403292,
+        "f1": 0.9567476500133835,
         "support": 31104
       }
     },
     "macro": {
-      "precision": 0.9436053921630998,
-      "recall": 0.9422482755528521,
-      "f1": 0.9429107547603406
+      "precision": 0.9508090519641463,
+      "recall": 0.9411182469346204,
+      "f1": 0.9453021436120708
     },
-    "roc_auc": 0.9868624557303812,
-    "roc_auc_created": 0.9889093687098427
+    "roc_auc": 0.9908786502170019,
+    "roc_auc_created": 0.991972914141175
   },
   "valid": {
-    "accuracy": 0.9458258789474743,
-    "roc_auc": 0.9877395919384575
+    "accuracy": 0.9475546264096327,
+    "roc_auc": 0.9915611218266558
   },
   "detector": {
     "accuracy": 0.5034367205498753,
@@ -142,64 +141,64 @@
       "genre": "article",
       "human": 5109,
       "ai": 5343,
-      "accuracy": 0.9480482204362801,
-      "roc_auc": 0.9889640535923823,
+      "accuracy": 0.9489092996555684,
+      "roc_auc": 0.993233290058129,
       "detector_roc_auc": 0.7089272500697594
     },
     {
       "genre": "factual",
       "human": 1383,
       "ai": 2209,
-      "accuracy": 0.9148106904231625,
-      "roc_auc": 0.9759506154897125,
+      "accuracy": 0.9259465478841871,
+      "roc_auc": 0.983183073779225,
       "detector_roc_auc": 0.6726439887831512
     },
     {
       "genre": "news",
       "human": 3326,
       "ai": 3488,
-      "accuracy": 0.9310243616084531,
-      "roc_auc": 0.9841719586990462,
+      "accuracy": 0.9374816554153214,
+      "roc_auc": 0.9902608703597455,
       "detector_roc_auc": 0.5657629267185975
     },
     {
       "genre": "poetry",
       "human": 3561,
       "ai": 3383,
-      "accuracy": 0.9370679723502304,
-      "roc_auc": 0.9786112783053978,
+      "accuracy": 0.9357718894009217,
+      "roc_auc": 0.9842716730488261,
       "detector_roc_auc": 0.487962965960516
     },
     {
       "genre": "question",
       "human": 1932,
       "ai": 5894,
-      "accuracy": 0.9583439815997955,
-      "roc_auc": 0.9909221821538695,
+      "accuracy": 0.9629440327114746,
+      "roc_auc": 0.9942283920694168,
       "detector_roc_auc": 0.7293824350973479
     },
     {
       "genre": "review",
       "human": 2678,
       "ai": 4019,
-      "accuracy": 0.9604300433029714,
-      "roc_auc": 0.9899281623639469,
+      "accuracy": 0.9583395550246379,
+      "roc_auc": 0.9925504618558486,
       "detector_roc_auc": 0.638441079257396
     },
     {
       "genre": "short_form",
       "human": 450,
       "ai": 3000,
-      "accuracy": 0.933623188405797,
-      "roc_auc": 0.9803570370370369,
+      "accuracy": 0.9544927536231884,
+      "roc_auc": 0.9840766666666666,
       "detector_roc_auc": 0.5558255555555556
     },
     {
       "genre": "story",
       "human": 2978,
       "ai": 3768,
-      "accuracy": 0.9531574266231841,
-      "roc_auc": 0.9906240063366314,
+      "accuracy": 0.9482656388971242,
+      "roc_auc": 0.9935080362859127,
       "detector_roc_auc": 0.570456035341977
     }
   ],
@@ -207,162 +206,157 @@
     {
       "bucket": "0–49",
       "n": 14742,
-      "accuracy": 0.9245692579025913,
-      "roc_auc": 0.9797869306668043
+      "accuracy": 0.9272147605480939,
+      "roc_auc": 0.984076945183373
     },
     {
       "bucket": "50–149",
       "n": 17766,
-      "accuracy": 0.9421366655409209,
-      "roc_auc": 0.9857225481833942
+      "accuracy": 0.9447258808960937,
+      "roc_auc": 0.9909560906084197
     },
     {
       "bucket": "150–399",
       "n": 16327,
-      "accuracy": 0.9625160776627671,
-      "roc_auc": 0.9925057035359733
+      "accuracy": 0.9699271145954553,
+      "roc_auc": 0.9952807267819526
     },
     {
       "bucket": "400 и больше",
       "n": 3686,
-      "accuracy": 0.9620184481823114,
-      "roc_auc": 0.9803858211847667
+      "accuracy": 0.9454693434617472,
+      "roc_auc": 0.9821071069115551
     }
   ],
   "prompt_types": [
     {
       "prompt_type": "create",
       "n": 14064,
-      "recall": 0.9627417519908987
+      "recall": 0.9788822525597269
     },
     {
       "prompt_type": "delete",
       "n": 5966,
-      "recall": 0.9242373449547435
+      "recall": 0.957257794166946
     },
     {
       "prompt_type": "expand",
       "n": 4850,
-      "recall": 0.9721649484536082
+      "recall": 0.9849484536082475
     },
     {
       "prompt_type": "update",
       "n": 6224,
-      "recall": 0.9627249357326478
+      "recall": 0.9844151670951157
     }
   ],
   "generators": [
     {
       "model": "gpt-3.5",
       "n": 4772,
-      "recall": 0.9773679798826488
+      "recall": 0.9893126571668064
     },
     {
       "model": "gpt-4o",
       "n": 3884,
-      "recall": 0.9830072090628218
+      "recall": 0.9881565396498455
     },
     {
       "model": "databricks/dbrx-instruct",
       "n": 1513,
-      "recall": 0.9266358228684732
+      "recall": 0.9623265036351619
     },
     {
       "model": "google/gemma-2-27b-it",
       "n": 1498,
-      "recall": 0.9773030707610146
+      "recall": 0.9886515353805073
     },
     {
       "model": "01-ai/Yi-1.5-34B-Chat",
       "n": 1472,
-      "recall": 0.951766304347826
+      "recall": 0.9816576086956522
     },
     {
       "model": "yandex/YandexGPT-5-Lite-8B-instruct",
       "n": 1469,
-      "recall": 0.9319264805990469
+      "recall": 0.9611980939414567
     },
     {
       "model": "CohereForAI/c4ai-command-r-08-2024",
       "n": 1461,
-      "recall": 0.9897330595482546
+      "recall": 0.9952087611225188
     },
     {
       "model": "unsloth/Llama-3.3-70B-Instruct",
       "n": 1452,
-      "recall": 0.9641873278236914
+      "recall": 0.977961432506887
     },
     {
       "model": "Qwen/Qwen2.5-72B-Instruct",
       "n": 1449,
-      "recall": 0.9585921325051759
+      "recall": 0.9827467218771566
     },
     {
       "model": "mistralai/Ministral-8B-Instruct-2410",
       "n": 1396,
-      "recall": 0.9032951289398281
+      "recall": 0.9369627507163324
     },
     {
       "model": "Qwen/QwQ-32B",
       "n": 1386,
-      "recall": 0.974025974025974
+      "recall": 0.9826839826839827
     },
     {
       "model": "GigaChat-Max",
       "n": 1266,
-      "recall": 0.9581358609794629
+      "recall": 0.9865718799368088
     },
     {
       "model": "gigachat",
       "n": 1181,
-      "recall": 0.9364944961896697
+      "recall": 0.947502116850127
     },
     {
       "model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
       "n": 942,
-      "recall": 0.9596602972399151
+      "recall": 0.9777070063694268
     },
     {
       "model": "WizardLM-2-7B",
       "n": 891,
-      "recall": 0.9797979797979798
+      "recall": 0.9854096520763187
     }
   ],
   "variants": {
     "torch": {
       "valid": {
-        "roc_auc": 0.9877522765081134,
-        "accuracy": 0.9464289303877621,
-        "logloss": 0.1680166870355606
+        "roc_auc": 0.9915616827573975,
+        "accuracy": 0.947574728124309,
+        "logloss": 0.2194741666316986
       },
       "test": {
-        "roc_auc": 0.9868389018804723,
-        "accuracy": 0.9451267112202738,
-        "logloss": 0.17339040338993073
+        "roc_auc": 0.990879686763534,
+        "accuracy": 0.9477351916376306,
+        "logloss": 0.22388239204883575
       }
     },
     "onnx_fp32": {
       "valid": {
-        "roc_auc": 0.9877525301827623,
-        "accuracy": 0.9464691338171146,
-        "logloss": 0.1680171936750412
+        "roc_auc": 0.9915611218266558,
+        "accuracy": 0.9475546264096327,
+        "logloss": 0.2195131629705429
       },
       "test": {
-        "roc_auc": 0.986839340967888,
-        "accuracy": 0.9451457512233202,
-        "logloss": 0.17339381575584412
+        "roc_auc": 0.9908786502170019,
+        "accuracy": 0.9476971116315379,
+        "logloss": 0.2239251583814621
       }
     },
     "onnx_int8": {
       "valid": {
-        "roc_auc": 0.9877395919384575,
-        "accuracy": 0.9458258789474743,
-        "logloss": 0.16966643929481506
-      },
-      "test": {
-        "roc_auc": 0.9868624557303812,
-        "accuracy": 0.9449363111898098,
-        "logloss": 0.1746712177991867
+        "roc_auc": 0.9913228886801297,
+        "accuracy": 0.9457454720887691,
+        "logloss": 0.22774693369865417
       }
     }
   },
@@ -371,128 +365,128 @@
     "valid": {
       "texts": 4994,
       "head": {
-        "roc_auc": 0.9810283101811148,
-        "accuracy": 0.9653584301161394,
-        "logloss": 0.128141388297081
+        "roc_auc": 0.9847070762892813,
+        "accuracy": 0.9523428113736484,
+        "logloss": 0.22183240950107574
       },
       "mean_of_windows": {
-        "roc_auc": 0.9760409957547289,
-        "accuracy": 0.9627553063676412,
-        "logloss": 0.1545764727976014
+        "roc_auc": 0.9806608555854203,
+        "accuracy": 0.9513416099319183,
+        "logloss": 0.17589961900087164
       }
     },
     "test": {
       "texts": 5498,
       "head": {
-        "roc_auc": 0.9804006328414371,
-        "accuracy": 0.9568934157875592,
-        "logloss": 0.1478739082813263
+        "roc_auc": 0.9829612041736554,
+        "accuracy": 0.9483448526736995,
+        "logloss": 0.23621107637882233
       },
       "mean_of_windows": {
-        "roc_auc": 0.9734161416519227,
-        "accuracy": 0.9592579119679884,
-        "logloss": 0.16323538213558342
+        "roc_auc": 0.9767118546433249,
+        "accuracy": 0.9425245543834122,
+        "logloss": 0.19227965621495594
       }
     }
   },
   "parity": {
     "fp32": {
       "texts": 300,
-      "max_abs_diff": 2.86102294921875e-06,
-      "mean_abs_diff": 5.327165197854811e-08,
+      "max_abs_diff": 1.0371208190917969e-05,
+      "mean_abs_diff": 5.106092260120931e-08,
       "same_label": 1.0
     },
     "int8": {
       "texts": 300,
-      "max_abs_diff": 0.12331715226173401,
-      "mean_abs_diff": 0.0030163093470036983,
+      "max_abs_diff": 0.6358659863471985,
+      "mean_abs_diff": 0.004574701655656099,
       "same_label": 0.9966666666666667
     },
-    "spec_vs_batch_max_abs_diff": 2.2351741790771484e-07,
+    "spec_vs_batch_max_abs_diff": 8.940696716308594e-08,
     "spec_vs_eval": {
       "texts": 300,
-      "max_abs_diff": 0.0,
-      "mean_abs_diff": 0.0
+      "max_abs_diff": 5.21540641784668e-08,
+      "mean_abs_diff": 1.753990848859151e-10
     }
   },
   "sizes_mb": {
-    "onnx_fp32": 117.238137,
-    "onnx_int8": 29.670516,
-    "safetensors": 116.784136,
-    "tokenizer": 2.414034
+    "onnx_fp32": 130.002897,
+    "onnx_int8": 33.248729,
+    "safetensors": 129.0666,
+    "tokenizer": 2.414074
   },
   "latency": [
     {
       "runtime": "onnxruntime fp32",
       "tokens": 128,
       "threads": 1,
-      "ms": 9.615208502509631
+      "ms": 22.51564549806062
     },
     {
       "runtime": "onnxruntime int8",
       "tokens": 128,
       "threads": 1,
-      "ms": 5.081479510408826
+      "ms": 11.8545625009574
     },
     {
       "runtime": "torch fp32",
       "tokens": 128,
       "threads": 1,
-      "ms": 3.021541502675973
+      "ms": 7.096896006260067
     },
     {
       "runtime": "onnxruntime fp32",
       "tokens": 128,
       "threads": 8,
-      "ms": 4.489436993026175
+      "ms": 12.875854008598253
     },
     {
       "runtime": "onnxruntime int8",
       "tokens": 128,
       "threads": 8,
-      "ms": 2.803999508614652
+      "ms": 8.859041990945116
     },
     {
       "runtime": "torch fp32",
       "tokens": 128,
       "threads": 8,
-      "ms": 3.531145994202234
+      "ms": 8.56072902388405
     },
     {
       "runtime": "onnxruntime fp32",
       "tokens": 512,
       "threads": 1,
-      "ms": 57.70470850984566
+      "ms": 137.22306248382665
     },
     {
       "runtime": "onnxruntime int8",
       "tokens": 512,
       "threads": 1,
-      "ms": 39.83172899461351
+      "ms": 94.74637449602596
     },
     {
       "runtime": "torch fp32",
       "tokens": 512,
       "threads": 1,
-      "ms": 19.277750005130656
+      "ms": 44.821416508057155
     },
     {
       "runtime": "onnxruntime fp32",
       "tokens": 512,
       "threads": 8,
-      "ms": 26.869499997701496
+      "ms": 71.16600050358102
     },
     {
       "runtime": "onnxruntime int8",
       "tokens": 512,
       "threads": 8,
-      "ms": 22.661374998278916
+      "ms": 60.334104506182484
     },
     {
       "runtime": "torch fp32",
       "tokens": 512,
       "threads": 8,
-      "ms": 10.080458509037271
+      "ms": 23.53672949539032
     }
   ],
   "latency_cpu": "Apple M1, 8 ядер",
@@ -501,73 +495,73 @@
       "runtime": "onnxruntime fp32",
       "tokens": 128,
       "threads": 1,
-      "ms": 21.541321500080812
+      "ms": 22.93117649969645
     },
     {
       "runtime": "onnxruntime int8",
       "tokens": 128,
       "threads": 1,
-      "ms": 17.593783500160498
+      "ms": 17.917414500061568
     },
     {
       "runtime": "torch fp32",
       "tokens": 128,
       "threads": 1,
-      "ms": 12.777417500728916
+      "ms": 20.158171499588207
     },
     {
       "runtime": "onnxruntime fp32",
       "tokens": 128,
       "threads": 2,
-      "ms": 12.00817399967491
+      "ms": 20.401489499818126
     },
     {
       "runtime": "onnxruntime int8",
       "tokens": 128,
       "threads": 2,
-      "ms": 9.979781500078388
+      "ms": 17.313676999947347
     },
     {
       "runtime": "torch fp32",
       "tokens": 128,
       "threads": 2,
-      "ms": 12.565221500153712
+      "ms": 22.787174500081164
     },
     {
       "runtime": "onnxruntime fp32",
       "tokens": 512,
       "threads": 1,
-      "ms": 111.21696549980697
+      "ms": 216.16239950026284
     },
     {
       "runtime": "onnxruntime int8",
       "tokens": 512,
       "threads": 1,
-      "ms": 101.09400649980671
+      "ms": 151.32305099996302
     },
     {
       "runtime": "torch fp32",
       "tokens": 512,
       "threads": 1,
-      "ms": 70.69004900040454
+      "ms": 89.88521600031163
     },
     {
       "runtime": "onnxruntime fp32",
       "tokens": 512,
       "threads": 2,
-      "ms": 95.84388650000619
+      "ms": 157.3962544994174
     },
     {
       "runtime": "onnxruntime int8",
       "tokens": 512,
       "threads": 2,
-      "ms": 87.36092600065604
+      "ms": 137.4405255005513
     },
     {
       "runtime": "torch fp32",
       "tokens": 512,
       "threads": 2,
-      "ms": 48.85354749967519
+      "ms": 99.66399150016514
     }
   ],
   "latency_x86_cpu": "Intel(R) Xeon(R) CPU @ 2.00GHz, 2 ядра",
@@ -670,103 +664,58 @@
   ],
   "curve": [
     {
-      "step": 1859,
-      "epoch": 0.25,
-      "train_loss": 0.34123176222465706,
-      "roc_auc": 0.9711628109347938,
-      "accuracy": 0.9133013046012824,
-      "logloss": 0.21577781438827515,
-      "seconds": 179.4051615389999
-    },
-    {
       "step": 3718,
       "epoch": 0.5,
-      "train_loss": 0.21008829419782177,
-      "roc_auc": 0.982029732242808,
-      "accuracy": 0.927312199730637,
-      "logloss": 0.19422003626823425,
-      "seconds": 355.83413984999993
-    },
-    {
-      "step": 5577,
-      "epoch": 0.75,
-      "train_loss": 0.18063876417582236,
-      "roc_auc": 0.9848742237555743,
-      "accuracy": 0.9129193720224336,
-      "logloss": 0.23509006202220917,
-      "seconds": 530.7491375489999
+      "train_loss": 0.26865522524180624,
+      "roc_auc": 0.9848840291598256,
+      "accuracy": 0.927694132309486,
+      "logloss": 0.200552299618721,
+      "seconds": 670.705602244
     },
     {
       "step": 7436,
       "epoch": 1.0,
-      "train_loss": 0.1658733414426935,
-      "roc_auc": 0.9861218408882947,
-      "accuracy": 0.939594347397833,
-      "logloss": 0.15986379981040955,
-      "seconds": 707.072332813
-    },
-    {
-      "step": 9295,
-      "epoch": 1.25,
-      "train_loss": 0.099394788348375,
-      "roc_auc": 0.9862592973851854,
-      "accuracy": 0.9337648501417171,
-      "logloss": 0.19716188311576843,
-      "seconds": 886.2637042959998
+      "train_loss": 0.16298439367731904,
+      "roc_auc": 0.9876664725232346,
+      "accuracy": 0.9392526182483366,
+      "logloss": 0.17743010818958282,
+      "seconds": 1332.2760521709997
     },
     {
       "step": 11154,
       "epoch": 1.5,
-      "train_loss": 0.0973972409598894,
-      "roc_auc": 0.9876171533156665,
-      "accuracy": 0.9458459806621505,
-      "logloss": 0.1762959212064743,
-      "seconds": 1060.62759015
-    },
-    {
-      "step": 13013,
-      "epoch": 1.75,
-      "train_loss": 0.09540854746725304,
-      "roc_auc": 0.9875694591328298,
-      "accuracy": 0.94289102860474,
-      "logloss": 0.18861407041549683,
-      "seconds": 1234.600462046
+      "train_loss": 0.10299366036246642,
+      "roc_auc": 0.9903078878516265,
+      "accuracy": 0.9524795465053169,
+      "logloss": 0.150174081325531,
+      "seconds": 1997.345211798
     },
     {
       "step": 14872,
       "epoch": 2.0,
-      "train_loss": 0.09276867996362219,
-      "roc_auc": 0.9877522765081134,
-      "accuracy": 0.9464289303877621,
-      "logloss": 0.1680166870355606,
-      "seconds": 1412.5226864579997
-    },
-    {
-      "step": 16731,
-      "epoch": 2.25,
-      "train_loss": 0.041341427072377666,
-      "roc_auc": 0.9872277510086372,
-      "accuracy": 0.9421874685910708,
-      "logloss": 0.2944015860557556,
-      "seconds": 1591.9212769399999
+      "train_loss": 0.09575741373868223,
+      "roc_auc": 0.9906792692120621,
+      "accuracy": 0.9463083200997046,
+      "logloss": 0.16096779704093933,
+      "seconds": 2664.273883164
     },
     {
       "step": 18590,
       "epoch": 2.5,
-      "train_loss": 0.042895444525048065,
-      "roc_auc": 0.986922549429217,
-      "accuracy": 0.947494321265604,
-      "logloss": 0.2467929571866989,
-      "seconds": 1763.9046099139998
+      "train_loss": 0.05507812868641422,
+      "roc_auc": 0.9914020736822549,
+      "accuracy": 0.9465294389611434,
+      "logloss": 0.21480488777160645,
+      "seconds": 3328.919590312
     },
     {
-      "step": 20449,
-      "epoch": 2.75,
-      "train_loss": 0.042728639476806836,
-      "roc_auc": 0.987184087992251,
-      "accuracy": 0.9473536092628702,
-      "logloss": 0.2384401559829712,
-      "seconds": 1936.400859013
+      "step": 22308,
+      "epoch": 3.0,
+      "train_loss": 0.05277395541336329,
+      "roc_auc": 0.9915616827573975,
+      "accuracy": 0.947574728124309,
+      "logloss": 0.2194741666316986,
+      "seconds": 3993.3939392859997
     }
   ],
   "pilot": [
@@ -867,7 +816,7 @@
     "version": 1,
     "format": "onnx",
     "file": "model.onnx",
-    "weights": "int8",
+    "weights": "fp32",
     "tokenizer": "tokenizer.json",
     "inputs": [
       "input_ids",
@@ -1173,33 +1122,33 @@
   ],
   "related": [
     {
-      "name": "mini-frida",
-      "repo": "toiletsandpaper/russian-ai-text-detector-mini-frida",
-      "base": "sergeyzh/rubert-mini-frida",
-      "weights": "fp32",
-      "size_mb": 130.002897,
-      "ms_512_1": 137.22306248382665,
-      "x86_ms_512_1": 216.16239950026284,
+      "name": "transformer",
+      "repo": "toiletsandpaper/russian-ai-text-detector-bert",
+      "base": "cointegrated/rubert-tiny2",
+      "weights": "int8",
+      "size_mb": 29.670516,
+      "ms_512_1": 39.83172899461351,
+      "x86_ms_512_1": 101.09400649980671,
       "test": {
-        "accuracy": 0.9476971116315379,
-        "roc_auc": 0.9908786502170019,
-        "roc_auc_created": 0.991972914141175,
+        "accuracy": 0.9449363111898098,
+        "roc_auc": 0.9868624557303812,
+        "roc_auc_created": 0.9889093687098427,
         "macro": {
-          "precision": 0.9508090519641463,
-          "recall": 0.9411182469346204,
-          "f1": 0.9453021436120708
+          "precision": 0.9436053921630998,
+          "recall": 0.9422482755528521,
+          "f1": 0.9429107547603406
         },
         "classes": {
           "human": {
-            "precision": 0.9641046037585761,
-            "recall": 0.9054489424289116,
-            "f1": 0.9338566372107582,
+            "precision": 0.9366837961435105,
+            "recall": 0.9276742774431527,
+            "f1": 0.9321572675236933,
             "support": 21417
           },
           "ai": {
-            "precision": 0.9375135001697165,
-            "recall": 0.9767875514403292,
-            "f1": 0.9567476500133835,
+            "precision": 0.9505269881826892,
+            "recall": 0.9568222736625515,
+            "f1": 0.9536642419969878,
             "support": 31104
           }
         }
@@ -1246,7 +1195,7 @@
       "rumodernbert-small"
     ],
     "related": [
-      "rubert-mini-frida",
+      "rubert-tiny2",
       "rumodernbert-small"
     ]
   }

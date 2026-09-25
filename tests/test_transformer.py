@@ -7,7 +7,10 @@ LightGBM из группы train; без них тесты пропускают�
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -95,10 +98,23 @@ def test_batches_and_collate():
 
 
 def test_windows():
-    ws = tt.windows(list(range(10, 17)), 5, 1, 2, limit=8)
+    ws = tt.windows(list(range(10, 17)), 5, [1], [2], limit=8)
     assert ws == [[1, 10, 11, 12, 2], [1, 13, 14, 15, 2], [1, 16, 2]]
-    assert tt.windows([], 5, 1, 2, limit=8) == [[1, 2]]
-    assert len(tt.windows(list(range(100)), 5, 1, 2, limit=2)) == 2
+    assert tt.windows([], 5, [1], [2], limit=8) == [[1, 2]]
+    assert len(tt.windows(list(range(100)), 5, [1], [2], limit=2)) == 2
+    # Префикс задачи и служебные токены замороженного энкодера: окно короче на их длину.
+    assert tt.windows(list(range(10, 14)), 6, [1, 7, 8], [2], limit=8) == [[1, 7, 8, 10, 11, 2], [1, 7, 8, 12, 13, 2]]
+
+
+def test_stitch_windows():
+    """Окна длинных текстов: первое берётся из эмбеддинга начала, остальные идут следом."""
+    head = np.arange(10, dtype=np.float16).reshape(5, 2)
+    more = 100 + np.arange(6, dtype=np.float16).reshape(3, 2)
+    emb, counts = tt.stitch_windows(head, np.array([1, 3]), [2, 1], more)
+    assert counts.tolist() == [3, 2]
+    assert emb.tolist() == [[2, 3], [100, 101], [102, 103], [6, 7], [104, 105]]
+    empty, none = tt.stitch_windows(head, np.array([], dtype=int), [], more[:0])
+    assert empty.shape == (0, 2) and none.tolist() == []
 
 
 def test_quick_metrics_and_breakdowns():
@@ -150,7 +166,7 @@ def word_tokenizer() -> tokenizers.Tokenizer:
 
 
 def test_predict_text_follows_spec(tmp_path: Path):
-    spec = tt.inference_spec({"max_length": 6, "normalize": True}, FakeTokenizer(), "onnx/model.onnx", "head")
+    spec = tt.inference_spec({"max_length": 6, "normalize": True}, {"cls_id": 1, "sep_id": 2, "pad_id": 0}, "head")
     assert spec["max_windows"] == 1 and spec["threshold"] == 0.5
     assert spec["max_chars"] == 6 * tt.CHARS_PER_TOKEN * tt.MAX_WINDOWS
     json.loads(json.dumps(spec))  # правила сериализуются в inference.json
@@ -160,6 +176,62 @@ def test_predict_text_follows_spec(tmp_path: Path):
     mean = tt.predict_text("ai ai ai ai\n\ne e e e e e e e", sess, tok, spec_w)
     assert head > 0.99 and mean == pytest.approx((head + 1 / (1 + np.exp(2)) * 2) / 3, abs=1e-6)
     assert tt.predict_text("ё", sess, tok, spec) == tt.predict_text("е", sess, tok, spec)
+
+
+def frozen_encoder_check(tmp_path: Path) -> None:
+    """Замороженный T5 с префиксом задачи: один граф ONNX, окна с prefix_ids и suffix_ids, как у PyTorch."""
+    import torch
+    from transformers import T5Config, T5EncoderModel
+
+    vocab = {"[PAD]": 0, "[UNK]": 3, "</s>": 2, "e": 10, "ai": 16, "categorize": 20, ":": 21}
+    tok = tokenizers.Tokenizer(tokenizers.models.WordLevel(vocab, unk_token="[UNK]"))
+    tok.pre_tokenizer = tokenizers.pre_tokenizers.Whitespace()
+    tok.post_processor = tokenizers.processors.TemplateProcessing(single="$A </s>", special_tokens=[("</s>", 2)])
+    base, md = tmp_path / "t5", tmp_path / "run" / "model"
+    md.mkdir(parents=True)
+    tok.save(str(md / "tokenizer.json"))
+    torch.manual_seed(0)
+    cfg = T5Config(vocab_size=32, d_model=16, d_kv=4, d_ff=32, num_layers=1, num_heads=4, pad_token_id=0)
+    T5EncoderModel(cfg).save_pretrained(base)
+    prefix, suffix = tt.wrap_ids(tt.inference_tokenizer(md / "tokenizer.json"), "categorize: ")
+    assert (prefix, suffix) == ([20, 21], [2])
+    frozen = {"base": str(base), "pooling": "cls", "prefix_ids": prefix, "suffix_ids": suffix, "pad_id": 0}
+    (md / tt.FROZEN).write_text(json.dumps(frozen), encoding="utf-8")
+    np.savez(md / "head.npz", weight=np.linspace(-3, 3, 16, dtype=np.float32), bias=np.float32(0.2))
+    tt.export_onnx(md, tmp_path / "model.onnx")
+
+    spec = tt.inference_spec({"max_length": 6, "normalize": True}, tt.model_wrap(md), "mean_of_windows", "fp32")
+    assert spec["prefix_ids"] == [20, 21] and spec["suffix_ids"] == [2] and "cls_id" not in spec
+    text = "ai e ai e e ai e"
+    btok = tt.inference_tokenizer(md / "tokenizer.json")
+    wins = tt.windows(btok.encode(text, add_special_tokens=False).ids, 6, prefix, suffix, limit=8)
+    assert wins[0] == [20, 21, 16, 10, 16, 2] and len(wins) == 3
+    model = tt.load_torch_classifier(md)
+    with torch.no_grad():
+        ref = [
+            torch.softmax(model(torch.tensor([w]), torch.ones(1, len(w), dtype=torch.long)).logits, -1)[0, 1]
+            for w in wins
+        ]
+    got = tt.predict_text(text, tt.session(tmp_path / "model.onnx", 1), btok, spec)
+    assert got == pytest.approx(float(np.mean(ref)), abs=1e-5)
+
+
+def test_frozen_encoder_onnx_follows_spec(tmp_path: Path):
+    """Проверка frozen_encoder_check в отдельном процессе.
+
+    torch и LightGBM приносят каждый свой OpenMP: после тестов с LightGBM экспорт torch в том же
+    процессе виснет в libomp.
+    """
+    here = Path(__file__).resolve().parent
+    paths = [here, here.parent / "scripts", here.parent / "evals", os.environ.get("PYTHONPATH", "")]
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(str(x) for x in paths if str(x)), "OMP_NUM_THREADS": "1"}
+    code = (
+        "import sys; from pathlib import Path; import test_transformer as t; t.frozen_encoder_check(Path(sys.argv[1]))"
+    )
+    r = subprocess.run(
+        [sys.executable, "-c", code, str(tmp_path)], env=env, capture_output=True, text=True, timeout=600, check=False
+    )
+    assert r.returncode == 0, (r.stdout + r.stderr)[-4000:]
 
 
 def test_pilot_rows(tmp_path: Path):
@@ -333,7 +405,8 @@ def test_report_from_fake_metrics():
     for part in ("# Отчёт об обучении: russian-ai-text-detector-bert", "## Выбор базы", "## Нормализация"):
         assert part in text
     assert "## Как воспроизвести" in text and "export-x86.json" in text
-    assert "| `cointegrated/rubert-tiny2` | $0.9878$ |" in text  # таблица финалистов
+    assert "| `cointegrated/rubert-tiny2` | `transformer` | $0.9878$ |" in text  # таблица финалистов
+    assert "Сам FRIDA готовится отдельной моделью" in text and "у кандидатов ниже $29$ млн" in text
     assert "torch считает быстрее onnxruntime" in text and r"$5.3\text{–}5.8$ раза" in text
     assert "https://arxiv.org/abs/2509.21269" in text
     assert "252e21e3" in text and "abc1234" in text
@@ -345,12 +418,45 @@ def test_report_from_fake_metrics():
     assert not re.search(r"\S\\\\\(", tt.hub_math(text))
 
 
+def test_report_names_three_finalists():
+    """Три базы на полном train: быстрая по умолчанию, середина и точная, у каждой веса и задержка поставки."""
+    m = fake_metrics()
+    tiny = m["finalists"][0]
+    m["finalists"] = [
+        {**tiny, "weights": "int8", "shipped_mb": 29.7, "shipped_ms_512_1": 39.8},
+        {
+            **tiny,
+            "base": "sergeyzh/rubert-mini-frida",
+            "valid_roc_auc": 0.9916,
+            "int8_ms_512_1": 94.7,
+            "weights": "fp32",
+            "shipped_mb": 129.9,
+            "shipped_ms_512_1": 137.2,
+        },
+        {
+            **tiny,
+            "base": "deepvk/RuModernBERT-small",
+            "valid_roc_auc": 0.9935,
+            "int8_ms_512_1": 161.5,
+            "weights": "fp32",
+            "shipped_mb": 139.6,
+            "shipped_ms_512_1": 272.8,
+        },
+    ]
+    text = tt.report_body(m, tt.REPO)
+    assert "На полном train обучены $3$ базы из пилота" in text and "по обоим, `sergeyzh/rubert-mini-frida`." in text
+    assert "`transformer` ставится по умолчанию" in text and "`modernbert` точнее всех" in text
+    assert "`mini-frida` — промежуточный вариант" in text and "две базы" not in text
+    assert "| `sergeyzh/rubert-mini-frida` | `mini-frida` | $0.9916$ |" in text and "| fp32 | $130$ | $137.2$ |" in text
+
+
 def test_card_from_fake_metrics():
     m = fake_metrics()
     card = tt.card(m)
     meta = card.data.to_dict()
     assert meta["base_model"] == "cointegrated/rubert-tiny2"
     assert meta["license"] == "mit" and meta["library_name"] == "onnx"
+    assert meta["base_model_relation"] == "finetune"
     assert "lightgbm" not in meta["tags"] and {"bert", "onnx", "int8"} <= set(meta["tags"])
     source = meta["model-index"][0]["results"][0]["source"]["url"]
     assert source.endswith("scripts/train_transformer.py")
@@ -360,3 +466,139 @@ def test_card_from_fake_metrics():
     assert "по первым \\\\(8\\\\) окнам" in body
     assert "$" not in body.split("```")[0]  # формулы переписаны для Hub
     assert not re.search(r"\S\\\\\(", body)
+
+
+def test_card_and_report_for_fp32_bundle():
+    """Точная модель: веса fp32 выбраны заранее, int8 лежит рядом, в карточке сравнение с другими моделями."""
+    m = fake_metrics()
+    m["params"] |= {
+        "base": "deepvk/RuModernBERT-small",
+        "base_license": "apache-2.0",
+        "license": "apache-2.0",
+        "shipped": "onnx_fp32",
+        "shipped_file": "onnx/model.onnx",
+        "size_mb": 139.6,
+        "weights_choice": "fp32",
+        "int8_label_changes": {"valid": 0.011},
+        "int8_valid_only": True,
+    }
+    m["test"]["roc_auc"] = 0.993
+    m["latency"] = [
+        {"runtime": "onnxruntime fp32", "tokens": 512, "threads": 1, "ms": 272.0},
+        {"runtime": "torch fp32", "tokens": 512, "threads": 1, "ms": 67.0},
+    ]
+    m["sizes_mb"] |= {"onnx_fp32": 139.6, "onnx_int8": 36.1}
+    tiny = {**m["test"], "roc_auc": 0.9869}
+    m["related"] = [
+        {
+            "name": "transformer",
+            "repo": tt.REPO,
+            "base": "cointegrated/rubert-tiny2",
+            "weights": "int8",
+            "size_mb": 29.7,
+            "ms_512_1": 39.8,
+            "x86_ms_512_1": 101.1,
+            "test": tiny,
+        }
+    ]
+    card = tt.card(m)
+    meta = card.data.to_dict()
+    assert meta["model-index"][0]["name"] == "russian-ai-text-detector-modernbert"
+    assert meta["license"] == "apache-2.0" and meta["base_model_relation"] == "finetune"
+    assert "modernbert" in meta["tags"] and "int8" not in meta["tags"]
+    body = card.text
+    assert "aiw-ru models install modernbert" in body and "aiw-ru classify --model modernbert текст.md" in body
+    assert "`model_int8.onnx`" in body and "## Какую модель выбрать" in body
+    assert "точный вариант" in body and "в \\\\(6.8\\\\) раза медленнее" in body
+    assert "deepvk2025rumodernbert" in body
+    assert not re.search(r"\S\\\\\(", body)
+    report = tt.report_body(m, tt.bundle_for(m["params"]["base"]).repo)
+    assert (
+        "evaluate ~/.cache/aiw-ru/llmtrace/transformer/full/rumodernbert-small --weights fp32 --int8-valid-only"
+        in report
+    )
+    assert "Варианты сравнивались только на valid" in report and "у $1.1\\%$ текстов valid" in report
+    int8_row = next(line for line in report.splitlines() if line.startswith("| ONNX int8"))
+    assert "—" not in int8_row
+    assert "Веса fp32 выбраны заранее" in report and "| `transformer` |" in report.replace("LightGBM |", "")
+
+
+def test_card_and_report_for_frozen_heavy_bundle():
+    """FRIDA: замороженный энкодер с головой, веса во внешнем файле, тяжёлая и не самая точная модель."""
+    m = fake_metrics()
+    m["params"] = {
+        k: v
+        for k, v in m["params"].items()
+        if k not in ("epochs", "lr", "batch", "warmup", "patience", "best_step", "best_epoch", "early_stopped")
+    }
+    m["params"] |= {
+        "base": "ai-forever/FRIDA",
+        "parameters": 823_000_000,
+        "prefix": "categorize: ",
+        "pooling": "cls",
+        "head": "logistic regression",
+        "C": 10.0,
+        "c_grid": [0.1, 1.0, 10.0, 100.0],
+        "precision": "fp16",
+        "embed_seconds": 5400.0,
+        "shipped": "onnx_fp32",
+        "shipped_file": "onnx/model.onnx",
+        "size_mb": 3300.0,
+        "external_data": True,
+        "probs_source": "torch",
+        "onnx_texts": 300,
+    }
+    m["dataset"]["train"] = 80000
+    m["variants"]["onnx_int8"]["test"] = m["variants"]["onnx_int8"]["valid"]
+    m["curve"] = [{"C": c, "roc_auc": 0.95, "accuracy": 0.9, "logloss": 0.3} for c in (0.1, 1.0, 10.0, 100.0)]
+    m["latency"] = [{"runtime": "onnxruntime fp32", "tokens": 512, "threads": 1, "ms": 9000.0}]
+    m["sizes_mb"] |= {"onnx_fp32": 3300.0, "onnx_int8": 850.0}
+    m["test"]["roc_auc"] = 0.985
+    fast = {"repo": tt.REPO, "name": "transformer", "size_mb": 29.7, "ms_512_1": 39.8, "x86_ms_512_1": 101.1}
+    m["related"] = [
+        {**fast, "test": {**m["test"], "roc_auc": 0.98}},
+        {
+            **fast,
+            "repo": tt.BUNDLES["deepvk/RuModernBERT-small"].repo,
+            "name": "modernbert",
+            "size_mb": 139.6,
+            "ms_512_1": 272.0,
+            "test": {**m["test"], "roc_auc": 0.993},
+        },
+    ]
+    card = tt.card(m)
+    assert "t5" in card.data.to_dict()["tags"] and "bert" not in card.data.to_dict()["tags"]
+    body = card.text
+    assert "`model.onnx.data`" in body and '"model.onnx*"' in body
+    assert "aiw-ru models install frida" in body and "--model frida" in body
+    assert "Модель тяжёлая, для мощных машин" in body and "у вызовов дольше секунды" in body
+    assert "самый тяжёлый трансформер aiw-ru, но не самый точный: на test его обходит `modernbert`." in body
+    assert (
+        "в \\\\(226\\\\) раз медленнее" in body and "в \\\\(33\\\\) раза медленнее" in body and "без дообучения" in body
+    )
+    assert "habr.com/ru/companies/sberdevices/articles/909924" in body
+    assert not re.search(r"\S\\\\\(", body)
+    report = tt.report_body(m, tt.bundle_for("ai-forever/FRIDA").repo)
+    assert "замороженный энкодер `ai-forever/FRIDA`" in report and "сам FRIDA для мощных машин" in report
+    assert "embed --base ai-forever/FRIDA --prefix 'categorize: ' --pooling cls --limit 80000" in report
+    assert "--exclude 'emb-*'" in report and "--onnx-texts 300" in report
+
+
+def test_bundle_hub_layout(tmp_path):
+    for f in (
+        "onnx/model.onnx",
+        "onnx/model_int8.onnx",
+        "model/tokenizer.json",
+        "model/tokenizer_config.json",
+        "model/config.json",
+        "inference.json",
+        "metrics.json",
+    ):
+        (tmp_path / f).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / f).write_text(f, encoding="utf-8")
+    hub = tt.bundle_hub(tmp_path, "onnx/model.onnx")
+    assert (hub / "model.onnx").read_text(encoding="utf-8") == "onnx/model.onnx"
+    assert (hub / "model_int8.onnx").exists() and not (hub / "model_fp32.onnx").exists()
+    hub = tt.bundle_hub(tmp_path, "onnx/model_int8.onnx")
+    assert (hub / "model.onnx").read_text(encoding="utf-8") == "onnx/model_int8.onnx"
+    assert (hub / "model_fp32.onnx").exists() and not (hub / "model_int8.onnx").exists()
