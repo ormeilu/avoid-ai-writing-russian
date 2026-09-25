@@ -69,6 +69,19 @@ def test_nested_matches_collapse():
     assert hits[0].text == "играет ключевую роль"
 
 
+def test_growing_role_is_one_finding():
+    """«играет всё более важную роль» — одна находка на весь оборот, а не две пересекающиеся"""
+    for text, fragment in (
+        ("Технология играет всё более важную роль в медицине.", "играет всё более важную роль"),
+        ("Сервисы играют всё большую значимую роль.", "играют всё большую значимую роль"),
+    ):
+        hits = [i.text for i in analyze(text).issues if i.type == "tier1"]
+        assert hits == [fragment], text
+    assert [i.text for i in analyze("Роль ИИ становится всё более важной.").issues if i.type == "tier1"] == [
+        "всё более важной"
+    ]
+
+
 def test_clerical_is_style_only():
     """канцелярит помечен как совет по стилю"""
     r = analyze("В рамках работы данный метод применяется в целях оценки.")
@@ -105,7 +118,7 @@ def test_fragment_is_source_text():
     )
     r = analyze(src)
     fragments = [i.text for i in r.issues]
-    assert "всё более важную" in fragments
+    assert "играет всё более важную роль" in fragments
     assert "подчёркивает" in fragments
     assert f"Дан{ZW}ный метод" in fragments
     for i in r.issues:
