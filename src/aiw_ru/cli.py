@@ -48,7 +48,7 @@ from aiw_ru.antiplagiat import (
 from aiw_ru.categories import TYPE_TO_SECTION
 from aiw_ru.compat import js_round, jsre, num_str, to_fixed, trim
 from aiw_ru.detect import TYPE_LABELS, analyze
-from aiw_ru.text import plural
+from aiw_ru.text import plural, words
 from aiw_ru.types import CONTEXT_MODES, PROFILE_TO_MODE, AnalysisResult, ContextMode, Record, Severity
 from aiw_ru.validate import validate
 
@@ -62,7 +62,9 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
   calibrate --doc Ф --marked Ф подстроить модель antiplagiat под ваши отчёты: документ и файл
                                с фрагментами, которые отчёт подсветил как ИИ
   calibrate --doc Ф --share N  то же, если известна только итоговая доля ИИ из отчёта, %
-  classify [файл…]             вероятность ИИ по необязательной модели;
+  classify [файл…]             вероятность ИИ по необязательной модели; текст длиннее окна модели
+                               проверяется ещё и по фрагментам с перекрытием (на фрагмент уходит
+                               примерно столько, сколько на текст в 800 слов в models info);
                                --all — по всем установленным рядом, видно, согласны ли они
   models                       необязательные модели: установлены ли и где лежат
   models info [имя]            качество, скорость, память и размер моделей до скачивания
@@ -85,6 +87,8 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
   --model ИМЯ       scan, antiplagiat, classify: modernbert, transformer, mini-frida или lightgbm
                     (по умолчанию первая установленная в этом порядке)
   --no-model        scan, antiplagiat: не показывать вероятность от модели, даже если она есть
+  --no-fragments    classify: только вероятность по началу текста, без фрагментов
+  --max-fragments N classify: проверить не больше N первых фрагментов (0 — все)
   -h, --help        справка
 """
 
@@ -117,6 +121,9 @@ class Args:
     model_name: str | None = None
     # classify: вероятности всех установленных моделей рядом.
     all_models: bool = False
+    # classify: длинный текст без проверки по фрагментам; предел фрагментов (None — все).
+    no_fragments: bool = False
+    max_fragments: int | None = None
     help: bool = False
 
 
@@ -141,6 +148,14 @@ def parse(argv: list[str]) -> Args:
             a.no_model = True
         elif x == "--all":
             a.all_models = True
+        elif x == "--no-fragments":
+            a.no_fragments = True
+        elif x == "--max-fragments":
+            v = need(i, x)
+            i += 1
+            if not v.isdigit():
+                raise UsageError(f"--max-fragments ждёт целое число 0 и больше: {v}")
+            a.max_fragments = int(v) or None
         elif x == "--model":
             v = need(i, x)
             i += 1
@@ -417,6 +432,8 @@ class Signal:
 
     loaded: models.Loaded
     probability: float
+    # Какую часть текста модель прочитала.
+    coverage: models.Coverage
 
     @property
     def ai(self) -> bool:
@@ -435,7 +452,183 @@ def model_signal(a: Args, text: str, result: AnalysisResult | None = None) -> Si
     if a.no_model:
         return None
     loaded = models.preferred(a.model_name)
-    return None if loaded is None else Signal(loaded, loaded.probability(text, result))
+    return None if loaded is None else signal(loaded, text, result)
+
+
+def signal(loaded: models.Loaded, text: str, result: AnalysisResult | None = None) -> Signal:
+    return Signal(loaded, loaded.probability(text, result), loaded.coverage(text))
+
+
+def grouped(n: int) -> str:
+    """Число с разрядами через неразрывный пробел от 10 000, как в plural."""
+    return f"{n:,}".replace(",", "\u00a0") if abs(n) >= 10000 else str(n)
+
+
+def coverage_json(c: models.Coverage) -> dict[str, Any]:
+    return {
+        "truncated": c.truncated,
+        "words": c.words,
+        "totalWords": c.total_words,
+        "chars": c.chars,
+        "totalChars": c.total_chars,
+        "lines": c.lines,
+        "totalLines": c.total_lines,
+        "tokens": c.tokens,
+        "totalTokens": c.total_tokens,
+        "window": c.window,
+    }
+
+
+def read_words(c: models.Coverage) -> str:
+    return f"{plural(c.words, 'слово', 'слова', 'слов')} из {grouped(c.total_words)}"
+
+
+def read_fact(c: models.Coverage) -> tuple[str, str]:
+    """«Прочитано: 290 слов из 6200, строки 1–14 из 380: окно модели 512 токенов»."""
+    lines = f"строка {c.lines}" if c.lines == 1 else f"строки 1–{c.lines}"
+    window = plural(c.window or 0, "токен", "токена", "токенов")
+    return ("Прочитано", f"{read_words(c)}, {lines} из {grouped(c.total_lines)}: окно модели {window}")
+
+
+def read_facts(sig: Signal | None) -> list[tuple[str, str]]:
+    return [read_fact(sig.coverage)] if sig is not None and sig.coverage.truncated else []
+
+
+def fragments_hint(sig: Signal | None, file: str | None) -> None:
+    """Под сводкой scan и antiplagiat: модель видела только начало, весь текст проверит classify."""
+    if sig is not None and sig.coverage.truncated:
+        target = file if file and file != "-" else "<файл>"
+        note(f"Модель прочитала только начало текста. Весь текст по фрагментам: aiw-ru classify {target}")
+
+
+# Если по замеру первых фрагментов ждать дольше, stderr говорит, сколько примерно.
+ETA_AFTER = 5.0
+
+
+def about(seconds: float) -> str:
+    """«4 с», «45 с», «2 мин»: оценка времени без лишней точности."""
+    if seconds < 10:
+        return f"{max(1, round(seconds))} с"
+    if seconds < 90:
+        return f"{5 * round(seconds / 5)} с"
+    return f"{round(seconds / 60)} мин"
+
+
+def eta(loaded: models.Loaded) -> models.Progress:
+    """Оценка времени после первых фрагментов, один раз и только для долгой проверки."""
+    told = False
+
+    def progress(done: int, total: int, elapsed: float) -> None:
+        nonlocal told
+        # Первый фрагмент может идти дольше остальных: оценка по трём.
+        if told or done < min(3, total - 1) or done >= total:
+            return
+        if elapsed / done * (total - done) >= ETA_AFTER:
+            told = True
+            sys.stderr.write(
+                f"aiw-ru classify: {plural(total, 'фрагмент', 'фрагмента', 'фрагментов')}, "
+                f"{loaded.model.title} проверит их примерно за {about(elapsed / done * total)}\n"
+            )
+            sys.stderr.flush()
+
+    return progress
+
+
+def merged_lines(chunks: list[models.Chunk]) -> list[tuple[int, int]]:
+    """Строки фрагментов, слитые там, где фрагменты заходят друг на друга или идут подряд."""
+    out: list[tuple[int, int]] = []
+    for c in sorted(chunks, key=lambda c: c.line):
+        if out and c.line <= out[-1][1] + 1:
+            out[-1] = (out[-1][0], max(out[-1][1], c.end_line))
+        else:
+            out.append((c.line, c.end_line))
+    return out
+
+
+def word_share(chunks: list[models.Chunk], text: str) -> float:
+    """Доля слов текста, попавших хотя бы в один из фрагментов; перекрытия считаются один раз."""
+    total = len(words(text))
+    spans: list[tuple[int, int]] = []
+    for c in sorted(chunks, key=lambda c: c.start):
+        if spans and c.start <= spans[-1][1]:
+            spans[-1] = (spans[-1][0], max(spans[-1][1], c.end))
+        else:
+            spans.append((c.start, c.end))
+    return sum(len(words(text[a:b])) for a, b in spans) / total if total else 0.0
+
+
+def fragments_json(scan: models.ChunkScan, loaded: models.Loaded, text: str) -> dict[str, Any]:
+    t = loaded.threshold
+    above = [c for c in scan.chunks if c.probability >= t]
+    return {
+        "count": len(scan.chunks),
+        "total": scan.total,
+        "overlap": scan.overlap,
+        "seconds": round(scan.seconds, 3),
+        "aboveThreshold": len(above),
+        "aiWordShare": round(word_share(above, text), 4),
+        "aiLines": [list(r) for r in merged_lines(above)],
+        "items": [
+            {
+                "line": c.line,
+                "endLine": c.end_line,
+                "start": c.start,
+                "end": c.end,
+                "words": c.words,
+                "probability": round(c.probability, 4),
+                "ai": c.probability >= t,
+                "nearThreshold": abs(c.probability - t) < NEAR_THRESHOLD,
+            }
+            for c in scan.chunks
+        ],
+    }
+
+
+def show_fragments(scan: models.ChunkScan, loaded: models.Loaded, text: str) -> None:
+    """Таблица фрагментов длинного текста, итог и сколько заняла проверка."""
+    t = loaded.threshold
+
+    def style(p: float) -> str:
+        return "yellow" if abs(p - t) < NEAR_THRESHOLD else "red" if p >= t else "green"
+
+    table(
+        [Col("Строки"), Col("Слов", justify="right"), Col("ИИ", justify="right")],
+        [
+            [
+                Text.styled(str(c.line) if c.line == c.end_line else f"{c.line}–{c.end_line}", "dim"),
+                str(c.words),
+                Text.styled(f"{js_round(c.probability * 100)} %", style(c.probability)),
+            ]
+            for c in scan.chunks
+        ],
+    )
+    out()
+    above = [c for c in scan.chunks if c.probability >= t]
+    if above:
+        ranges = merged_lines(above)
+        where = (
+            f"строка {ranges[0][0]}"
+            if len(ranges) == 1 and ranges[0][0] == ranges[0][1]
+            else "строки " + ", ".join(str(a) if a == b else f"{a}–{b}" for a, b in ranges)
+        )
+        summary = (
+            f"Выше порога {plural(len(above), 'фрагмент', 'фрагмента', 'фрагментов')} из {len(scan.chunks)}, "
+            f"в них {js_round(word_share(above, text) * 100)} % слов: {where}."
+        )
+        out(indented(Text.styled(summary, "red")))
+    else:
+        out(indented(Text.styled("Все фрагменты ниже порога.", "green")))
+    out()
+    note(
+        f"Проверено {plural(len(scan.chunks), 'фрагмент', 'фрагмента', 'фрагментов')} за "
+        f"{ru(max(scan.seconds, 0.1), 1)} с: каждый в окно модели, соседние заходят друг на друга "
+        f"на {js_round(scan.overlap * 100)} %."
+    )
+    if len(scan.chunks) < scan.total:
+        note(
+            f"Предел --max-fragments: проверено {len(scan.chunks)} из {scan.total} фрагментов, до строки "
+            f"{scan.chunks[-1].end_line}; все — --max-fragments 0."
+        )
 
 
 def signal_json(sig: Signal) -> dict[str, Any]:
@@ -447,6 +640,7 @@ def signal_json(sig: Signal) -> dict[str, Any]:
         "ai": sig.ai,
         "nearThreshold": sig.near_threshold,
         "repo": m.repo,
+        "read": coverage_json(sig.coverage),
     }
 
 
@@ -461,6 +655,8 @@ def signal_fact(sig: Signal, label: str | None = None) -> tuple[str, Text]:
     """«Вероятность ИИ: 97 % (трансформер, порог 50 %)»; с подписью-моделью имя в скобках не повторяется."""
     t = js_round(sig.loaded.threshold * 100)
     source = f"порог {t} %" if label else f"{sig.loaded.model.title}, порог {t} %"
+    if label and sig.coverage.truncated:
+        source += f", прочитано {read_words(sig.coverage)}"
     label = label or "Вероятность ИИ"
     text = f"{js_round(sig.probability * 100)} % ({source}"
     if sig.near_threshold:
@@ -546,8 +742,10 @@ def cmd_scan(a: Args) -> int:
                     ),
                 ),
                 *([signal_fact(p)] if p is not None else []),
+                *read_facts(p),
             ]
         )
+        fragments_hint(p, f)
         if r.suspicious:
             warn("Документ выглядит подозрительным: невидимые символы или подмена букв.", "red")
         out()
@@ -635,8 +833,10 @@ def cmd_antiplagiat(a: Args) -> int:
                 else "по умолчанию, без калибровки",
             ),
             *([signal_fact(p)] if p is not None else []),
+            *read_facts(p),
         ]
     )
+    fragments_hint(p, a.files[0] if a.files else None)
     if report.suspicious:
         warn(
             f"Подозрительный документ: {'; '.join(report.suspicious_reasons)}. "
@@ -801,7 +1001,7 @@ def cmd_classify_all(a: Args) -> int:
         )
 
     def one(text: str) -> list[Signal]:
-        return [Signal(m, m.probability(text)) for m in loaded]
+        return [signal(m, text) for m in loaded]
 
     def doc(sigs: list[Signal]) -> dict[str, Any]:
         return {"models": [signal_json(s) for s in sigs], "agree": len({s.ai for s in sigs}) == 1}
@@ -820,6 +1020,11 @@ def cmd_classify_all(a: Args) -> int:
         heading("stdin" if f == "-" else f)
         facts([signal_fact(s, s.loaded.model.title) for s in sigs])
         out(indented(agreement(sigs)))
+        if any(s.coverage.truncated for s in sigs):
+            target = f if f != "-" else "<файл>"
+            note(
+                f"Модели прочитали только начало текста. Весь текст по фрагментам: aiw-ru classify --model ИМЯ {target}"
+            )
     out()
     note(
         "Модели обучены на русской части корпуса LLMTrace и видели не все жанры; короткие тексты они различают хуже. "
@@ -838,22 +1043,31 @@ def cmd_classify(a: Args) -> int:
             "(aiw-ru models install)"
         )
 
-    def one(text: str) -> Signal:
-        return Signal(loaded, loaded.probability(text))
+    def one(text: str) -> tuple[Signal, models.ChunkScan | None]:
+        sig = signal(loaded, text)
+        if a.no_fragments or not sig.coverage.truncated:
+            return sig, None
+        return sig, models.scan_chunks(loaded, text, limit=a.max_fragments, progress=eta(loaded))
+
+    def doc(text: str, sig: Signal, scan: models.ChunkScan | None) -> dict[str, Any]:
+        return {**signal_json(sig), **({"fragments": fragments_json(scan, loaded, text)} if scan else {})}
 
     if a.jsonl:
-        return jsonl(a, lambda text: signal_json(one(text)))
+        return jsonl(a, lambda text: doc(text, *one(text)))
     files = a.files or ["-"]
-    results = [(f, one(read(f))) for f in files]
+    results = [(f, text, *one(text)) for f in files for text in [read(f)]]
     if a.json:
-        docs = [{"file": f, **signal_json(sig)} for f, sig in results]
+        docs = [{"file": f, **doc(text, sig, scan)} for f, text, sig, scan in results]
         sys.stdout.write(dump(docs[0] if len(docs) == 1 else docs) + "\n")
         return 0
-    for n, (f, sig) in enumerate(results):
+    for n, (f, text, sig, scan) in enumerate(results):
         if n > 0:
             out()
         heading("stdin" if f == "-" else f)
-        facts([signal_fact(sig)])
+        facts([signal_fact(sig), *read_facts(sig)])
+        if scan is not None:
+            out()
+            show_fragments(scan, loaded, text)
     out()
     note(
         "Модель обучена на русской части корпуса LLMTrace и видела не все жанры. Вероятность — сигнал, а не "

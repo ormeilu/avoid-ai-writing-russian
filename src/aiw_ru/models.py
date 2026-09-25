@@ -5,11 +5,13 @@
 Face (`aiw-ru models install`). Пока их нет, scan и antiplagiat работают как
 раньше, а здесь можно узнать, чего не хватает.
 
-Моделей три. ModernBERT самый точный, но тяжёлый (140 МБ, fp32) и медленный, и
-ставится только по имени. Трансформер на rubert-tiny2 (30 МБ, int8) немного уступает
-ему в точности и вчетверо быстрее. LightGBM легче всех и заметно менее точен. Если
-стоят несколько, вероятность в scan, antiplagiat и classify даёт самая точная из
-установленных, если не выбрана другая.
+Моделей четыре: три трансформера (ModernBERT, rubert-tiny2, mini-frida) и LightGBM.
+Если стоят несколько, вероятность в scan, antiplagiat и classify даёт первая из
+установленных в порядке MODELS, если не выбрана другая.
+
+Трансформер читает одно окно в max_length токенов (около 300 слов). Докуда он дочитал,
+говорит coverage(); длинный текст целиком проверяет scan_chunks(): режет его на
+фрагменты в одно окно по границам предложений, с перекрытием соседних.
 """
 
 from __future__ import annotations
@@ -18,8 +20,9 @@ import json
 import os
 import re
 import sys
-from collections.abc import Sequence
-from dataclasses import dataclass
+import time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 from functools import cache
 from importlib.util import find_spec
 from pathlib import Path
@@ -27,6 +30,7 @@ from typing import Any, Protocol
 
 from aiw_ru.detect import analyze
 from aiw_ru.features import CONTEXT, FEATURE_NAMES, FEATURES_VERSION, features
+from aiw_ru.text import sentences, words
 from aiw_ru.types import AnalysisResult
 
 INSTALL_HINT = 'uv sync --extra ml (или pip install "aiw-ru[ml]")'
@@ -118,11 +122,51 @@ class Status:
     path: Path | None
 
 
+@dataclass(frozen=True, slots=True)
+class Coverage:
+    """Какую часть текста прочитала модель: у трансформера окно ограничено, LightGBM читает текст целиком."""
+
+    # Знаков исходника до места, где модель остановилась, и всего.
+    chars: int
+    total_chars: int
+    words: int
+    total_words: int
+    # Последняя прочитанная строка и всего строк.
+    lines: int
+    total_lines: int
+    # Токены текста без служебных, прочитано и всего; у LightGBM None.
+    tokens: int | None = None
+    total_tokens: int | None = None
+    # Окно модели в токенах (max_length); у LightGBM None.
+    window: int | None = None
+
+    @property
+    def truncated(self) -> bool:
+        return self.chars < self.total_chars
+
+
+def _lines(text: str) -> int:
+    return text.rstrip("\n").count("\n") + 1
+
+
+def _whole(text: str) -> Coverage:
+    n, lines = len(words(text)), _lines(text)
+    return Coverage(len(text), len(text), n, n, lines, lines)
+
+
+# (сделано, всего, секунд прошло): после каждой пачки фрагментов.
+Progress = Callable[[int, int, float], None]
+
+
 class Loaded(Protocol):
     model: Model
     threshold: float
 
     def probability(self, text: str, result: AnalysisResult | None = None) -> float: ...
+
+    def probabilities(self, texts: list[str], progress: Progress | None = None) -> list[float]: ...
+
+    def coverage(self, text: str) -> Coverage: ...
 
 
 def catalog() -> dict[str, Any]:
@@ -209,6 +253,13 @@ class _LightGBM:
             result = analyze(text, CONTEXT)
         return float(self.booster.predict([features(text, result)])[0])
 
+    def probabilities(self, texts: list[str], progress: Progress | None = None) -> list[float]:
+        return [self.probability(t) for t in texts]
+
+    def coverage(self, text: str) -> Coverage:
+        """Признаки считаются по всему тексту."""
+        return _whole(text)
+
 
 def _load_lightgbm(model: Model, path: Path) -> _LightGBM:
     spec = _check_features(path)
@@ -223,6 +274,10 @@ def _load_lightgbm(model: Model, path: Path) -> _LightGBM:
 
 
 # ── Трансформер ──
+
+# Фрагментов в одном вызове ONNX. onnxruntime и так раскладывает окно по ядрам: на M1 пачки
+# по 8 не ускоряют трансформер (23 мс на фрагмент против 27), а ModernBERT и mini-frida замедляют.
+BATCH = 1
 
 
 def windows(
@@ -258,14 +313,25 @@ class _Transformer:
             text = pattern.sub(replacement, text)
         return text.strip()
 
-    def probability(self, text: str, result: AnalysisResult | None = None) -> float:
-        """Вероятность по первому окну текста или среднее по окнам, как записано в inference.json."""
+    @property
+    def width(self) -> int:
+        """Токенов текста в одном окне: max_length без служебных токенов."""
+        prefix, suffix = _frame(self.spec)
+        return self.spec["max_length"] - len(prefix) - len(suffix)
+
+    def ids(self, text: str) -> list[int]:
+        return self.tokenizer.encode(self.normalize(text), add_special_tokens=False).ids
+
+    def counts(self, texts: list[str]) -> list[int]:
+        """Токены каждого текста после нормализации, без служебных."""
+        encoded = self.tokenizer.encode_batch([self.normalize(t) for t in texts], add_special_tokens=False)
+        return [len(e.ids) for e in encoded]
+
+    def _run(self, ws: list[list[int]]) -> list[float]:
+        """Вероятность ИИ по каждому окну; окна уже обрамлены служебными токенами."""
         import numpy as np
 
         s = self.spec
-        ids = self.tokenizer.encode(self.normalize(text[: s["max_chars"]]), add_special_tokens=False).ids
-        prefix, suffix = _frame(s)
-        ws = windows(ids, s["max_length"], prefix, suffix, s["max_windows"])
         batch = np.full((len(ws), max(len(w) for w in ws)), s["pad_id"], dtype=np.int64)
         mask = np.zeros_like(batch)
         for k, w in enumerate(ws):
@@ -274,7 +340,114 @@ class _Transformer:
         logits = np.asarray(self.session.run([s["output"]], {"input_ids": batch, "attention_mask": mask})[0])
         z = np.exp(logits - logits.max(axis=1, keepdims=True))
         ai = s["labels"].index("ai")
-        return float((z[:, ai] / z.sum(axis=1)).mean())
+        return [float(x) for x in z[:, ai] / z.sum(axis=1)]
+
+    def probability(self, text: str, result: AnalysisResult | None = None) -> float:
+        """Вероятность по первому окну текста или среднее по окнам, как записано в inference.json."""
+        s = self.spec
+        prefix, suffix = _frame(s)
+        probs = self._run(windows(self.ids(text[: s["max_chars"]]), s["max_length"], prefix, suffix, s["max_windows"]))
+        return sum(probs) / len(probs)
+
+    def probabilities(self, texts: list[str], progress: Progress | None = None) -> list[float]:
+        """Вероятность по первому окну каждого текста, пачками; для фрагментов, которые влезают в окно."""
+        s = self.spec
+        prefix, suffix = _frame(s)
+        started, out = time.perf_counter(), []
+        for k in range(0, len(texts), BATCH):
+            ws = [
+                windows(self.ids(t[: s["max_chars"]]), s["max_length"], prefix, suffix, 1)[0]
+                for t in texts[k : k + BATCH]
+            ]
+            out += self._run(ws)
+            if progress is not None:
+                progress(len(out), len(texts), time.perf_counter() - started)
+        return out
+
+    def coverage(self, text: str) -> Coverage:
+        """Докуда модель читает текст: max_windows окон, но не дальше max_chars знаков."""
+        s = self.spec
+        budget = self.width * s["max_windows"]
+        total = len(self.ids(text))
+        limit = min(len(text), s["max_chars"])
+        if total <= budget and limit == len(text):
+            return replace(_whole(text), tokens=total, total_tokens=total, window=s["max_length"])
+        # Самое длинное начало исходника, которое после нормализации укладывается в окна: так место
+        # обрыва точное, даже если нормализация меняет длину текста.
+        hi = min(limit, budget * 8)
+        while hi < limit and len(self.ids(text[:hi])) <= budget:
+            hi = min(limit, hi * 2)
+        lo = 0
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if len(self.ids(text[:mid])) <= budget:
+                lo = mid
+            else:
+                hi = mid - 1
+        # Полслова не показываем: обрыв переносится на последний пробел перед ним.
+        if 0 < lo < len(text) and not text[lo].isspace() and not text[lo - 1].isspace():
+            space = re.search(r"\s\S*$", text[:lo])
+            lo = space.start() if space else lo
+        head = text[:lo].rstrip()
+        return Coverage(
+            len(head),
+            len(text),
+            len(words(head)),
+            len(words(text)),
+            _lines(head),
+            _lines(text),
+            len(self.ids(head)),
+            total,
+            s["max_length"],
+        )
+
+    def _units(self, text: str, cap: int) -> list[tuple[int, int, int]]:
+        """Предложения со своими токенами; предложение длиннее cap делится по словам пополам, пока не влезет."""
+        sents = sentences(text)
+        units: list[tuple[int, int, int]] = []
+        for sent, n in zip(sents, self.counts([s.text for s in sents]), strict=True):
+            self._split(text, sent.start, sent.end, n, cap, units)
+        return units
+
+    def _split(self, text: str, start: int, end: int, n: int, cap: int, out: list[tuple[int, int, int]]) -> None:
+        spans = [(m.start() + start, m.end() + start) for m in re.finditer(r"\S+", text[start:end])]
+        if n <= cap or len(spans) < 2:
+            out.append((start, end, n))
+            return
+        mid = len(spans) // 2
+        halves = [(spans[0][0], spans[mid - 1][1]), (spans[mid][0], spans[-1][1])]
+        for (a, b), k in zip(halves, self.counts([text[a:b] for a, b in halves]), strict=True):
+            self._split(text, a, b, k, cap, out)
+
+    def spans(self, text: str, overlap: float, unit: float) -> list[tuple[int, int]]:
+        """Фрагменты в одно окно по границам предложений; следующий начинается с хвоста предыдущего,
+        где примерно overlap окна. Предложение длиннее unit окна делится по словам: иначе фрагмент
+        перед ним обрывался бы задолго до конца окна. Последний фрагмент добирается назад до полного окна."""
+        units = self._units(text, max(1, round(self.width * unit)))
+        if not units:
+            return [(0, len(text))]
+        keep = round(self.width * overlap)
+        out: list[tuple[int, int]] = []
+        i = 0
+        while True:
+            j, used = i, 0
+            while j < len(units) and (j == i or used + units[j][2] <= self.width):
+                used += units[j][2]
+                j += 1
+            if j == len(units):
+                floor = out[-1][0] + 1 if out else 0
+                while i > floor and used + units[i - 1][2] <= self.width:
+                    i -= 1
+                    used += units[i][2]
+                out.append((i, j))
+                break
+            out.append((i, j))
+            k, back = j, 0
+            while k - 1 > i and back + units[k - 1][2] <= keep:
+                k -= 1
+                back += units[k][2]
+            i = k
+        return [(units[a][0], units[b - 1][1]) for a, b in out]
 
 
 def _no_limits(tokenizer: Any) -> None:
@@ -351,3 +524,65 @@ def probability(text: str, result: AnalysisResult | None = None, model: Model = 
 
 def threshold(model: Model = LIGHTGBM) -> float:
     return load(model).threshold
+
+
+# ── Длинный текст по фрагментам ──
+
+# Доля окна, на которую соседние фрагменты заходят друг на друга: граница между человеческой и
+# ИИ-частью документа не попадёт только на стык двух фрагментов.
+OVERLAP = 0.25
+# Предложение длиннее этой доли окна делится по словам, поэтому фрагмент заполнен хотя бы на 1 − UNIT.
+UNIT = 0.25
+
+
+@dataclass(frozen=True, slots=True)
+class Chunk:
+    """Фрагмент длинного текста в одно окно модели и его вероятность."""
+
+    # Знаки исходника [start, end) и строки, с первой по последнюю.
+    start: int
+    end: int
+    line: int
+    end_line: int
+    words: int
+    probability: float
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkScan:
+    chunks: list[Chunk]
+    # Фрагментов в тексте всего; проверено len(chunks), если стоял предел.
+    total: int
+    seconds: float
+    overlap: float
+
+
+def chunk_spans(
+    loaded: Loaded, text: str, overlap: float | None = None, unit: float | None = None
+) -> list[tuple[int, int]]:
+    """Фрагменты текста для модели; LightGBM читает текст целиком, для него фрагмент один.
+    Без overlap и unit берутся OVERLAP и UNIT."""
+    if not isinstance(loaded, _Transformer):
+        return [(0, len(text))]
+    return loaded.spans(text, OVERLAP if overlap is None else overlap, UNIT if unit is None else unit)
+
+
+def scan_chunks(
+    loaded: Loaded,
+    text: str,
+    overlap: float | None = None,
+    limit: int | None = None,
+    progress: Progress | None = None,
+) -> ChunkScan:
+    """Вероятность по каждому фрагменту длинного текста; limit — проверить только первые фрагменты."""
+    overlap = OVERLAP if overlap is None else overlap
+    spans = chunk_spans(loaded, text, overlap)
+    checked = spans[:limit] if limit else spans
+    started = time.perf_counter()
+    probs = loaded.probabilities([text[a:b] for a, b in checked], progress)
+    seconds = time.perf_counter() - started
+    chunks = [
+        Chunk(a, b, text.count("\n", 0, a) + 1, text.count("\n", 0, b) + 1, len(words(text[a:b])), p)
+        for (a, b), p in zip(checked, probs, strict=True)
+    ]
+    return ChunkScan(chunks, len(spans), seconds, overlap)

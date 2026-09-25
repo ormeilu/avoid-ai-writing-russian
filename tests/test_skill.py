@@ -241,6 +241,16 @@ def test_model_probability_is_only_a_signal():
     assert "--all" in USAGE
 
 
+def test_long_text_is_read_by_fragments():
+    """агент видит, что модель прочитала только начало, проверяет весь текст по фрагментам и знает, сколько ждать"""
+    assert "**Длинный текст модель читает не целиком.**" in MAIN
+    for phrase in ("read.truncated", "fragments", "aiLines", "--max-fragments", "110 мс у ModernBERT", "stderr"):
+        assert phrase in MAIN, phrase
+    assert "«Прочитано»" in AP and "classify` по фрагментам" in AP
+    for flag in ("--no-fragments", "--max-fragments"):
+        assert flag in USAGE
+
+
 def test_main_runs_scan_and_validate():
     """основной скилл запускает scan и validate"""
     assert "aiw-ru scan" in MAIN

@@ -223,6 +223,102 @@ def test_onnx_external_data_is_downloaded():
     assert not any(fnmatch("model_fp32.onnx", p) for p in models.MODERNBERT.files)
 
 
+def set_spec(folder: Path, **changes: Any) -> None:
+    """Правит inference.json крошечной модели и сбрасывает кэш загрузки."""
+    spec = json.loads((folder / "inference.json").read_text(encoding="utf-8"))
+    (folder / "inference.json").write_text(json.dumps(spec | changes), encoding="utf-8")
+    models.load.cache_clear()
+
+
+def test_coverage_of_text_longer_than_window(transformer_dir: Path):
+    """модель читает одно окно: видно, сколько слов, строк и токенов она прочитала и где остановилась"""
+    set_spec(transformer_dir, max_windows=1, long_texts="head")
+    loaded = models.load(models.TRANSFORMER)
+    text = "ну вот короче типа данный\nеще является ключевую"
+    c = loaded.coverage(text)
+    assert c.truncated and c.window == 6
+    assert (c.words, c.total_words, c.tokens, c.total_tokens) == (4, 8, 4, 8)
+    assert (c.lines, c.total_lines) == (1, 2)
+    assert text[: c.chars] == "ну вот короче типа"
+    short = loaded.coverage("ну вот\n")
+    assert not short.truncated and (short.words, short.total_words, short.lines, short.total_lines) == (2, 2, 1, 1)
+    # среднее по восьми окнам читает 32 токена: весь текст
+    set_spec(transformer_dir, max_windows=8, long_texts="mean_of_windows")
+    assert not models.load(models.TRANSFORMER).coverage(text).truncated
+
+
+def test_lightgbm_reads_whole_text(model_dir: Path):
+    c = models.load(models.LIGHTGBM).coverage(TEXT * 50)
+    assert not c.truncated and c.tokens is None and c.window is None and c.words == c.total_words
+
+
+SENTENCES = ["Ну вот.", "Короче типа.", "Данный еще.", "Является ключевую.", "Ну типа."]
+
+
+def spans_text(text: str, spans: list[tuple[int, int]]) -> list[str]:
+    return [text[a:b] for a, b in spans]
+
+
+def test_chunks_follow_sentences_with_overlap(transformer_dir: Path):
+    """фрагменты режутся по предложениям в пределах окна; соседние заходят друг на друга"""
+    set_spec(transformer_dir, max_length=10, max_windows=1)  # окно на 8 токенов, в предложении 3
+    loaded = models.load(models.TRANSFORMER)
+    text = " ".join(SENTENCES[:4])
+    assert spans_text(text, models.chunk_spans(loaded, text, overlap=0, unit=1)) == [
+        "Ну вот. Короче типа.",
+        "Данный еще. Является ключевую.",
+    ]
+    assert spans_text(text, models.chunk_spans(loaded, text, overlap=0.5, unit=1)) == [
+        "Ну вот. Короче типа.",
+        "Короче типа. Данный еще.",
+        "Данный еще. Является ключевую.",
+    ]
+    # короткий хвост добирается назад до полного окна, а не остаётся одним предложением
+    text = " ".join(SENTENCES)
+    assert spans_text(text, models.chunk_spans(loaded, text, overlap=0, unit=1))[-1] == "Является ключевую. Ну типа."
+    # текст в одно окно — один фрагмент
+    assert models.chunk_spans(loaded, "Ну вот.", overlap=0.25) == [(0, 7)]
+
+
+def test_fragments_fill_the_window(transformer_dir: Path):
+    """длинное предложение не обрывает фрагмент раньше: единица нарезки не больше четверти окна"""
+    set_spec(transformer_dir, max_length=10, max_windows=1)  # окно на 8 токенов
+    loaded = models.load(models.TRANSFORMER)
+    text = "Ну вот. Короче типа данный еще является ключевую."
+    # предложение целиком: первый фрагмент — одно короткое предложение
+    assert spans_text(text, models.chunk_spans(loaded, text, overlap=0, unit=1)) == [
+        "Ну вот.",
+        "Короче типа данный еще является ключевую.",
+    ]
+    assert spans_text(text, models.chunk_spans(loaded, text, overlap=0, unit=0.5)) == [
+        "Ну вот. Короче типа данный",
+        "Короче типа данный еще является ключевую.",
+    ]
+
+
+def test_long_sentence_is_split_by_words(transformer_dir: Path):
+    set_spec(transformer_dir, max_length=6, max_windows=1)  # окно на 4 токена
+    loaded = models.load(models.TRANSFORMER)
+    text = "ну вот короче типа данный еще является ключевую"
+    spans = models.chunk_spans(loaded, text, overlap=0)
+    assert spans_text(text, spans) == ["ну вот короче типа", "данный еще является ключевую"]
+
+
+def test_chunk_probabilities(transformer_dir: Path):
+    """вероятность по каждому фрагменту: видно, где в документе ИИ"""
+    set_spec(transformer_dir, max_length=6, max_windows=1)
+    loaded = models.load(models.TRANSFORMER)
+    text = "ну вот короче типа\n\nявляется ключевую данный еще"
+    scan = models.scan_chunks(loaded, text, overlap=0)
+    assert [(c.line, c.end_line, c.words) for c in scan.chunks] == [(1, 1, 4), (3, 3, 4)]
+    human, ai = scan.chunks
+    assert human.probability < loaded.threshold < ai.probability
+    assert scan.total == 2 and scan.seconds >= 0
+    assert ai.probability == pytest.approx(loaded.probability("является ключевую данный еще"), abs=1e-6)
+    limited = models.scan_chunks(loaded, text, overlap=0, limit=1)
+    assert len(limited.chunks) == 1 and limited.total == 2
+
+
 class _Tokenizer0:
     """Tokenizer из tokenizers 0.x: обрезку и дополнение снимают методы no_*."""
 
@@ -417,6 +513,93 @@ def test_probability_near_threshold_is_marked(
     assert "близко к порогу" in out
     _, out, _ = cli(capsys, "classify", str(far))
     assert "близко к порогу" not in out
+
+
+def flat(out: str) -> str:
+    """Вывод в одну строку: таблицы и заметки переносятся по ширине терминала."""
+    return " ".join(out.split())
+
+
+# Документ в три окна крошечной модели: человек, ИИ, человек.
+LONG_DOC = "ну вот короче типа\n\nявляется ключевую данный еще\n\nну вот короче типа"
+
+
+@pytest.fixture
+def long_doc(transformer_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    set_spec(transformer_dir, max_length=6, max_windows=1, long_texts="head")
+    # В окне на 4 токена четверть — одно слово; абзацы-предложения здесь режутся целиком.
+    monkeypatch.setattr(models, "UNIT", 1.0)
+    monkeypatch.setenv("NO_COLOR", "1")
+    path = tmp_path / "long.md"
+    path.write_text(LONG_DOC, encoding="utf-8")
+    return str(path)
+
+
+def test_classify_long_text_by_fragments(long_doc: str, capsys: pytest.CaptureFixture[str]):
+    """текст длиннее окна: видно, что прочитала модель, и вероятность по каждому фрагменту"""
+    code, out, _ = cli(capsys, "classify", "--json", long_doc)
+    data = json.loads(out)
+    assert code == 0
+    assert data["read"] == {
+        "truncated": True,
+        "words": 4,
+        "totalWords": 12,
+        "chars": 18,
+        "totalChars": len(LONG_DOC),
+        "lines": 1,
+        "totalLines": 5,
+        "tokens": 4,
+        "totalTokens": 12,
+        "window": 6,
+    }
+    f = data["fragments"]
+    assert (f["count"], f["total"], f["overlap"], f["aboveThreshold"]) == (3, 3, 0.25, 1)
+    assert [(c["line"], c["endLine"], c["words"], c["ai"]) for c in f["items"]] == [
+        (1, 1, 4, False),
+        (3, 3, 4, True),
+        (5, 5, 4, False),
+    ]
+    assert f["aiLines"] == [[3, 3]] and f["aiWordShare"] == round(4 / 12, 4) and f["seconds"] >= 0
+    out = flat(cli(capsys, "classify", long_doc)[1])
+    assert "Прочитано" in out and "4 слова из 12, строка 1 из 5: окно модели 6 токенов" in out
+    assert "Выше порога 1 фрагмент из 3, в них 33 % слов: строка 3." in out
+    assert "Проверено 3 фрагмента за" in out and "на 25 %" in out
+    # без фрагментов и с пределом
+    data = json.loads(cli(capsys, "classify", "--json", "--no-fragments", long_doc)[1])
+    assert "fragments" not in data and data["read"]["truncated"]
+    data = json.loads(cli(capsys, "classify", "--json", "--max-fragments", "1", long_doc)[1])
+    assert (data["fragments"]["count"], data["fragments"]["total"]) == (1, 3)
+    out = flat(cli(capsys, "classify", "--max-fragments", "1", long_doc)[1])
+    assert "проверено 1 из 3 фрагментов, до строки 1; все — --max-fragments 0" in out
+    code, _, err = cli(capsys, "classify", "--max-fragments", "много", long_doc)
+    assert code == 2 and "--max-fragments" in err
+
+
+def test_scan_and_all_say_what_the_model_read(long_doc: str, model_dir: Path, capsys: pytest.CaptureFixture[str]):
+    """scan, antiplagiat и classify --all тоже говорят, что модель прочитала только начало"""
+    data = json.loads(cli(capsys, "scan", "--json", long_doc)[1])
+    assert data["classifier"]["read"]["truncated"] and data["classifier"]["read"]["words"] == 4
+    # Путь к файлу во временной папке длиннее строки терминала: rich его переносит.
+    out = flat(cli(capsys, "scan", long_doc)[1])
+    assert "4 слова из 12" in out and "Весь текст по фрагментам: aiw-ru classify" in out and "long.md" in out
+    out = flat(cli(capsys, "antiplagiat", long_doc)[1])
+    assert "4 слова из 12" in out and "aiw-ru classify" in out
+    out = flat(cli(capsys, "classify", "--all", long_doc)[1])
+    assert "прочитано 4 слова из 12" in out and "aiw-ru classify --model ИМЯ" in out
+    # LightGBM читает весь текст: ни пометки, ни фрагментов
+    data = json.loads(cli(capsys, "classify", "--json", "--model", "lightgbm", long_doc)[1])
+    assert not data["read"]["truncated"] and "fragments" not in data
+    assert "Прочитано" not in cli(capsys, "classify", "--model", "lightgbm", long_doc)[1]
+
+
+def test_long_check_announces_time(long_doc: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch):
+    """если проверка по фрагментам будет долгой, stderr сразу говорит, сколько ждать"""
+    from aiw_ru import cli as cli_module
+
+    assert cli_module.about(4.2) == "4 с" and cli_module.about(47) == "45 с" and cli_module.about(130) == "2 мин"
+    monkeypatch.setattr(cli_module, "ETA_AFTER", 0.0)
+    _, _, err = cli(capsys, "classify", long_doc)
+    assert err.count("фрагмент") == 1 and "трансформер проверит" in err
 
 
 def test_cli_unknown_model(capsys: pytest.CaptureFixture[str]):
