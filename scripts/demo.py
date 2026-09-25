@@ -51,8 +51,10 @@ SCENES: tuple[tuple[str, ...], ...] = (
 
 PROMPT = "\x1b[90m$\x1b[0m "
 CLEAR = "\x1b[3J\x1b[H\x1b[2J"
-# Паузы, мс: перед первой буквой, перед Enter, до вывода, на чтение и в конце сцены.
-FIRST_KEY, ENTER, OUTPUT, READ, SCENE_END = 600, 300, 120, 2200, 7000
+# Паузы, мс: перед первой буквой сцены, перед Enter, до вывода и от вывода до приглашения.
+FIRST_KEY, ENTER, OUTPUT, PROMPT_AFTER = 600, 300, 120, 150
+# Время на чтение идёт после приглашения: перед первой буквой следующей команды и перед очисткой экрана.
+READ, SCENE_END = 2200, 7000
 
 CONFIG = """\
 # Запись terminalizer для docs/demo.gif. Вывод команд настоящий (aiw-ru, COLUMNS={columns}).
@@ -126,12 +128,12 @@ def run(command: str) -> str:
     return "\r\n".join(lines) + "\r\n"
 
 
-def typed(command: str, rng: random.Random) -> list[tuple[int, str]]:
-    """Набор команды по буквам: имя программы жёлтым, аргументы обычным цветом."""
+def typed(command: str, rng: random.Random, first: int) -> list[tuple[int, str]]:
+    """Набор команды по буквам: имя программы жёлтым, аргументы обычным цветом; first — пауза перед первой."""
     name = command.split()[0]
     records = []
     for i, ch in enumerate(command):
-        delay = FIRST_KEY if i == 0 else rng.randint(38, 76)
+        delay = first if i == 0 else rng.randint(38, 76)
         records.append((delay, f"\x1b[1;33m{ch}\x1b[0m" if i < len(name) else ch))
     return records
 
@@ -139,18 +141,19 @@ def typed(command: str, rng: random.Random) -> list[tuple[int, str]]:
 def recording() -> tuple[list[tuple[int, str]], int]:
     """Записи terminalizer и высота экрана по самой длинной сцене."""
     rng = random.Random(7)
-    records: list[tuple[int, str]] = [(0, "\r"), (300, PROMPT)]
+    # terminalizer показывает кадр столько, сколько стоит в задержке следующей записи, а последний кадр —
+    # сколько в задержке первой: так финальный экран с приглашением держится, пока gif не начнётся заново.
+    records: list[tuple[int, str]] = [(SCENE_END, "\r"), (300, PROMPT)]
     rows = 0
     for n, scene in enumerate(SCENES):
         if n:
-            records.append((0, CLEAR + PROMPT))
+            records.append((SCENE_END, CLEAR + PROMPT))
         height = 1
         for k, command in enumerate(scene):
             out = run(command)
             height += 1 + out.count("\r\n")
-            records += typed(command, rng)
-            records += [(ENTER, "\r\n"), (OUTPUT, out)]
-            records.append((SCENE_END if k == len(scene) - 1 else READ, PROMPT))
+            records += typed(command, rng, READ if k else FIRST_KEY)
+            records += [(ENTER, "\r\n"), (OUTPUT, out), (PROMPT_AFTER, PROMPT)]
         rows = max(rows, height)
     return records, rows
 
