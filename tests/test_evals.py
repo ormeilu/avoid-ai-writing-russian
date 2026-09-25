@@ -119,6 +119,12 @@ def test_extract_final_bold_heading() -> None:
     assert extract_final("**Итоговый текст**\n\nТекст.\n\n**Изменения**\n\nх") == "Текст."
 
 
+def test_extract_final_stops_at_inline_section() -> None:
+    """следующий раздел с текстом на той же строке в итоговый текст не попадает"""
+    response = "**Итоговый текст:**\n\nТекст.\n\n**Проверка:** один проход, пришлите PDF отчёта."
+    assert extract_final(response) == "Текст."
+
+
 def test_extract_final_markdown_heading_and_quote() -> None:
     """заголовок Markdown и цитата"""
     response = "## Итоговый текст\n\n> Строка один.\n> Строка два.\n\n## Проверка\n"

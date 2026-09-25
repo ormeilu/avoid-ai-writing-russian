@@ -57,7 +57,8 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
 Команды:
   scan [файл…]                 найти приметы (без файла — читать stdin)
   antiplagiat [файл]           оценка по фрагментам в духе модуля ИИ-детекции «Антиплагиата»
-  validate ИСХОДНЫЙ НОВЫЙ      проверить, что правка не повредила код, числа, цитаты, ссылки
+  validate ИСХОДНЫЙ НОВЫЙ      проверить, что правка не повредила код, числа, цитаты, ссылки,
+                               не сняла оговорки и не добавила имён, чисел и дат
   calibrate --doc Ф --marked Ф подстроить модель antiplagiat под ваши отчёты: документ и файл
                                с фрагментами, которые отчёт подсветил как ИИ
   calibrate --doc Ф --share N  то же, если известна только итоговая доля ИИ из отчёта, %
@@ -639,23 +640,29 @@ def cmd_validate(a: Args) -> int:
     if a.json:
         sys.stdout.write(dump(r) + "\n")
     else:
-        facts(
-            [
-                (
-                    "Сохранность",
-                    Text.styled("в порядке", "green")
-                    if r.ok
-                    else Text.styled(f"нарушена ({len(r.violations)})", "red"),
-                ),
-                ("Находки", f"{r.issues_before} → {r.issues_after}"),
-            ]
-        )
+        rows: list[tuple[str, str | Text]] = [
+            (
+                "Сохранность",
+                Text.styled("в порядке", "green") if r.ok else Text.styled(f"нарушена ({len(r.violations)})", "red"),
+            )
+        ]
+        if r.warnings:
+            rows.append(("Проверить", Text.styled(str(len(r.warnings)), "yellow")))
+        rows.append(("Находки", f"{r.issues_before} → {r.issues_after}"))
+        facts(rows)
         if not r.ok:
             out()
             table(
                 [Col("Что"), Col("Подробности", flex=True, wrap=True, min=20)],
                 [[Text.styled(v.kind, "yellow"), v.detail] for v in r.violations],
             )
+        if r.warnings:
+            out()
+            table(
+                [Col("Проверить"), Col("Подробности", flex=True, wrap=True, min=20)],
+                [[Text.styled(w.kind, "cyan"), w.detail] for w in r.warnings],
+            )
+            note("Код выхода они не меняют: это может быть законной правкой, сверьте с исходником.")
     return 0 if r.ok else 1
 
 

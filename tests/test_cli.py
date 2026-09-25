@@ -326,7 +326,37 @@ def test_validate_json(cli: Cli):
     data = json.loads(cli("validate", "--json", HUMAN_BLOG, HUMAN_BLOG).out)
     assert data["ok"] is True
     assert data["violations"] == []
+    assert data["warnings"] == []
     assert data["issuesBefore"] == data["issuesAfter"]
+
+
+def pair(tmp_path: Path, before: str, after: str) -> tuple[str, str]:
+    a, b = tmp_path / "до.md", tmp_path / "после.md"
+    a.write_text(before, encoding="utf-8")
+    b.write_text(after, encoding="utf-8")
+    return str(a), str(b)
+
+
+def test_validate_fact_violations_exit_1(cli: Cli, tmp_path: Path):
+    """validate: снятая оговорка и новое имя — нарушения, код 1"""
+    r = cli("validate", *pair(tmp_path, "Метод обычно помогает.", "Метод помогает на PyTorch."))
+    assert r.code == 1
+    for s in ("оговорка", "пропала «обычно»", "имя", "появилось: PyTorch"):
+        assert s in r.out
+
+
+def test_validate_warnings_keep_exit_0(cli: Cli, tmp_path: Path):
+    """validate: предупреждения идут отдельной таблицей и код выхода не меняют"""
+    files = pair(tmp_path, "Мы сделали сервис мониторинга.", "Мы впервые сделали сервис мониторинга.")
+    r = cli("validate", *files)
+    assert r.code == 0
+    assert "в порядке" in r.out
+    assert re.search(r"Проверить\s+1", r.out)
+    assert "утверждение" in r.out
+    assert "появилось: впервые" in r.out
+    data = json.loads(cli("validate", "--json", *files).out)
+    assert data["ok"] is True
+    assert data["warnings"] == [{"kind": "утверждение", "detail": "появилось: впервые"}]
 
 
 def test_calibrate_creates_file_antiplagiat_uses_it(cli: Cli, tmp_path: Path):

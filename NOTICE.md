@@ -22,4 +22,8 @@
 - [Технический отчёт Pangram 4](https://pangram-public.s3.us-east-1.amazonaws.com/pdf/pangram_4_technical_report.pdf) (Pangram Labs, 2026). Идея держать технический мусор (невидимые символы, следы PDF и распознавания) отдельно от оценки стиля.
 - [Wikipedia: Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing), раздел о разметке ссылок ChatGPT (`turn0search0`, `oaicite`, `contentReference`), и [описание служебных символов U+E200–U+E204](https://github.com/sanand0/openai-conversations/blob/main/private-unicode-control-characters.md) из репозитория sanand0/openai-conversations.
 
+## Идеи из других проектов
+
+- [humanizer-ru](https://github.com/ilyautov/humanizer-ru) Ильи Утова (Ilya Utov), лицензия MIT, Copyright (c) 2026 Ilya Utov. Из его «факт-замка» (`facts.py`) взята идея сверки фактов в `aiw-ru validate`: снятые оговорки, новые имена, числа словами, месяцы и слова-претензии. Код написан заново и без морфологии (pymorphy3 и razdel детектору недоступны): на словарях и регистре букв, со стопками оговорок и семействами синонимов.
+
 «Антиплагиат» — товарный знак АО «Антиплагиат». Проект с ним не связан, использует только публично известные сведения о том, как устроен отчёт, и не воспроизводит его классификатор.
