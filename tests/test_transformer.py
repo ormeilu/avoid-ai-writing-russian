@@ -7,7 +7,6 @@ LightGBM из группы train; без них тесты пропускают�
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 import sys
@@ -105,19 +104,8 @@ def test_windows():
     assert ws == [[1, 10, 11, 12, 2], [1, 13, 14, 15, 2], [1, 16, 2]]
     assert tt.windows([], 5, [1], [2], limit=8) == [[1, 2]]
     assert len(tt.windows(list(range(100)), 5, [1], [2], limit=2)) == 2
-    # Префикс задачи и служебные токены замороженного энкодера: окно короче на их длину.
+    # Префикс из нескольких токенов: окно короче на их длину.
     assert tt.windows(list(range(10, 14)), 6, [1, 7, 8], [2], limit=8) == [[1, 7, 8, 10, 11, 2], [1, 7, 8, 12, 13, 2]]
-
-
-def test_stitch_windows():
-    """Окна длинных текстов: первое берётся из эмбеддинга начала, остальные идут следом."""
-    head = np.arange(10, dtype=np.float16).reshape(5, 2)
-    more = 100 + np.arange(6, dtype=np.float16).reshape(3, 2)
-    emb, counts = tt.stitch_windows(head, np.array([1, 3]), [2, 1], more)
-    assert counts.tolist() == [3, 2]
-    assert emb.tolist() == [[2, 3], [100, 101], [102, 103], [6, 7], [104, 105]]
-    empty, none = tt.stitch_windows(head, np.array([], dtype=int), [], more[:0])
-    assert empty.shape == (0, 2) and none.tolist() == []
 
 
 def test_quick_metrics_and_breakdowns():
@@ -179,63 +167,6 @@ def test_predict_text_follows_spec(tmp_path: Path):
     mean = tt.predict_text("ai ai ai ai\n\ne e e e e e e e", sess, tok, spec_w)
     assert head > 0.99 and mean == pytest.approx((head + 1 / (1 + np.exp(2)) * 2) / 3, abs=1e-6)
     assert tt.predict_text("ё", sess, tok, spec) == tt.predict_text("е", sess, tok, spec)
-
-
-def frozen_encoder_check(tmp_path: Path) -> None:
-    """Замороженный T5 с префиксом задачи: один граф ONNX, окна с prefix_ids и suffix_ids, как у PyTorch."""
-    import torch
-    from transformers import T5Config, T5EncoderModel
-
-    vocab = {"[PAD]": 0, "[UNK]": 3, "</s>": 2, "e": 10, "ai": 16, "categorize": 20, ":": 21}
-    tok = tokenizers.Tokenizer(tokenizers.models.WordLevel(vocab, unk_token="[UNK]"))
-    tok.pre_tokenizer = tokenizers.pre_tokenizers.Whitespace()
-    tok.post_processor = tokenizers.processors.TemplateProcessing(single="$A </s>", special_tokens=[("</s>", 2)])
-    base, md = tmp_path / "t5", tmp_path / "run" / "model"
-    md.mkdir(parents=True)
-    tok.save(str(md / "tokenizer.json"))
-    torch.manual_seed(0)
-    cfg = T5Config(vocab_size=32, d_model=16, d_kv=4, d_ff=32, num_layers=1, num_heads=4, pad_token_id=0)
-    T5EncoderModel(cfg).save_pretrained(base)
-    prefix, suffix = tt.wrap_ids(tt.inference_tokenizer(md / "tokenizer.json"), "categorize: ")
-    assert (prefix, suffix) == ([20, 21], [2])
-    frozen = {"base": str(base), "pooling": "cls", "prefix_ids": prefix, "suffix_ids": suffix, "pad_id": 0}
-    (md / tt.FROZEN).write_text(json.dumps(frozen), encoding="utf-8")
-    np.savez(md / "head.npz", weight=np.linspace(-3, 3, 16, dtype=np.float32), bias=np.float32(0.2))
-    tt.export_onnx(md, tmp_path / "model.onnx")
-
-    spec = tt.inference_spec({"max_length": 6, "normalize": True}, tt.model_wrap(md), "mean_of_windows", "fp32")
-    assert spec["prefix_ids"] == [20, 21] and spec["suffix_ids"] == [2] and "cls_id" not in spec
-    text = "ai e ai e e ai e"
-    btok = tt.inference_tokenizer(md / "tokenizer.json")
-    wins = tt.windows(btok.encode(text, add_special_tokens=False).ids, 6, prefix, suffix, limit=8)
-    assert wins[0] == [20, 21, 16, 10, 16, 2] and len(wins) == 3
-    model = tt.load_torch_classifier(md)
-    with torch.no_grad():
-        ref = [
-            torch.softmax(model(torch.tensor([w]), torch.ones(1, len(w), dtype=torch.long)).logits, -1)[0, 1]
-            for w in wins
-        ]
-    got = tt.predict_text(text, tt.session(tmp_path / "model.onnx", 1), btok, spec)
-    assert got == pytest.approx(float(np.mean(ref)), abs=1e-5)
-
-
-def test_frozen_encoder_onnx_follows_spec(tmp_path: Path):
-    """Проверка frozen_encoder_check в отдельном процессе.
-
-    torch и LightGBM приносят каждый свою libomp, и conftest.py загружает первой копию LightGBM:
-    экспорт torch в процессе pytest виснет в libomp. В отдельном процессе первой грузится копия torch,
-    и он считает на всех потоках.
-    """
-    here = Path(__file__).resolve().parent
-    paths = [here, here.parent / "scripts", here.parent / "evals", os.environ.get("PYTHONPATH", "")]
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join(str(x) for x in paths if str(x))}
-    code = (
-        "import sys; from pathlib import Path; import test_transformer as t; t.frozen_encoder_check(Path(sys.argv[1]))"
-    )
-    r = subprocess.run(
-        [sys.executable, "-c", code, str(tmp_path)], env=env, capture_output=True, text=True, timeout=600, check=False
-    )
-    assert r.returncode == 0, (r.stdout + r.stderr)[-4000:]
 
 
 def test_lightgbm_trains_after_torch_import(root: Path):
@@ -429,7 +360,7 @@ def test_report_from_fake_metrics():
         assert part in text
     assert "## Как воспроизвести" in text and "export-x86.json" in text
     assert "| `cointegrated/rubert-tiny2` | `transformer` | $0.9878$ |" in text  # таблица финалистов
-    assert "Сам FRIDA готовится отдельной моделью" in text and "у кандидатов ниже $29$ млн" in text
+    assert "Сам FRIDA" not in text and "у кандидатов ниже $29$ млн" in text
     assert "torch считает быстрее onnxruntime" in text and r"$5.3\text{–}5.8$ раза" in text
     assert "https://arxiv.org/abs/2509.21269" in text
     assert "252e21e3" in text and "abc1234" in text
@@ -557,24 +488,11 @@ def test_card_and_report_for_fp32_bundle():
     assert "Веса fp32 выбраны заранее" in report and "| `transformer` |" in report.replace("LightGBM |", "")
 
 
-def test_card_and_report_for_frozen_heavy_bundle():
-    """FRIDA: замороженный энкодер с головой, веса во внешнем файле, тяжёлая и не самая точная модель."""
+def test_card_and_report_for_heavy_bundle():
+    """Тяжёлая модель: веса во внешнем файле, итог по вероятностям PyTorch, не самая точная."""
     m = fake_metrics()
-    m["params"] = {
-        k: v
-        for k, v in m["params"].items()
-        if k not in ("epochs", "lr", "batch", "warmup", "patience", "best_step", "best_epoch", "early_stopped")
-    }
     m["params"] |= {
-        "base": "ai-forever/FRIDA",
-        "parameters": 823_000_000,
-        "prefix": "categorize: ",
-        "pooling": "cls",
-        "head": "logistic regression",
-        "C": 10.0,
-        "c_grid": [0.1, 1.0, 10.0, 100.0],
-        "precision": "fp16",
-        "embed_seconds": 5400.0,
+        "base": "deepvk/RuModernBERT-small",
         "shipped": "onnx_fp32",
         "shipped_file": "onnx/model.onnx",
         "size_mb": 3300.0,
@@ -582,9 +500,7 @@ def test_card_and_report_for_frozen_heavy_bundle():
         "probs_source": "torch",
         "onnx_texts": 300,
     }
-    m["dataset"]["train"] = 80000
     m["variants"]["onnx_int8"]["test"] = m["variants"]["onnx_int8"]["valid"]
-    m["curve"] = [{"C": c, "roc_auc": 0.95, "accuracy": 0.9, "logloss": 0.3} for c in (0.1, 1.0, 10.0, 100.0)]
     m["latency"] = [{"runtime": "onnxruntime fp32", "tokens": 512, "threads": 1, "ms": 9000.0}]
     m["sizes_mb"] |= {"onnx_fp32": 3300.0, "onnx_int8": 850.0}
     m["test"]["roc_auc"] = 0.985
@@ -593,27 +509,20 @@ def test_card_and_report_for_frozen_heavy_bundle():
         {**fast, "test": {**m["test"], "roc_auc": 0.98}},
         {
             **fast,
-            "repo": tt.BUNDLES["deepvk/RuModernBERT-small"].repo,
-            "name": "modernbert",
-            "size_mb": 139.6,
-            "ms_512_1": 272.0,
+            "repo": tt.BUNDLES["sergeyzh/rubert-mini-frida"].repo,
+            "name": "mini-frida",
+            "size_mb": 129.9,
+            "ms_512_1": 137.2,
             "test": {**m["test"], "roc_auc": 0.993},
         },
     ]
-    card = tt.card(m)
-    assert "t5" in card.data.to_dict()["tags"] and "bert" not in card.data.to_dict()["tags"]
-    body = card.text
+    body = tt.card(m).text
     assert "`model.onnx.data`" in body and '"model.onnx*"' in body
-    assert "aiw-ru models install frida" in body and "--model frida" in body
     assert "Модель тяжёлая, для мощных машин" in body and "у вызовов дольше секунды" in body
-    assert "самый тяжёлый трансформер aiw-ru, но не самый точный: на test его обходит `modernbert`." in body
-    assert "без дообучения" in body and f"- `frida` (эта модель) — {tt.BUNDLES['ai-forever/FRIDA'].summary}." in body
-    assert "habr.com/ru/companies/sberdevices/articles/909924" in body
+    assert "самый тяжёлый трансформер aiw-ru, но не самый точный: на test его обходит `mini-frida`." in body
     assert not re.search(r"\S\\\\\(", body)
-    report = tt.report_body(m, tt.bundle_for("ai-forever/FRIDA").repo)
-    assert "замороженный энкодер `ai-forever/FRIDA`" in report and "сам FRIDA для мощных машин" in report
-    assert "embed --base ai-forever/FRIDA --prefix 'categorize: ' --pooling cls --limit 80000" in report
-    assert "--exclude 'emb-*'" in report and "--onnx-texts 300" in report
+    report = tt.report_body(m, tt.bundle_for("deepvk/RuModernBERT-small").repo)
+    assert "--onnx-texts 300" in report and "--exclude" not in report and "embed" not in report
 
 
 def test_bundle_hub_layout(tmp_path):

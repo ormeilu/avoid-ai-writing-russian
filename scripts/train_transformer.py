@@ -47,7 +47,6 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
-from itertools import pairwise
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -102,7 +101,6 @@ LICENSES = {
     "cointegrated/rubert-tiny2": "mit",
     "sergeyzh/rubert-mini-frida": "mit",
     "deepvk/RuModernBERT-small": "apache-2.0",
-    "ai-forever/FRIDA": "mit",
 }
 LABELS = ("human", "ai")
 THRESHOLD = 0.5
@@ -783,24 +781,12 @@ def export_onnx(model_dir: Path, path: Path) -> None:
     """
     model = load_torch_classifier(model_dir)
     texts = ["Короткий пример.", "Пример подлиннее, чтобы в пачке были тексты разной длины."]
-    if is_frozen(model_dir):
-        wrap = model_wrap(model_dir)
-        prefix, suffix = spec_wrap(wrap)
-        btok = inference_tokenizer(model_dir / "tokenizer.json")
-        seqs = [[*prefix, *e.ids, *suffix] for e in btok.encode_batch(texts, add_special_tokens=False)]
-        width = max(len(x) for x in seqs)
-        sample = {
-            "input_ids": [[*x, *[wrap["pad_id"]] * (width - len(x))] for x in seqs],
-            "attention_mask": [[1] * len(x) + [0] * (width - len(x)) for x in seqs],
-        }
-        max_seq = 4096
-    else:
-        sample = load_tokenizer(model_dir)(texts, padding=True)
-        max_seq = int(model.config.max_position_embeddings)
+    sample = load_tokenizer(model_dir)(texts, padding=True)
+    max_seq = int(model.config.max_position_embeddings)
     big = sum(x.numel() for x in model.parameters()) * 4 > 1.8e9
     batch = torch.export.Dim("batch", min=1, max=1024)
     seq = torch.export.Dim("sequence", min=2, max=max_seq)
-    if not is_frozen(model_dir) and model.config.model_type == "modernbert":
+    if model.config.model_type == "modernbert":
         model = FastModernBert(model).eval()
     torch.onnx.export(
         model,
@@ -1011,11 +997,7 @@ def cmd_export(args: argparse.Namespace) -> None:
 
 
 def eval_split(data: Path, split: str, limit: int, model_dir: Path, p: dict, cache: Path) -> Encoded:
-    """Часть корпуса в токенах: как при обучении у дообученной модели, как при выводе у замороженной."""
-    if is_frozen(model_dir):
-        return encode_split_spec(
-            data, split, limit, model_dir / "tokenizer.json", model_wrap(model_dir), p["max_length"], cache
-        )[0]
+    """Часть корпуса в токенах, как при обучении."""
     return encode_split(data, split, limit, load_tokenizer(model_dir), p["max_length"], not p["normalize"], cache)
 
 
@@ -1038,7 +1020,7 @@ def cpu_name() -> str:
 def inference_spec(p: dict, wrap: dict, long_texts: str, weights: str = "int8") -> dict:
     """Всё, что нужно выводу без transformers: файл, токены, нормализация, порог, правило для длинных текстов.
 
-    wrap — токены вокруг окна: cls_id, sep_id и pad_id у BERT или prefix_ids, suffix_ids и pad_id.
+    wrap — токены вокруг окна: cls_id, sep_id и pad_id.
     """
     windows = MAX_WINDOWS if long_texts == "mean_of_windows" else 1
     return {
@@ -1067,8 +1049,7 @@ def windows(
 ) -> list[list[int]]:
     """Окна по max_length токенов подряд, без перекрытия; ids — токены текста без служебных.
 
-    prefix и suffix — то, что ставится вокруг каждого окна: [CLS] и [SEP] у BERT, служебные
-    токены и префикс задачи у замороженного энкодера.
+    prefix и suffix — то, что ставится вокруг каждого окна: [CLS] и [SEP].
     """
     width = max_length - len(prefix) - len(suffix)
     return [[*prefix, *ids[i : i + width], *suffix] for i in range(0, max(len(ids), 1), width)][:limit]
@@ -1126,412 +1107,20 @@ def spec_vs_eval(
     return {"texts": len(pick), "max_abs_diff": float(diff.max()), "mean_abs_diff": float(diff.mean())}
 
 
-# ─── Замороженный энкодер ───────────────────────────────────────────────
-# Большую модель (FRIDA, 823 млн параметров) на бесплатной T4 целиком не дообучить: не хватает
-# ни памяти на AdamW, ни времени. Энкодер остаётся как есть, эмбеддинги один раз считаются на
-# GPU, по ним учится логистическая регрессия. В ONNX энкодер, пулинг, нормировка и голова
-# собраны в один граф: input_ids, attention_mask → logits.
-
-FROZEN = "frozen.json"
-C_GRID = (0.1, 1.0, 10.0, 100.0)
-EMBED_TOKENS = 16384  # токенов в пачке при расчёте эмбеддингов
-
-
-def is_frozen(model_dir: Path) -> bool:
-    return (model_dir / FROZEN).exists()
-
-
-def wrap_ids(tok: tokenizers.Tokenizer, prefix: str) -> tuple[list[int], list[int]]:
-    """Токены до и после текста: служебные токены токенизатора и префикс задачи.
-
-    Текст токенизируется отдельно от префикса, как при выводе по inference.json.
-    """
-    probe = tok.encode("проверка", add_special_tokens=False).ids
-    full = tok.encode("проверка").ids
-    k = next((i for i in range(len(full) - len(probe) + 1) if full[i : i + len(probe)] == probe), None)
-    if k is None:
-        raise SystemExit(f"токенизатор меняет текст рядом со служебными токенами: {full} против {probe}")
-    pre = tok.encode(prefix, add_special_tokens=False).ids if prefix else []
-    return [*full[:k], *pre], full[k + len(probe) :]
-
-
 def model_wrap(model_dir: Path) -> dict:
-    """Токены вокруг окна для inference.json: cls_id и sep_id у BERT, prefix_ids и suffix_ids у замороженного."""
-    if is_frozen(model_dir):
-        f = json.loads((model_dir / FROZEN).read_text(encoding="utf-8"))
-        return {"prefix_ids": f["prefix_ids"], "suffix_ids": f["suffix_ids"], "pad_id": f["pad_id"]}
+    """Токены вокруг окна для inference.json: cls_id, sep_id и pad_id токенизатора модели."""
     cls_id, sep_id, pad_id = special_ids(load_tokenizer(model_dir))
     return {"cls_id": cls_id, "sep_id": sep_id, "pad_id": pad_id}
 
 
 def spec_wrap(spec: dict) -> tuple[list[int], list[int]]:
-    if "prefix_ids" in spec:
-        return list(spec["prefix_ids"]), list(spec["suffix_ids"])
     return [spec["cls_id"]], [spec["sep_id"]]
 
 
-def encode_split_spec(
-    data: Path, split: str, limit: int, tokenizer: Path, wrap: dict, max_length: int, cache_dir: Path
-) -> tuple[Encoded, list[list[int]]]:
-    """Первое окно каждого текста так, как его строит вывод по inference.json, и токены целиком.
-
-    Нужен моделям с prefix_ids/suffix_ids; кэш — по хэшу tokenizer.json, окружению окна и нормализации.
-    """
-    prefix, suffix = spec_wrap(wrap)
-    h = hashlib.sha1(tokenizer.read_bytes() + repr((prefix, suffix)).encode()).hexdigest()[:8]
-    cache = cache_dir / f"spec-{split}{f'-{limit}' if limit else ''}-{h}-{max_length}-{normalize_key()}.npz"
-    lines = load(data, "classification", split, limit)
-    tok = inference_tokenizer(tokenizer)
-    max_chars = max_length * CHARS_PER_TOKEN * MAX_WINDOWS
-    if cache.exists():
-        z = np.load(cache, allow_pickle=False)
-        full = np.split(z["full"], z["full_offsets"][1:-1])
-        return Encoded(**{f: z[f] for f in Encoded.__dataclass_fields__}), [x.tolist() for x in full]
-    rs = [json.loads(line) for line in lines]
-    full = [e.ids for e in tok.encode_batch([normalize(r["text"][:max_chars]) for r in rs], add_special_tokens=False)]
-    width = max_length - len(prefix) - len(suffix)
-    heads = [windows(x, max_length, prefix, suffix, 1)[0] for x in full]
-    enc = Encoded(
-        ids=np.concatenate([np.asarray(s, dtype=np.int32) for s in heads]),
-        offsets=np.concatenate([[0], np.cumsum([len(s) for s in heads])]).astype(np.int64),
-        truncated=np.array([len(x) > width for x in full], dtype=bool),
-        y=np.array([r["label"] == "ai" for r in rs], dtype=np.int8),
-        genre=np.array([r["data_type"] for r in rs]),
-        prompt=np.array([r["prompt_type"] or "" for r in rs]),
-        generator=np.array([r["model"] if r["label"] == "ai" else "" for r in rs]),
-    )
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    np.savez(
-        cache,
-        **{f: getattr(enc, f) for f in Encoded.__dataclass_fields__},
-        full=np.concatenate([np.asarray(x, dtype=np.int32) for x in full]),
-        full_offsets=np.concatenate([[0], np.cumsum([len(x) for x in full])]).astype(np.int64),
-    )
-    return enc, full
-
-
-def load_encoder(base: str, revision: str | None = None, dtype: torch.dtype | None = None) -> Any:
-    """Энкодер без головы; у T5 — только энкодерная половина.
-
-    Внимание eager и на GPU, и при экспорте: T5 с sdpa torch.onnx (dynamo) не раскладывает,
-    а одна реализация везде убирает расхождение между эмбеддингами для головы и ONNX.
-    """
-    from transformers import AutoConfig, AutoModel, T5EncoderModel
-
-    cfg = AutoConfig.from_pretrained(base, revision=revision)
-    cls: Any = T5EncoderModel if cfg.model_type in ("t5", "mt5", "umt5") else AutoModel
-    kw = {"dtype": dtype} if dtype is not None else {}
-    return cls.from_pretrained(base, revision=revision, attn_implementation="eager", **kw)
-
-
-class FrozenClassifier(torch.nn.Module):
-    """Замороженный энкодер, пулинг, L2-нормировка и линейная голова: логиты «человек» и «ИИ»."""
-
-    def __init__(self, encoder: Any, pooling: str, weight: np.ndarray, bias: float) -> None:
-        super().__init__()
-        self.encoder = encoder
-        self.pooling = pooling
-        self.head = torch.nn.Linear(len(weight), 2)
-        with torch.no_grad():
-            self.head.weight.zero_()
-            self.head.bias.zero_()
-            self.head.weight[1] = torch.from_numpy(np.asarray(weight, dtype=np.float32))
-            self.head.bias[1] = float(bias)
-
-    def embed(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        h = self.encoder(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
-        if self.pooling == "cls":
-            e = h[:, 0]
-        else:
-            m = attention_mask.unsqueeze(-1).to(h.dtype)
-            e = (h * m).sum(dim=1) / m.sum(dim=1).clamp_min(1)
-        return torch.nn.functional.normalize(e.float(), dim=-1)
-
-    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> Any:
-        from transformers.modeling_outputs import SequenceClassifierOutput
-
-        return SequenceClassifierOutput(logits=self.head(self.embed(input_ids, attention_mask)))
-
-    @classmethod
-    def load(cls, model_dir: Path) -> FrozenClassifier:
-        f = json.loads((model_dir / FROZEN).read_text(encoding="utf-8"))
-        head = np.load(model_dir / "head.npz")
-        encoder = load_encoder(f["base"], f.get("base_revision") or None)
-        return cls(encoder, f["pooling"], head["weight"], float(head["bias"]))
-
-
 def load_torch_classifier(model_dir: Path) -> Any:
-    """Модель для сверки с ONNX и замера задержки: дообученная или замороженная с головой."""
-    if is_frozen(model_dir):
-        return FrozenClassifier.load(model_dir).eval().float()
+    """Модель для сверки с ONNX и замера задержки."""
     model: Any = AutoModelForSequenceClassification.from_pretrained(model_dir)
     return model.eval().float()
-
-
-def embed_windows(
-    model: FrozenClassifier, wins: Sequence[Sequence[int]], pad_id: int, device: torch.device, precision: str
-) -> np.ndarray:
-    """Нормированные эмбеддинги окон, float16; пачки по числу токенов, от коротких к длинным."""
-    lengths = np.array([len(w) for w in wins])
-    order = np.argsort(lengths, kind="stable")
-    out = np.zeros((len(wins), model.head.in_features), dtype=np.float16)
-    i, done, started = 0, 0, time.perf_counter()
-    while i < len(order):
-        j = i + 1
-        while j < len(order) and (j - i + 1) * lengths[order[j]] <= EMBED_TOKENS:
-            j += 1
-        idx = order[i:j]
-        width = int(-(-int(lengths[idx].max()) // 8) * 8)
-        ids = np.full((len(idx), width), pad_id, dtype=np.int64)
-        mask = np.zeros_like(ids)
-        for row, k in enumerate(idx):
-            ids[row, : lengths[k]] = wins[int(k)]
-            mask[row, : lengths[k]] = 1
-        # fp16-wo32: веса уже в fp16 (кроме wo у T5), autocast не нужен.
-        with torch.no_grad(), autocast(device, "fp32" if precision == "fp16-wo32" else precision):
-            e = model.embed(torch.from_numpy(ids).to(device), torch.from_numpy(mask).to(device))
-        out[idx] = e.cpu().numpy().astype(np.float16)
-        done += len(idx)
-        if done // 10000 != (done - len(idx)) // 10000:
-            rate = done / (time.perf_counter() - started)
-            print(f"  {done}/{len(order)} окон, {rate:.0f} в секунду", flush=True)
-        i = j
-    return out
-
-
-def stitch_windows(
-    head_emb: np.ndarray, long: np.ndarray, rest: Sequence[int], more: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    """Эмбеддинги окон длинных текстов подряд: начало текста из head_emb, затем его остальные окна из more."""
-    ends = np.cumsum(rest).astype(int)
-    chunks = [
-        x
-        for k, a, b in zip(long, ends - np.asarray(rest, dtype=int), ends, strict=True)
-        for x in (head_emb[k : k + 1], more[a:b])
-    ]
-    emb = np.concatenate(chunks) if chunks else np.zeros((0, head_emb.shape[1]), dtype=head_emb.dtype)
-    return emb, np.asarray(rest, dtype=int) + 1
-
-
-def precision_check(
-    ref: FrozenClassifier,
-    model: FrozenClassifier,
-    precision: str,
-    wins: Sequence[Sequence[int]],
-    pad_id: int,
-    device: torch.device,
-) -> dict:
-    """Эмбеддинги в fp16 против fp32 на окнах разной длины: T5 в fp16 бывает переполняется."""
-    order = np.argsort([len(w) for w in wins], kind="stable")
-    sample = [wins[int(k)] for k in order[np.linspace(0, len(order) - 1, min(64, len(order))).astype(int)]]
-    a = embed_windows(ref, sample, pad_id, device, "fp32").astype(np.float32)
-    b = embed_windows(model, sample, pad_id, device, precision).astype(np.float32)
-    finite = bool(np.isfinite(b).all())
-    cos = float((a * b).sum(axis=1).min()) if finite else 0.0
-    return {
-        "precision": precision,
-        "texts": len(sample),
-        "finite": finite,
-        "min_cos": cos,
-        "ok": finite and cos > 0.999,
-    }
-
-
-def cmd_embed(args: argparse.Namespace) -> None:
-    """Эмбеддинги замороженного энкодера на GPU: valid и test целиком с окнами длинных текстов, выборка train."""
-    from huggingface_hub import snapshot_download
-    from transformers import AutoConfig
-
-    device = pick_device(args.device)
-    hf_logging.set_verbosity_error()
-    out: Path = args.out or args.out_root / "runs" / short_name(args.base)
-    (out / "model").mkdir(parents=True, exist_ok=True)
-    print(f"Папка запуска: {out}", flush=True)
-    revision = base_revision(args.base)
-    snap = Path(snapshot_download(args.base, revision=revision or None, allow_patterns=["*.json", "*.txt"]))
-    for name in ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "config.json"):
-        if (snap / name).exists():
-            shutil.copy2(snap / name, out / "model" / name)
-    tok = inference_tokenizer(snap / "tokenizer.json")
-    prefix, suffix = wrap_ids(tok, args.prefix)
-    pad_id = int(AutoConfig.from_pretrained(args.base, revision=revision or None).pad_token_id or 0)
-    encoder = load_encoder(args.base, revision or None)
-    parameters = sum(p.numel() for p in encoder.parameters())
-    dim = int(encoder.config.d_model if hasattr(encoder.config, "d_model") else encoder.config.hidden_size)
-    model = FrozenClassifier(encoder, args.pooling, np.zeros(dim, dtype=np.float32), 0.0).to(device).eval()
-    del encoder
-    wrap = {"prefix_ids": prefix, "suffix_ids": suffix, "pad_id": pad_id}
-    frozen = {
-        "base": args.base,
-        "base_revision": revision,
-        "prefix": args.prefix,
-        "pooling": args.pooling,
-        "normalize_embeddings": True,
-        "dim": dim,
-        **wrap,
-    }
-    (out / "model" / FROZEN).write_text(json.dumps(frozen, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    cache = args.out_root / "cache"
-    tokenizer = out / "model" / "tokenizer.json"
-    width = args.max_length - len(prefix) - len(suffix)
-    stats: dict[str, Any] = {}
-    check: dict[str, Any] = {}
-    precision = args.precision
-    for split, limit in (("valid", 0), ("test", 0), ("train", args.limit)):
-        # Готовые части после обрыва не пересчитываются: VM на бесплатной T4 могут отобрать.
-        done = out / f"embed-{split}.json"
-        if done.exists():
-            stats[split] = json.loads(done.read_text(encoding="utf-8"))["stats"]
-            print(f"Эмбеддинги {split} уже посчитаны", flush=True)
-            continue
-        enc, full = encode_split_spec(args.data, split, limit, tokenizer, wrap, args.max_length, cache)
-        heads = [enc.seq(k).tolist() for k in range(len(enc))]
-        if not check and precision == "auto":
-            # Сначала autocast fp16; если T5 переполняется — веса в fp16 с wo в fp32, как их грузит
-            # transformers; иначе fp32.
-            precision, check = "fp32", {"ok": False, "reason": "нет GPU"}
-            if device.type == "cuda":
-                check = precision_check(model, model, "fp16", heads, pad_id, device)
-                print(f"Сверка fp16 с fp32: {check}", flush=True)
-                if check["ok"]:
-                    precision = "fp16"
-                else:
-                    half = FrozenClassifier(
-                        load_encoder(args.base, revision or None, torch.float16),
-                        args.pooling,
-                        np.zeros(dim, dtype=np.float32),
-                        0.0,
-                    )
-                    half = half.to(device).eval()
-                    check = precision_check(model, half, "fp16-wo32", heads, pad_id, device)
-                    print(f"Сверка fp16-wo32 с fp32: {check}", flush=True)
-                    if check["ok"]:
-                        model, precision = half, "fp16-wo32"
-                        torch.cuda.empty_cache()
-            print(f"Точность эмбеддингов: {precision}", flush=True)
-        started = time.perf_counter()
-        head_emb = embed_windows(model, heads, pad_id, device, precision)
-        np.save(out / f"emb-{split}.npy", head_emb)
-        np.save(out / f"y-{split}.npy", enc.y)
-        np.save(out / f"trunc-{split}.npy", enc.truncated)
-        if split != "train":
-            # Первое окно длинного текста — то же, что его начало: берётся готовый эмбеддинг.
-            long = np.flatnonzero(enc.truncated)
-            rest = [windows(full[k], args.max_length, prefix, suffix, MAX_WINDOWS)[1:] for k in long]
-            more = embed_windows(model, [w for ws in rest for w in ws], pad_id, device, precision)
-            emb, counts = stitch_windows(head_emb, long, [len(ws) for ws in rest], more)
-            np.savez(out / f"win-{split}.npz", idx=long, counts=counts, emb=emb)
-        seconds = time.perf_counter() - started
-        stats[split] = {"texts": len(enc), "seconds": seconds, "truncated_share": float(enc.truncated.mean())}
-        done.write_text(json.dumps({"stats": stats[split], "precision": precision}) + "\n", encoding="utf-8")
-        print(f"Эмбеддинги {split}: {len(enc)} текстов за {seconds:.0f} с", flush=True)
-    embed = {
-        "created": datetime.now(UTC).strftime("%Y-%m-%d"),
-        "git_commit": git_commit(),
-        "environment": environment(str(device), gpu_name(device)),
-        "base": args.base,
-        "base_revision": revision,
-        "parameters": parameters,
-        "prefix": args.prefix,
-        "pooling": args.pooling,
-        "max_length": args.max_length,
-        "window_tokens": width,
-        "limit": args.limit,
-        "device": str(device),
-        "gpu": gpu_name(device),
-        "precision": precision,
-        "precision_check": check,
-        "splits": stats,
-    }
-    (out / "embed.json").write_text(json.dumps(embed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"Готово: {out / 'embed.json'}", flush=True)
-
-
-def sigmoid(z: np.ndarray) -> np.ndarray:
-    return 1 / (1 + np.exp(-z))
-
-
-def cmd_head(args: argparse.Namespace) -> None:
-    """Логистическая регрессия на эмбеддингах; C выбирается по ROC AUC на valid, test только для итога."""
-    from sklearn.linear_model import LogisticRegression
-
-    run_dir: Path = args.folder
-    embed = json.loads((run_dir / "embed.json").read_text(encoding="utf-8"))
-    x = {s: np.load(run_dir / f"emb-{s}.npy").astype(np.float32) for s in ("train", "valid", "test")}
-    y = {s: np.load(run_dir / f"y-{s}.npy") for s in ("train", "valid", "test")}
-    curve, best, best_auc = [], None, -1.0
-    started = time.perf_counter()
-    for c in C_GRID:
-        t0 = time.perf_counter()
-        clf = LogisticRegression(C=c, max_iter=3000)
-        clf.fit(x["train"], y["train"])
-        q = quick(y["valid"], clf.predict_proba(x["valid"])[:, 1])
-        curve.append({"C": c, **q, "seconds": time.perf_counter() - t0})
-        print(f"C={c:g}: valid {q}", flush=True)
-        if (q["roc_auc"] or 0) > best_auc:
-            best, best_auc = clf, q["roc_auc"] or 0
-    assert best is not None
-    weight, bias = best.coef_[0].astype(np.float32), float(best.intercept_[0])
-    np.savez(run_dir / "model" / "head.npz", weight=weight, bias=np.float32(bias))
-    frozen = json.loads((run_dir / "model" / FROZEN).read_text(encoding="utf-8"))
-    frozen |= {"head": "logistic regression", "C": float(best.C)}
-    (run_dir / "model" / FROZEN).write_text(json.dumps(frozen, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    probs = {s: sigmoid(x[s] @ weight + bias).astype(np.float32) for s in ("valid", "test")}
-    for s in ("valid", "test"):
-        np.save(run_dir / f"{s}-probs.npy", probs[s])
-        w = np.load(run_dir / f"win-{s}.npz")
-        per_window = sigmoid(w["emb"].astype(np.float32) @ weight + bias)
-        bounds = np.concatenate([[0], np.cumsum(w["counts"])])
-        mean = np.array([per_window[a:b].mean() for a, b in pairwise(bounds)], dtype=np.float32)
-        np.savez(run_dir / f"{s}-windows-probs.npz", idx=w["idx"], mean=mean)
-    sp = embed["splits"]
-    total = sum(v["texts"] for v in sp.values()) + sum(
-        len(np.load(run_dir / f"win-{s}.npz")["emb"]) for s in ("valid", "test")
-    )
-    embed_seconds = sum(v["seconds"] for v in sp.values())
-    run = {
-        "created": datetime.now(UTC).strftime("%Y-%m-%d"),
-        "kind": "frozen",
-        "git_commit": embed["git_commit"],
-        "environment": embed["environment"],
-        "dataset": {
-            "repo": "iitolstykh/LLMTrace_classification",
-            "revision": REVISIONS["classification"],
-            "language": "ru",
-            "limit": embed["limit"],
-            "eval_limit": 0,
-            "train": len(y["train"]),
-            "valid": len(y["valid"]),
-            "test": len(y["test"]),
-        },
-        "params": {
-            "base": embed["base"],
-            "base_revision": embed["base_revision"],
-            "base_license": LICENSES.get(embed["base"], ""),
-            "parameters": embed["parameters"],
-            "max_length": embed["max_length"],
-            "normalize": True,
-            "normalize_rules": normalize_key(),
-            "prefix": embed["prefix"],
-            "pooling": embed["pooling"],
-            "head": "logistic regression",
-            "C": float(best.C),
-            "c_grid": list(C_GRID),
-            "device": embed["device"],
-            "gpu": embed["gpu"],
-            "precision": embed["precision"],
-            "precision_reason": f"сверка с fp32 на GPU: {embed['precision_check']}",
-            "embed_seconds": embed_seconds,
-            "train_seconds": time.perf_counter() - started,
-            "texts_per_second": total / embed_seconds,
-            "truncated_share": {s: v["truncated_share"] for s, v in sp.items()},
-        },
-        "valid": quick(y["valid"], probs["valid"]),
-        "curve": curve,
-        "torch_test": quick(y["test"], probs["test"]),
-    }
-    (run_dir / "run.json").write_text(json.dumps(run, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"Готово: {run_dir / 'run.json'}; valid {run['valid']}, test {run['torch_test']}", flush=True)
 
 
 # ─── Оценка ─────────────────────────────────────────────────────────────
@@ -1940,12 +1529,6 @@ BUNDLES = {
     "sergeyzh/rubert-mini-frida": Bundle(
         "toiletsandpaper/russian-ai-text-detector-mini-frida", "mini-frida", "mini-frida"
     ),
-    "ai-forever/FRIDA": Bundle(
-        "toiletsandpaper/russian-ai-text-detector-frida",
-        "frida",
-        "frida",
-        summary="замороженный энкодер FRIDA с логистической головой, самая тяжёлая: для мощных машин",
-    ),
 }
 
 
@@ -1975,11 +1558,6 @@ BASE_CITATIONS = {
         "[ai-forever/FRIDA](https://huggingface.co/ai-forever/FRIDA) в "
         "[sergeyzh/rubert-mini-sts](https://huggingface.co/sergeyzh/rubert-mini-sts); "
         "статьи с BibTeX у модели нет."
-    ),
-    "ai-forever/FRIDA": (
-        "FRIDA описана в [статье SberDevices на Хабре](https://habr.com/ru/companies/sberdevices/articles/909924/), "
-        "её энкодер взят из FRED-T5 ([arXiv:2309.10931](https://arxiv.org/abs/2309.10931)). "
-        "BibTeX в карточке FRIDA пока не заполнен."
     ),
 }
 
@@ -2501,30 +2079,8 @@ def _ablation(m: dict) -> str:
     )
 
 
-def _frozen_params_md(m: dict) -> str:
-    p, ds = m["params"], m["dataset"]
-    pooling = "эмбеддинг первого токена" if p["pooling"] == "cls" else "среднее по токенам"
-    return md_table(
-        ["Параметр", "Значение"],
-        [
-            ["База", f"[`{p['base']}`](https://huggingface.co/{p['base']}), ревизия `{p['base_revision'][:12]}`"],
-            ["Параметров", f"{_params_count(p['parameters'])}, энкодер не дообучался"],
-            ["Префикс", _code(p["prefix"])],
-            ["Эмбеддинг", f"{pooling}, L2-нормировка, как в карточке базы"],
-            ["Голова", f"логистическая регрессия, `C` из {', '.join(f'`{c:g}`' for c in p['c_grid'])}: `{p['C']:g}`"],
-            ["Обучение головы", f"{_texts_loc(ds['train'])} train, равномерная выборка"],
-            ["Эмбеддинги считались", f"{p['gpu']}, `{p['precision']}`, ${p['embed_seconds'] / 60:.0f}$ мин"],
-            ["`max_length`", _nw(p["max_length"], "токен", "токена", "токенов") + " вместе с префиксом"],
-            ["Файл модели", f"`model.onnx`, веса {_weights(m)}, {_mb(p['size_mb'])} МБ"],
-            ["Обучено", f"{m['created']}, коммит `{m['git_commit']}`"],
-        ],
-    )
-
-
 def _params_md(m: dict) -> str:
     p = m["params"]
-    if "head" in p:
-        return _frozen_params_md(m)
     stop = ", сработала" if p["early_stopped"] else ", не понадобилась"
     return md_table(
         ["Параметр", "Значение"],
@@ -2558,11 +2114,6 @@ def _params_md(m: dict) -> str:
 
 
 def _curve_md(m: dict) -> str:
-    if "head" in m["params"]:
-        return md_table(
-            ["`C`", "ROC AUC valid", "Accuracy valid", "logloss valid"],
-            [[f"`{c['C']:g}`", _num4(c["roc_auc"]), num(c["accuracy"]), num(c["logloss"], 4)] for c in m["curve"]],
-        )
     return md_table(
         ["Шаг", "Эпоха", "loss train", "ROC AUC valid", "Accuracy valid", "logloss valid"],
         [
@@ -2697,8 +2248,7 @@ def probability(text: str) -> float:
     for rule in spec["normalize"]:
         text = re.sub(rule["pattern"], rule["replacement"], text, flags=re.MULTILINE)
     ids = tokenizer.encode(text.strip(), add_special_tokens=False).ids
-    prefix = spec["prefix_ids"] if "prefix_ids" in spec else [spec["cls_id"]]
-    suffix = spec["suffix_ids"] if "suffix_ids" in spec else [spec["sep_id"]]
+    prefix, suffix = [spec["cls_id"]], [spec["sep_id"]]
     width = spec["max_length"] - len(prefix) - len(suffix)
     windows = [ids[i : i + width] for i in range(0, max(len(ids), 1), width)][: spec["max_windows"]]
     windows = [[*prefix, *w, *suffix] for w in windows]
@@ -2782,12 +2332,6 @@ def _long_rule(m: dict) -> str:
 
 def _trained_on(m: dict) -> str:
     ds = m["dataset"]
-    valid = _nw(ds["valid"], "тексту", "текстам", "текстам")
-    if "head" in m["params"]:
-        return (
-            f"Голова обучена на равномерной выборке train, это {_nw(ds['train'], 'текст', 'текста', 'текстов')}; "
-            f"`C` выбран по ROC AUC на всех {valid.replace('текстам', 'текстах').replace('тексту', 'тексте')} valid."
-        )
     return (
         f"Модель обучена на {_texts_loc(ds['train'])} из train, лучший шаг и ранняя остановка — по ROC AUC "
         f"на {_texts_loc(ds['valid'])} из valid."
@@ -2797,21 +2341,11 @@ def _trained_on(m: dict) -> str:
 def _what_ru(m: dict) -> str:
     p = m["params"]
     base = f"[`{p['base']}`](https://huggingface.co/{p['base']})"
-    if "head" in p:
-        return (
-            f"Это энкодер {base} на {_params_count(p['parameters'])} параметров без дообучения: по его "
-            f"эмбеддингам с префиксом {_code(p['prefix'])} обучена логистическая регрессия, всё вместе"
-        )
     return f"Это дообученный энкодер {base} на\n{_params_count(p['parameters'])} параметров"
 
 
 def _what_en(m: dict) -> str:
     p = m["params"]
-    if "head" in p:
-        return (
-            f"The model is the frozen `{p['base']}` encoder with a logistic regression head over its "
-            f"{_code(p['prefix'])} embeddings"
-        )
     return f"The model is `{p['base']}` fine-tuned"
 
 
@@ -2955,20 +2489,13 @@ def _reproduce_md(m: dict) -> str:
     why_note = (
         " Абзац о выборе базы передаётся ключом `--why`, его текст приведён в этом отчёте." if p.get("why") else ""
     )
-    if "head" in p:
-        train_args = (
-            f"embed --base {p['base']} --prefix '{p['prefix']}' --pooling {p['pooling']} "
-            f'--limit {m["dataset"]["train"]} --max-length {p["max_length"]}" --job "head {vm_run}'
-        )
-    else:
-        train_args = (
-            f"train --base {p['base']} --epochs {p['epochs']:g} --lr {p['lr']:g} --batch {p['batch']} "
-            f"--max-length {p['max_length']} --evals-per-epoch {p['evals_per_epoch']} --patience {p['patience']}"
-            + (f" --batch-tokens {p['batch_tokens']}" if p.get("batch_tokens") else "")
-            + (f" --sliding-window {p['sliding_window_arg']}" if p.get("sliding_window_arg") else "")
-            + (f" --seed {p['seed']}" if p.get("seed", SEED) != SEED else "")
-        )
-    fetch_flags = " --exclude 'emb-*' --exclude 'win-*'" if "head" in p else ""
+    train_args = (
+        f"train --base {p['base']} --epochs {p['epochs']:g} --lr {p['lr']:g} --batch {p['batch']} "
+        f"--max-length {p['max_length']} --evals-per-epoch {p['evals_per_epoch']} --patience {p['patience']}"
+        + (f" --batch-tokens {p['batch_tokens']}" if p.get("batch_tokens") else "")
+        + (f" --sliding-window {p['sliding_window_arg']}" if p.get("sliding_window_arg") else "")
+        + (f" --seed {p['seed']}" if p.get("seed", SEED) != SEED else "")
+    )
     if p.get("probs_source") == "torch":
         eval_flags += f" --onnx-texts {p['onnx_texts']}"
     uv = "uv run --group train --group transformer"
@@ -2997,7 +2524,7 @@ uv run scripts/colab_transformer.py up --gpu T4
 uv run scripts/colab_transformer.py setup
 uv run scripts/colab_transformer.py start --name {b.log} --job "{train_args}"
 uv run scripts/colab_transformer.py status --name {b.log}
-uv run scripts/colab_transformer.py fetch {vm_run} {full}{fetch_flags}
+uv run scripts/colab_transformer.py fetch {vm_run} {full}
 ```
 
 Colab CLI через час после `up` может счесть VM потерянной, когда у него истекает
@@ -3073,11 +2600,7 @@ ROC AUC и accuracy посчитаны на полном valid у PyTorch, «ROC
     choose = ""
     if m.get("related"):
         choose = f"\n\n{_choose_md(m, repo)}"
-    what = (
-        f"замороженный энкодер `{p['base']}` с обученной логистической головой"
-        if "head" in p
-        else f"дообученный энкодер `{p['base']}`"
-    )
+    what = f"дообученный энкодер `{p['base']}`"
     sizes = [r["parameters"] / 1e6 for r in m["pilot"] if r.get("parameters")]
     lo, hi = (round(min(sizes)), round(max(sizes))) if sizes else (0, 0)
     span = (
@@ -3086,12 +2609,6 @@ ROC AUC и accuracy посчитаны на полном valid у PyTorch, «ROC
         else f", а у кандидатов ниже ${lo}$ млн"
         if lo == hi
         else f", а у кандидатов ниже ${lo}\\text{{–}}{hi}$ млн"
-    )
-    frida = (
-        "Эта модель — сам FRIDA для мощных машин: энкодер заморожен, обучена только голова поверх эмбеддингов."
-        if p["base"] == "ai-forever/FRIDA"
-        else "Сам FRIDA готовится отдельной моделью для мощных машин: энкодер без дообучения и обученная "
-        "поверх него голова."
     )
     return f"""# Отчёт об обучении: {name}
 
@@ -3115,7 +2632,7 @@ ROC AUC и accuracy посчитаны на полном valid у PyTorch, «ROC
 Кандидаты — небольшие русские энкодеры с открытой лицензией, которые можно
 запускать на CPU. Полный [FRIDA](https://huggingface.co/ai-forever/FRIDA)
 от ai-forever (MIT) — энкодер T5 на $823$ млн параметров{span}. В пилоте вместо
-FRIDA взята его дистилляция `sergeyzh/rubert-mini-frida`. {frida}
+FRIDA взята его дистилляция `sergeyzh/rubert-mini-frida`.
 
 В пилоте все базы учились одинаково: {_nw(pilot.get("train", 0), "текст", "текста", "текстов")} train,
 эпох {count(int(pilot.get("epochs") or 1))}, скорость `{pilot.get("lr") or 0:g}`, пачка {count(pilot.get("batch") or 0)},
@@ -3157,7 +2674,7 @@ ROC AUC каждой приметы по отдельности на valid: $0.5
 
 {_params_md(m)}
 
-{"Подбор `C` на valid:" if "head" in p else "Проверки на valid по ходу обучения:"}
+Проверки на valid по ходу обучения:
 
 {_curve_md(m)}
 
@@ -3224,7 +2741,7 @@ def card(m: dict, repo: str | None = None) -> ModelCard:
         r.source_name = "aiw-ru scripts/train_transformer.py"
         r.source_url = f"{GITHUB}/blob/master/scripts/train_transformer.py"
     tags = [t for t in TAGS if t not in ("lightgbm", "tabular-features")]
-    arch = "modernbert" if "modernbert" in p["base"].lower() else "t5" if p["base"] == "ai-forever/FRIDA" else "bert"
+    arch = "modernbert" if "modernbert" in p["base"].lower() else "bert"
     tags += [arch, "onnx"]
     if _weights(m) == "int8":
         tags.append("int8")
@@ -3372,19 +2889,6 @@ def main(argv: list[str] | None = None) -> None:
     sub = ap.add_subparsers(dest="command", required=True)
     add_fit(sub.add_parser("pilot", help="короткое обучение на выборке, без test"), pilot=True)
     add_fit(sub.add_parser("train", help="полное обучение и ответы PyTorch на test"), pilot=False)
-    em = sub.add_parser("embed", help="эмбеддинги замороженного энкодера на GPU")
-    add_common(em)
-    em.add_argument("--base", default="ai-forever/FRIDA", help="энкодер с Hugging Face")
-    em.add_argument("--prefix", default="categorize: ", help="префикс задачи из карточки энкодера")
-    em.add_argument("--pooling", choices=("cls", "mean"), default="cls", help="как свести токены в эмбеддинг")
-    em.add_argument("--limit", type=int, default=80000, help="сколько текстов train взять для головы")
-    em.add_argument("--max-length", type=int, default=512, help="токенов в окне вместе с префиксом")
-    em.add_argument("--device", default="auto", help="auto, cuda, mps или cpu")
-    em.add_argument("--precision", choices=("auto", "fp16", "fp32"), default="auto", help="точность на GPU")
-    em.add_argument("--out", type=Path, help="папка запуска")
-    hd = sub.add_parser("head", help="логистическая регрессия на эмбеддингах из embed")
-    add_common(hd)
-    hd.add_argument("folder", type=Path, help="папка запуска после embed")
     ex = sub.add_parser("export", help="ONNX fp32 и int8, сверка с PyTorch, задержка на CPU")
     add_common(ex)
     ex.add_argument("folder", type=Path, help="папка запуска с model/ и run.json")
@@ -3429,10 +2933,6 @@ def main(argv: list[str] | None = None) -> None:
     args.out_root = args.out_root or args.data / "transformer"
     if args.command in ("pilot", "train"):
         cmd_fit(args, pilot=args.command == "pilot")
-    elif args.command == "embed":
-        cmd_embed(args)
-    elif args.command == "head":
-        cmd_head(args)
     elif args.command == "export":
         cmd_export(args)
     elif args.command == "report":
