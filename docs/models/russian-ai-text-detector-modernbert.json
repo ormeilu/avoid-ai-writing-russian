@@ -1,23 +1,20 @@
 {
-  "created": "2026-09-25",
-  "aiw_ru_version": "2.0.0rc2",
-  "git_commit": "60cb897+правки",
+  "created": "2026-09-26",
+  "aiw_ru_version": "2.1.0",
+  "git_commit": "5cd5f2d",
   "environment": {
-    "python": "3.13.15",
+    "python": "3.12.12",
     "torch": "2.14.0+cu130",
     "transformers": "5.17.0",
     "tokenizers": "0.23.2",
     "onnxruntime": "1.30.0",
     "numpy": "2.5.3",
     "scikit-learn": "1.9.1",
-    "platform": "Linux 6.6.122+, x86_64, 2 ядра",
+    "platform": "Linux, x86_64, 32 ядра",
     "cuda": "13.0",
     "device": "cuda",
-    "gpu": "Tesla T4",
-    "onnx": "1.23.0",
-    "evaluate_python": "3.14.6",
-    "evaluate_torch": "2.14.0",
-    "evaluate_platform": "Darwin 25.6.0, arm64, 8 ядер"
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "onnx": "1.23.0"
   },
   "dataset": {
     "repo": "iitolstykh/LLMTrace_classification",
@@ -34,12 +31,15 @@
     "base_revision": "06d09cc59b2c4f61cb84e398e96e17aeead5b8b8",
     "base_license": "apache-2.0",
     "parameters": 34540034,
-    "max_length": 512,
+    "max_length": 8192,
     "normalize": true,
     "normalize_rules": "3eae208e",
-    "epochs": 3.0,
+    "epochs": 3,
     "lr": 0.0001,
     "batch": 32,
+    "batch_tokens": 16384,
+    "sliding_window": 64,
+    "sliding_window_arg": 64,
     "warmup": 0.06,
     "weight_decay": 0.01,
     "patience": 3,
@@ -49,23 +49,23 @@
     "scheduler": "linear with warmup",
     "grad_clip": 1.0,
     "truncated_share": {
-      "train": 0.13055575402746197,
-      "valid": 0.13039982310491086,
-      "test": 0.13480322156851546
+      "train": 0.0011642128534142537,
+      "valid": 0.0009648823044605705,
+      "test": 0.0011995201919232307
     },
     "device": "cuda",
-    "gpu": "Tesla T4",
-    "precision": "fp16",
-    "precision_reason": "GPU без bf16 (T4): fp16 с масштабированием потерь (GradScaler)",
-    "steps": 22308,
-    "steps_total": 22308,
-    "steps_per_epoch": 7436,
-    "eval_every": 3718,
-    "best_step": 14872,
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "precision": "bf16",
+    "precision_reason": "GPU умеет bf16: диапазон как у fp32, масштабировать потери не нужно",
+    "steps": 25809,
+    "steps_total": 25809,
+    "steps_per_epoch": 8603,
+    "eval_every": 4301,
+    "best_step": 17204,
     "best_epoch": 2.0,
-    "train_seconds": 3862.0705210120004,
-    "texts_per_second": 184.81977377589737,
-    "early_stopped": false,
+    "train_seconds": 943.2267767600715,
+    "texts_per_second": 741.6413711269574,
+    "early_stopped": true,
     "license": "apache-2.0",
     "shipped": "onnx_fp32",
     "shipped_file": "onnx/model.onnx",
@@ -73,43 +73,43 @@
     "int8_max_drop": 0.002,
     "int8_max_changes": 0.005,
     "int8_label_changes": {
-      "valid": 0.01099563792791525
+      "valid": 0.010292077914246085
     },
     "int8_valid_only": true,
     "probs_source": "onnx",
     "onnx_texts": null,
-    "size_mb": 139.591026,
+    "size_mb": 139.725104,
     "external_data": false,
-    "hardware": "обучение: Tesla T4; оценка и задержка: Apple M1, 8 ядер",
-    "why": "RuModernBERT-small — самая точная из трёх баз, обученных на полном train. Моделью по умолчанию стала tiny2: в int8 она в $4$ раза быстрее. RuModernBERT выпущена отдельно, для тех, кому точность важнее скорости. Квантование ей вредит: int8 меняет ответ у $1.1\\%$ текстов valid, и квантование одних матриц весов без таблицы эмбеддингов этого не исправляет. Поэтому в поставке fp32."
+    "hardware": "обучение: NVIDIA GeForce RTX 4090; оценка: 13th Gen Intel(R) Core(TM) i9-13900KF, 32 ядра; задержка: Apple M1, 8 ядер",
+    "why": "RuModernBERT-small — самая точная из трёх баз, обученных на полном train, и модель aiw-ru по умолчанию. Эта ревизия обучена заново на окне в $8192$ токена вместо $512$: она читает целиком $99.9\\%$ текстов test против $86.5\\%$ у прежней, а на текстах от $400$ слов её accuracy $0.982$ против $0.966$. Локальное внимание — $\\pm 64$ токена, как в исходном ModernBERT; transformers по умолчанию читает окно этой базы как $\\pm 128$. На пилотах ($20\\,000$ текстов, одна эпоха, два сида) ни длина окна ($512$, $2048$, $8192$), ни ширина локального окна не дали разницы больше разброса между сидами, а при $\\pm 64$ локальные слои считают внимание блоками вдвое меньше. Квантование модели вредит: int8 меняет ответ у $1.0\\%$ текстов valid. Поэтому в поставке fp32."
   },
   "test": {
-    "accuracy": 0.9619961539193846,
+    "accuracy": 0.9634812741570039,
     "classes": {
       "human": {
-        "precision": 0.9505405280007424,
-        "recall": 0.9565765513377223,
-        "f1": 0.9535489876658133,
+        "precision": 0.9454877770162211,
+        "recall": 0.9661483867955363,
+        "f1": 0.9557064338829615,
         "support": 21417
       },
       "ai": {
-        "precision": 0.9699690002583312,
-        "recall": 0.9657278806584362,
-        "f1": 0.9678437943033896,
+        "precision": 0.9763350306828568,
+        "recall": 0.9616448045267489,
+        "f1": 0.9689342403628118,
         "support": 31104
       }
     },
     "macro": {
-      "precision": 0.9602547641295368,
-      "recall": 0.9611522159980792,
-      "f1": 0.9606963909846015
+      "precision": 0.960911403849539,
+      "recall": 0.9638965956611426,
+      "f1": 0.9623203371228867
     },
-    "roc_auc": 0.9930446121461145,
-    "roc_auc_created": 0.9938380246853968
+    "roc_auc": 0.9929633209280407,
+    "roc_auc_created": 0.9940339569488116
   },
   "valid": {
-    "accuracy": 0.9629927432810018,
-    "roc_auc": 0.9934840694329783
+    "accuracy": 0.9641988461615776,
+    "roc_auc": 0.9934352843654303
   },
   "detector": {
     "accuracy": 0.5034367205498753,
@@ -141,48 +141,48 @@
       "genre": "article",
       "human": 5109,
       "ai": 5343,
-      "accuracy": 0.9656525066972829,
-      "roc_auc": 0.9952622937865812,
+      "accuracy": 0.9663222349789514,
+      "roc_auc": 0.9935560498885845,
       "detector_roc_auc": 0.7089272500697594
     },
     {
       "genre": "factual",
       "human": 1383,
       "ai": 2209,
-      "accuracy": 0.9348552338530067,
-      "roc_auc": 0.984127903760564,
+      "accuracy": 0.9432071269487751,
+      "roc_auc": 0.9862743519166808,
       "detector_roc_auc": 0.6726439887831512
     },
     {
       "genre": "news",
       "human": 3326,
       "ai": 3488,
-      "accuracy": 0.956853536835926,
-      "roc_auc": 0.9921773285402198,
+      "accuracy": 0.9547989433519225,
+      "roc_auc": 0.9925935395025018,
       "detector_roc_auc": 0.5657629267185975
     },
     {
       "genre": "poetry",
       "human": 3561,
       "ai": 3383,
-      "accuracy": 0.9578052995391705,
-      "roc_auc": 0.9907802139029886,
+      "accuracy": 0.9596774193548387,
+      "roc_auc": 0.9892764614323247,
       "detector_roc_auc": 0.487962965960516
     },
     {
       "genre": "question",
       "human": 1932,
       "ai": 5894,
-      "accuracy": 0.9723996933299259,
-      "roc_auc": 0.9951432344082938,
+      "accuracy": 0.9686940966010733,
+      "roc_auc": 0.9943497124141405,
       "detector_roc_auc": 0.7293824350973479
     },
     {
       "genre": "review",
       "human": 2678,
       "ai": 4019,
-      "accuracy": 0.9743168582947589,
-      "roc_auc": 0.9954108945912441,
+      "accuracy": 0.9787964760340451,
+      "roc_auc": 0.9950051947052843,
       "detector_roc_auc": 0.638441079257396
     },
     {
@@ -190,15 +190,15 @@
       "human": 450,
       "ai": 3000,
       "accuracy": 0.9408695652173913,
-      "roc_auc": 0.9849874074074074,
+      "roc_auc": 0.9889896296296297,
       "detector_roc_auc": 0.5558255555555556
     },
     {
       "genre": "story",
       "human": 2978,
       "ai": 3768,
-      "accuracy": 0.9667951378594722,
-      "roc_auc": 0.9947713700897879,
+      "accuracy": 0.9728728135191225,
+      "roc_auc": 0.9945693400578054,
       "detector_roc_auc": 0.570456035341977
     }
   ],
@@ -206,100 +206,100 @@
     {
       "bucket": "0–49",
       "n": 14742,
-      "accuracy": 0.9417989417989417,
-      "roc_auc": 0.9858794866882328
+      "accuracy": 0.940238773572107,
+      "roc_auc": 0.9847074487683024
     },
     {
       "bucket": "50–149",
       "n": 17766,
-      "accuracy": 0.9621186536080153,
-      "roc_auc": 0.9934319648614653
+      "accuracy": 0.9631881121242823,
+      "roc_auc": 0.9937002478797186
     },
     {
       "bucket": "150–399",
       "n": 16327,
-      "accuracy": 0.9792980951797636,
-      "roc_auc": 0.9969559446848373
+      "accuracy": 0.9805843082011392,
+      "roc_auc": 0.9968998285413831
     },
     {
       "bucket": "400 и больше",
       "n": 3686,
-      "accuracy": 0.9655453065653825,
-      "roc_auc": 0.9872154828586431
+      "accuracy": 0.9820944112859469,
+      "roc_auc": 0.9878625034382736
     }
   ],
   "prompt_types": [
     {
       "prompt_type": "create",
       "n": 14064,
-      "recall": 0.969212172923777
+      "recall": 0.9637372013651877
     },
     {
       "prompt_type": "delete",
       "n": 5966,
-      "recall": 0.9358028830036875
+      "recall": 0.934126718069058
     },
     {
       "prompt_type": "expand",
       "n": 4850,
-      "recall": 0.9806185567010309
+      "recall": 0.9785567010309278
     },
     {
       "prompt_type": "update",
       "n": 6224,
-      "recall": 0.9749357326478149
+      "recall": 0.9701156812339332
     }
   ],
   "generators": [
     {
       "model": "gpt-3.5",
       "n": 4772,
-      "recall": 0.9809304274937133
+      "recall": 0.9769488683989941
     },
     {
       "model": "gpt-4o",
       "n": 3884,
-      "recall": 0.9812049433573635
+      "recall": 0.9757981462409887
     },
     {
       "model": "databricks/dbrx-instruct",
       "n": 1513,
-      "recall": 0.9471249173826835
+      "recall": 0.9405155320555189
     },
     {
       "model": "google/gemma-2-27b-it",
       "n": 1498,
-      "recall": 0.9846461949265688
+      "recall": 0.9779706275033377
     },
     {
       "model": "01-ai/Yi-1.5-34B-Chat",
       "n": 1472,
-      "recall": 0.967391304347826
+      "recall": 0.9626358695652174
     },
     {
       "model": "yandex/YandexGPT-5-Lite-8B-instruct",
       "n": 1469,
-      "recall": 0.9305650102110279
+      "recall": 0.9360108917631041
     },
     {
       "model": "CohereForAI/c4ai-command-r-08-2024",
       "n": 1461,
-      "recall": 0.9890485968514716
+      "recall": 0.9917864476386037
     },
     {
       "model": "unsloth/Llama-3.3-70B-Instruct",
       "n": 1452,
-      "recall": 0.9634986225895317
+      "recall": 0.9628099173553719
     },
     {
       "model": "Qwen/Qwen2.5-72B-Instruct",
       "n": 1449,
-      "recall": 0.9730848861283644
+      "recall": 0.9696342305037957
     },
     {
       "model": "mistralai/Ministral-8B-Instruct-2410",
       "n": 1396,
-      "recall": 0.921919770773639
+      "recall": 0.9197707736389685
     },
     {
       "model": "Qwen/QwQ-32B",
@@ -309,262 +309,259 @@
     {
       "model": "GigaChat-Max",
       "n": 1266,
-      "recall": 0.9715639810426541
+      "recall": 0.9739336492890995
     },
     {
       "model": "gigachat",
       "n": 1181,
-      "recall": 0.9407281964436918
+      "recall": 0.9288738357324301
     },
     {
       "model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
       "n": 942,
-      "recall": 0.9639065817409767
+      "recall": 0.9660297239915074
     },
     {
       "model": "WizardLM-2-7B",
       "n": 891,
-      "recall": 0.9921436588103255
+      "recall": 0.9887766554433222
     }
   ],
   "variants": {
     "torch": {
       "valid": {
-        "roc_auc": 0.9934829835715274,
-        "accuracy": 0.9629927432810018,
-        "logloss": 0.13319756090641022
+        "roc_auc": 0.9934360169242349,
+        "accuracy": 0.9642390495909301,
+        "logloss": 0.11790743470191956
       },
       "test": {
-        "roc_auc": 0.9930447329889759,
-        "accuracy": 0.9620151939224311,
-        "logloss": 0.137311652302742
+        "roc_auc": 0.9929629268752315,
+        "accuracy": 0.9635764741722359,
+        "logloss": 0.12132474035024643
       }
     },
     "onnx_fp32": {
       "valid": {
-        "roc_auc": 0.9934840694329783,
-        "accuracy": 0.9629927432810018,
-        "logloss": 0.13318558037281036
+        "roc_auc": 0.9934352843654303,
+        "accuracy": 0.9641988461615776,
+        "logloss": 0.1180189698934555
       },
       "test": {
-        "roc_auc": 0.9930446121461145,
-        "accuracy": 0.9619961539193846,
-        "logloss": 0.13729938864707947
+        "roc_auc": 0.9929633209280407,
+        "accuracy": 0.9634812741570039,
+        "logloss": 0.1213393583893776
       }
     },
     "onnx_int8": {
       "valid": {
-        "roc_auc": 0.9926439207632249,
-        "accuracy": 0.9589522986310732,
-        "logloss": 0.1453045755624771
+        "roc_auc": 0.9932375813952368,
+        "accuracy": 0.9635555912919372,
+        "logloss": 0.12143813073635101
       }
     }
   },
   "long_texts": {
     "rule": "head",
     "valid": {
-      "texts": 6487,
+      "texts": 48,
       "head": {
-        "roc_auc": 0.9902435420028454,
-        "accuracy": 0.9711731154616926,
-        "logloss": 0.12094990909099579
+        "roc_auc": 1.0,
+        "accuracy": 1.0,
+        "logloss": 0.0014254710404202342
       },
       "mean_of_windows": {
-        "roc_auc": 0.9879589247334545,
-        "accuracy": 0.9707106520733775,
-        "logloss": 0.12949081505023338
+        "roc_auc": 1.0,
+        "accuracy": 0.9583333333333334,
+        "logloss": 0.061182916216805515
       }
     },
     "test": {
-      "texts": 7080,
+      "texts": 63,
       "head": {
-        "roc_auc": 0.9913701587518089,
-        "accuracy": 0.9668079096045198,
-        "logloss": 0.13042311370372772
+        "roc_auc": 0.9875,
+        "accuracy": 0.9682539682539683,
+        "logloss": 0.16120830178260803
       },
       "mean_of_windows": {
-        "roc_auc": 0.988072281196787,
-        "accuracy": 0.9686440677966102,
-        "logloss": 0.138556811088151
+        "roc_auc": 0.9597222222222223,
+        "accuracy": 0.9841269841269841,
+        "logloss": 0.14006588615115803
       }
     }
   },
   "parity": {
     "fp32": {
       "texts": 300,
-      "max_abs_diff": 2.3245811462402344e-06,
-      "mean_abs_diff": 4.7362956223651054e-08,
+      "max_abs_diff": 9.98377799987793e-07,
+      "mean_abs_diff": 1.8510775134927826e-08,
       "same_label": 1.0
     },
     "int8": {
       "texts": 300,
-      "max_abs_diff": 0.9275221824645996,
-      "mean_abs_diff": 0.0152114387601614,
-      "same_label": 0.9833333333333333
+      "max_abs_diff": 0.832044780254364,
+      "mean_abs_diff": 0.012914516031742096,
+      "same_label": 0.99
     },
-    "spec_vs_batch_max_abs_diff": 6.556510925292969e-07,
+    "spec_vs_batch_max_abs_diff": 5.960464477539062e-07,
     "spec_vs_eval": {
       "texts": 300,
-      "max_abs_diff": 9.5367431640625e-07,
-      "mean_abs_diff": 4.036992322653532e-09
+      "max_abs_diff": 1.3709068298339844e-06,
+      "mean_abs_diff": 1.8069082822573062e-08
     }
   },
   "sizes_mb": {
-    "onnx_fp32": 139.591026,
-    "onnx_int8": 36.10556,
+    "onnx_fp32": 139.725104,
+    "onnx_int8": 36.257998,
     "safetensors": 138.168024,
-    "tokenizer": 4.753673
+    "tokenizer": 4.753672
   },
   "latency": [
     {
       "runtime": "onnxruntime fp32",
       "tokens": 128,
       "threads": 1,
-      "ms": 54.75258349906653
+      "ms": 57.6282295078272
     },
     {
       "runtime": "onnxruntime int8",
       "tokens": 128,
       "threads": 1,
-      "ms": 25.43858349963557
+      "ms": 27.86927048873622
     },
     {
       "runtime": "torch fp32",
       "tokens": 128,
       "threads": 1,
-      "ms": 12.986270492547192
+      "ms": 16.806250001536682
     },
     {
       "runtime": "onnxruntime fp32",
       "tokens": 128,
       "threads": 8,
-      "ms": 28.984979493543506
+      "ms": 43.54381249868311
     },
     {
       "runtime": "onnxruntime int8",
       "tokens": 128,
       "threads": 8,
-      "ms": 18.942520502605475
+      "ms": 23.145416504121386
     },
     {
       "runtime": "torch fp32",
       "tokens": 128,
       "threads": 8,
-      "ms": 15.621770508005284
+      "ms": 17.98864599550143
     },
     {
       "runtime": "onnxruntime fp32",
       "tokens": 512,
       "threads": 1,
-      "ms": 272.80241700646
+      "ms": 207.21797899750527
     },
     {
       "runtime": "onnxruntime int8",
       "tokens": 512,
       "threads": 1,
-      "ms": 161.54695849400014
+      "ms": 107.84058349963743
     },
     {
       "runtime": "torch fp32",
       "tokens": 512,
       "threads": 1,
-      "ms": 67.86585399822798
+      "ms": 70.8636040071724
     },
     {
       "runtime": "onnxruntime fp32",
       "tokens": 512,
       "threads": 8,
-      "ms": 122.2078955033794
+      "ms": 99.8650209949119
     },
     {
       "runtime": "onnxruntime int8",
       "tokens": 512,
       "threads": 8,
-      "ms": 90.09389550192282
+      "ms": 64.33512500370853
     },
     {
       "runtime": "torch fp32",
       "tokens": 512,
       "threads": 8,
-      "ms": 46.03933299949858
+      "ms": 48.28912501398008
+    },
+    {
+      "runtime": "onnxruntime fp32",
+      "tokens": 2048,
+      "threads": 1,
+      "ms": 1081.600208999589
+    },
+    {
+      "runtime": "onnxruntime int8",
+      "tokens": 2048,
+      "threads": 1,
+      "ms": 641.1220625013812
+    },
+    {
+      "runtime": "torch fp32",
+      "tokens": 2048,
+      "threads": 1,
+      "ms": 632.6661460188916
+    },
+    {
+      "runtime": "onnxruntime fp32",
+      "tokens": 2048,
+      "threads": 8,
+      "ms": 426.99045849440154
+    },
+    {
+      "runtime": "onnxruntime int8",
+      "tokens": 2048,
+      "threads": 8,
+      "ms": 320.51266651251353
+    },
+    {
+      "runtime": "torch fp32",
+      "tokens": 2048,
+      "threads": 8,
+      "ms": 284.5920205145376
+    },
+    {
+      "runtime": "onnxruntime fp32",
+      "tokens": 8192,
+      "threads": 1,
+      "ms": 7851.435165997827
+    },
+    {
+      "runtime": "onnxruntime int8",
+      "tokens": 8192,
+      "threads": 1,
+      "ms": 6061.569709010655
+    },
+    {
+      "runtime": "torch fp32",
+      "tokens": 8192,
+      "threads": 1,
+      "ms": 8664.13695801748
+    },
+    {
+      "runtime": "onnxruntime fp32",
+      "tokens": 8192,
+      "threads": 8,
+      "ms": 2966.6128329990897
+    },
+    {
+      "runtime": "onnxruntime int8",
+      "tokens": 8192,
+      "threads": 8,
+      "ms": 2611.34575001779
+    },
+    {
+      "runtime": "torch fp32",
+      "tokens": 8192,
+      "threads": 8,
+      "ms": 3106.5652500255965
     }
   ],
   "latency_cpu": "Apple M1, 8 ядер",
-  "latency_x86": [
-    {
-      "runtime": "onnxruntime fp32",
-      "tokens": 128,
-      "threads": 1,
-      "ms": 52.30920550002338
-    },
-    {
-      "runtime": "onnxruntime int8",
-      "tokens": 128,
-      "threads": 1,
-      "ms": 43.72683349993167
-    },
-    {
-      "runtime": "torch fp32",
-      "tokens": 128,
-      "threads": 1,
-      "ms": 66.35717900098825
-    },
-    {
-      "runtime": "onnxruntime fp32",
-      "tokens": 128,
-      "threads": 2,
-      "ms": 51.68785050045699
-    },
-    {
-      "runtime": "onnxruntime int8",
-      "tokens": 128,
-      "threads": 2,
-      "ms": 44.948654000108945
-    },
-    {
-      "runtime": "torch fp32",
-      "tokens": 128,
-      "threads": 2,
-      "ms": 82.18846349973319
-    },
-    {
-      "runtime": "onnxruntime fp32",
-      "tokens": 512,
-      "threads": 1,
-      "ms": 367.9343545009033
-    },
-    {
-      "runtime": "onnxruntime int8",
-      "tokens": 512,
-      "threads": 1,
-      "ms": 318.20318950030924
-    },
-    {
-      "runtime": "torch fp32",
-      "tokens": 512,
-      "threads": 1,
-      "ms": 269.729035500859
-    },
-    {
-      "runtime": "onnxruntime fp32",
-      "tokens": 512,
-      "threads": 2,
-      "ms": 334.546253499866
-    },
-    {
-      "runtime": "onnxruntime int8",
-      "tokens": 512,
-      "threads": 2,
-      "ms": 309.20788050025294
-    },
-    {
-      "runtime": "torch fp32",
-      "tokens": 512,
-      "threads": 2,
-      "ms": 265.5085220003457
-    }
-  ],
-  "latency_x86_cpu": "Intel(R) Xeon(R) CPU @ 2.00GHz, 2 ядра",
   "install": [
     {
       "stack": "onnxruntime + tokenizers",
@@ -664,58 +661,67 @@
   ],
   "curve": [
     {
-      "step": 3718,
+      "step": 4301,
       "epoch": 0.5,
-      "train_loss": 0.27691375082954883,
-      "roc_auc": 0.9879982011034829,
-      "accuracy": 0.945423844653949,
-      "logloss": 0.14176572859287262,
-      "seconds": 654.7797912579999
+      "train_loss": 0.2778028360631882,
+      "roc_auc": 0.9890661412358639,
+      "accuracy": 0.9471525921161075,
+      "logloss": 0.1498522162437439,
+      "seconds": 154.09650534950197
     },
     {
-      "step": 7436,
+      "step": 8602,
       "epoch": 1.0,
-      "train_loss": 0.13707147609212522,
-      "roc_auc": 0.9912518421970213,
-      "accuracy": 0.9432930628982652,
-      "logloss": 0.15911926329135895,
-      "seconds": 1294.2572995310002
+      "train_loss": 0.134563360147898,
+      "roc_auc": 0.9916175807616361,
+      "accuracy": 0.9577863991798501,
+      "logloss": 0.11250844597816467,
+      "seconds": 307.44363065063953
     },
     {
-      "step": 11154,
+      "step": 12903,
       "epoch": 1.5,
-      "train_loss": 0.07260895855604577,
-      "roc_auc": 0.992653042166855,
-      "accuracy": 0.9594950449273323,
-      "logloss": 0.12296707928180695,
-      "seconds": 1936.2326214170007
+      "train_loss": 0.07625823586321746,
+      "roc_auc": 0.9925073466857399,
+      "accuracy": 0.9604197238024403,
+      "logloss": 0.13705773651599884,
+      "seconds": 459.82880764454603
     },
     {
-      "step": 14872,
+      "step": 17204,
       "epoch": 2.0,
-      "train_loss": 0.06751013520229338,
-      "roc_auc": 0.9934829835715274,
-      "accuracy": 0.9629927432810018,
-      "logloss": 0.13319756090641022,
-      "seconds": 2579.6598744540006
+      "train_loss": 0.07407129121195817,
+      "roc_auc": 0.9934360169242349,
+      "accuracy": 0.9642390495909301,
+      "logloss": 0.11790743470191956,
+      "seconds": 615.8202384803444
     },
     {
-      "step": 18590,
+      "step": 21505,
       "epoch": 2.5,
-      "train_loss": 0.01973961427759714,
-      "roc_auc": 0.9911007065249204,
-      "accuracy": 0.9569622288781233,
-      "logloss": 0.2384295016527176,
-      "seconds": 3219.929374401
+      "train_loss": 0.03189270804792694,
+      "roc_auc": 0.9923420370472819,
+      "accuracy": 0.9621685729792752,
+      "logloss": 0.20104219019412994,
+      "seconds": 771.5134666264057
     },
     {
-      "step": 22308,
+      "step": 25806,
       "epoch": 3.0,
-      "train_loss": 0.016527434776373612,
-      "roc_auc": 0.9926943107624626,
-      "accuracy": 0.9641385410175488,
-      "logloss": 0.1762077808380127,
-      "seconds": 3862.068140986
+      "train_loss": 0.020121224526161493,
+      "roc_auc": 0.9928203452024718,
+      "accuracy": 0.9645807787404266,
+      "logloss": 0.17584960162639618,
+      "seconds": 924.0887289438397
+    },
+    {
+      "step": 25809,
+      "epoch": 3.0,
+      "train_loss": 0.0005341793100039164,
+      "roc_auc": 0.9928214034359905,
+      "accuracy": 0.9645807787404266,
+      "logloss": 0.17583458125591278,
+      "seconds": 943.2257550284266
     }
   ],
   "pilot": [
@@ -829,12 +835,120 @@
     ],
     "threshold": 0.5,
     "max_length": 512,
-    "max_chars": 98304,
+    "read_length": 8192,
+    "max_chars": 1572864,
     "cls_id": 50281,
     "sep_id": 50282,
     "pad_id": 50283,
     "long_texts": "head",
-    "max_windows": 1
+    "max_windows": 1,
+    "normalize": [
+      {
+        "pattern": "[\\u200b\\u200c\\u200d\\u200e\\u200f\\u2060\\ufeff\\u00ad]",
+        "replacement": "",
+        "why": "невидимые символы и мягкий перенос"
+      },
+      {
+        "pattern": "[\\u00a0\\u2000\\u2001\\u2002\\u2003\\u2004\\u2005\\u2006\\u2007\\u2008\\u2009\\u200a\\u202f\\u205f\\u3000\\t\\r\\f\\v]",
+        "replacement": " ",
+        "why": "неразрывные и прочие пробелы"
+      },
+      {
+        "pattern": "^[ ]*(?:```|~~~).*$",
+        "replacement": "",
+        "why": "ограждения блоков кода"
+      },
+      {
+        "pattern": "^[ ]*(?:[-*_=][ ]*){3,}$",
+        "replacement": "",
+        "why": "горизонтальные линии и подчёркивания заголовков"
+      },
+      {
+        "pattern": "^[ ]*\\|?(?:[ ]*:?-+:?[ ]*\\|)+[ ]*(?::?-+:?)?[ ]*$",
+        "replacement": "",
+        "why": "строка-разделитель таблицы"
+      },
+      {
+        "pattern": "^[ ]*#{1,6}[ ]+",
+        "replacement": "",
+        "why": "решётки заголовков"
+      },
+      {
+        "pattern": "^[ ]*(?:>[ ]?)+",
+        "replacement": "",
+        "why": "цитаты markdown"
+      },
+      {
+        "pattern": "^[ ]*(?:[-*+\\u2022\\u00b7\\u25aa\\u25cf\\u25e6\\u2023\\u2013\\u2014]|\\d{1,3}[.)])[ ]+",
+        "replacement": "",
+        "why": "маркеры и номера списков, тире в начале строки"
+      },
+      {
+        "pattern": "!\\[([^\\]\\n]*)\\]\\([^)\\n]*\\)",
+        "replacement": "\\1",
+        "why": "картинки: остаётся подпись"
+      },
+      {
+        "pattern": "\\[([^\\]\\n]+)\\]\\([^)\\n]*\\)",
+        "replacement": "\\1",
+        "why": "ссылки: остаётся текст ссылки"
+      },
+      {
+        "pattern": "</?[A-Za-z][A-Za-z0-9]*(?:\\s[^<>\\n]*)?/?>",
+        "replacement": " ",
+        "why": "теги HTML"
+      },
+      {
+        "pattern": "\\*+|~~|`+",
+        "replacement": "",
+        "why": "звёздочки, зачёркивание, обратные кавычки"
+      },
+      {
+        "pattern": "(?<!\\w)_+|_+(?!\\w)",
+        "replacement": "",
+        "why": "подчёркивания разметки на краях слов"
+      },
+      {
+        "pattern": "\\|",
+        "replacement": " ",
+        "why": "столбцы таблиц"
+      },
+      {
+        "pattern": "[\\u00ab\\u00bb\\u201e\\u201c\\u201d\\u201f\\u2033]",
+        "replacement": "\"",
+        "why": "двойные кавычки всех видов"
+      },
+      {
+        "pattern": "[\\u2018\\u2019\\u201a\\u201b\\u2032]",
+        "replacement": "'",
+        "why": "апострофы и одинарные кавычки"
+      },
+      {
+        "pattern": "[\\u2010\\u2011\\u2012\\u2013\\u2014\\u2015\\u2212]",
+        "replacement": "-",
+        "why": "тире, минус и типографские дефисы"
+      },
+      {
+        "pattern": "\\u2026",
+        "replacement": "...",
+        "why": "многоточие одним знаком"
+      },
+      {
+        "pattern": "ё",
+        "replacement": "е",
+        "why": "ё"
+      },
+      {
+        "pattern": "Ё",
+        "replacement": "Е",
+        "why": "Ё"
+      },
+      {
+        "pattern": "\\s+",
+        "replacement": " ",
+        "why": "пробелы и переводы строк"
+      }
+    ]
   },
   "lightgbm": {
     "repo": "toiletsandpaper/russian-ai-text-detector-lightgbm",
@@ -1189,6 +1303,7 @@
     }
   ],
   "report_args": {
+    "run": "rumodernbert-small-8k",
     "finalist": [
       "rubert-tiny2",
       "rubert-mini-frida",

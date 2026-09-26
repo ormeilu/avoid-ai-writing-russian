@@ -246,7 +246,7 @@ def test_model_probability_is_only_a_signal():
 def test_long_text_is_read_by_fragments():
     """агент видит, что модель прочитала только начало, проверяет весь текст по фрагментам и знает, сколько ждать"""
     assert "**Длинный текст модель читает не целиком.**" in MAIN
-    for phrase in ("read.truncated", "fragments", "aiLines", "--max-fragments", "125 мс у ModernBERT", "stderr"):
+    for phrase in ("read.truncated", "fragments", "aiLines", "--max-fragments", "70 мс у ModernBERT", "stderr"):
         assert phrase in MAIN, phrase
     # один фрагмент выше порога — слабый признак, подробности в руководстве по моделям
     assert "Один фрагмент выше порога в длинном тексте — слабый признак" in MAIN

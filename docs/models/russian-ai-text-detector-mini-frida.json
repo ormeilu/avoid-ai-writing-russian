@@ -1159,29 +1159,29 @@
       "repo": "toiletsandpaper/russian-ai-text-detector-modernbert",
       "base": "deepvk/RuModernBERT-small",
       "weights": "fp32",
-      "size_mb": 139.591026,
-      "ms_512_1": 272.80241700646,
-      "x86_ms_512_1": 367.9343545009033,
+      "size_mb": 139.725104,
+      "ms_512_1": 207.21797899750527,
+      "x86_ms_512_1": null,
       "test": {
-        "accuracy": 0.9619961539193846,
-        "roc_auc": 0.9930446121461145,
-        "roc_auc_created": 0.9938380246853968,
+        "accuracy": 0.9634812741570039,
+        "roc_auc": 0.9929633209280407,
+        "roc_auc_created": 0.9940339569488116,
         "macro": {
-          "precision": 0.9602547641295368,
-          "recall": 0.9611522159980792,
-          "f1": 0.9606963909846015
+          "precision": 0.960911403849539,
+          "recall": 0.9638965956611426,
+          "f1": 0.9623203371228867
         },
         "classes": {
           "human": {
-            "precision": 0.9505405280007424,
-            "recall": 0.9565765513377223,
-            "f1": 0.9535489876658133,
+            "precision": 0.9454877770162211,
+            "recall": 0.9661483867955363,
+            "f1": 0.9557064338829615,
             "support": 21417
           },
           "ai": {
-            "precision": 0.9699690002583312,
-            "recall": 0.9657278806584362,
-            "f1": 0.9678437943033896,
+            "precision": 0.9763350306828568,
+            "recall": 0.9616448045267489,
+            "f1": 0.9689342403628118,
             "support": 31104
           }
         }
@@ -1189,6 +1189,7 @@
     }
   ],
   "report_args": {
+    "run": "rubert-mini-frida",
     "finalist": [
       "rubert-tiny2",
       "rubert-mini-frida",
@@ -1196,7 +1197,7 @@
     ],
     "related": [
       "rubert-tiny2",
-      "rumodernbert-small"
+      "rumodernbert-small-8k"
     ]
   }
 }

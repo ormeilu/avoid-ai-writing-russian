@@ -1,5 +1,5 @@
 {
-  "created": "2026-09-25",
+  "created": "2026-09-26",
   "measured_on": "Apple M1, 8 ядер",
   "python": "3.14.6",
   "long_text_words": 800,
@@ -20,21 +20,21 @@
       "report": "docs/models/russian-ai-text-detector-modernbert.md",
       "quality": {
         "roc_auc": 0.993,
-        "accuracy": 0.962,
-        "f1_macro": 0.9607,
-        "human_as_ai": 0.0434,
-        "roc_auc_created": 0.9938,
-        "valid_roc_auc": 0.9935,
+        "accuracy": 0.9635,
+        "f1_macro": 0.9623,
+        "human_as_ai": 0.0339,
+        "roc_auc_created": 0.994,
+        "valid_roc_auc": 0.9934,
         "test_texts": 52521
       },
-      "download_mb": 137.7,
+      "download_mb": 137.8,
+      "revision": "7d5e0ffbdf497c0b5edab0faf93e084ddcdfb744",
       "measured": {
-        "load_ms": 187.4,
-        "short_ms": 16.5,
-        "long_ms": 93.4,
-        "ram_mb": 386.9
-      },
-      "revision": "8f2de154feccbe44f52b4e06056d3f7425b95840"
+        "load_ms": 371.0,
+        "short_ms": 18.0,
+        "long_ms": 208.8,
+        "ram_mb": 407.7
+      }
     },
     {
       "name": "transformer",
@@ -56,13 +56,13 @@
         "test_texts": 52521
       },
       "download_mb": 30.7,
+      "revision": "a27cd7459c68b1a19c0ef510c5b16df3123c193c",
       "measured": {
-        "load_ms": 107.0,
-        "short_ms": 1.7,
-        "long_ms": 20.8,
-        "ram_mb": 211.2
-      },
-      "revision": "e804d055227a45540e17fe7f031edf0187956d8c"
+        "load_ms": 244.8,
+        "short_ms": 2.6,
+        "long_ms": 23.4,
+        "ram_mb": 230.2
+      }
     },
     {
       "name": "mini-frida",
@@ -84,13 +84,13 @@
         "test_texts": 52521
       },
       "download_mb": 126.3,
+      "revision": "86ec5c9b900a7f6ea26908218c3cf8064a39d443",
       "measured": {
-        "load_ms": 161.7,
-        "short_ms": 5.8,
-        "long_ms": 56.1,
-        "ram_mb": 504.8
-      },
-      "revision": "656e82bd0bf5cb56f6b0afbf603cc6280d3f94ef"
+        "load_ms": 302.6,
+        "short_ms": 5.9,
+        "long_ms": 60.1,
+        "ram_mb": 524.3
+      }
     },
     {
       "name": "lightgbm",
@@ -112,13 +112,13 @@
         "test_texts": 52521
       },
       "download_mb": 10.0,
+      "revision": "e264cae77d71cdbad171d1fadab9b8e13ff0bbee",
       "measured": {
-        "load_ms": 685.9,
-        "short_ms": 1.5,
-        "long_ms": 11.4,
-        "ram_mb": 186.7
-      },
-      "revision": "6b804542a6d5b99c97b1be8ad1ea4dff65396443"
+        "load_ms": 710.3,
+        "short_ms": 1.7,
+        "long_ms": 11.7,
+        "ram_mb": 186.6
+      }
     }
   ]
 }

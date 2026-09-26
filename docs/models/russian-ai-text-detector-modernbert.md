@@ -9,7 +9,7 @@
 
 Необязательная модель aiw-ru: дообученный энкодер `deepvk/RuModernBERT-small` оценивает
 вероятность, что русский текст написала языковая модель. Пользователь ставит её
-командой `aiw-ru models install modernbert`, после чего `aiw-ru classify --model modernbert текст.md`
+командой `aiw-ru models install modernbert`, после чего `aiw-ru classify текст.md`
 выдаёт вероятность. В поставке ONNX с весами fp32 на $140$ МБ и
 `inference.json`; для вывода нужны onnxruntime и tokenizers, torch не нужен.
 На test ROC AUC $0.993$, у LightGBM на признаках aiw-ru $0.943$,
@@ -19,13 +19,13 @@
 
 | Модель | Людей принято за ИИ | ROC AUC | Accuracy | Файл, МБ | M1, мс | x86, мс |
 | --- | --: | --: | --: | --: | --: | --: |
-| [`modernbert`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-modernbert), эта модель | $4.3\%$ | $0.9930$ | $0.962$ | $140$ | $272.8$ | $367.9$ |
+| [`modernbert`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-modernbert), эта модель | $3.4\%$ | $0.9930$ | $0.963$ | $140$ | $207.2$ | — |
 | [`transformer`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-bert) | $7.2\%$ | $0.9869$ | $0.945$ | $29.7$ | $39.8$ | $101.1$ |
 | [`mini-frida`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-mini-frida) | $9.5\%$ | $0.9909$ | $0.948$ | $130$ | $137.2$ | $216.2$ |
 | [`lightgbm`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-lightgbm) | $16.5\%$ | $0.9431$ | $0.868$ | $10.0$ | — | — |
 
-- `modernbert` (эта модель) — самая точная, но тяжёлая и в несколько раз медленнее: для мощных машин и спорных текстов.
-- `transformer` — почти так же точна, лёгкая и быстрая: выбор по умолчанию.
+- `modernbert` (эта модель) — самая точная: выбор по умолчанию, но тяжелее трансформера и в несколько раз медленнее.
+- `transformer` — почти так же точна, лёгкая и в несколько раз быстрее ModernBERT: для слабой машины.
 - `mini-frida` — ROC AUC выше, чем у трансформера, но при пороге 50 % чаще принимает людей за ИИ; в 4 раза тяжелее и в 3 раза медленнее.
 - `lightgbm` — самая лёгкая, работает и без onnxruntime (Mac на Intel), но заметно менее точна.
 
@@ -56,7 +56,7 @@ FRIDA взята его дистилляция `sergeyzh/rubert-mini-frida`.
 | `cointegrated/rubert-tiny2` | MIT | нет | $29.2$ млн | $0.960$ | $0.898$ | $29.7$ | $40.3$ |
 | `deepvk/RuModernBERT-small` | Apache 2.0 | да | $34.5$ млн | $0.973$ | $0.914$ | $36.1$ | $161.6$ |
 
-На полном train обучены $3$ базы из пилота: самая быстрая, `cointegrated/rubert-tiny2`, самая точная, `deepvk/RuModernBERT-small`, и средняя по обоим, `sergeyzh/rubert-mini-frida`. Все они выпущены как модели aiw-ru: `transformer` ставится по умолчанию и считает быстрее всех, `modernbert` точнее всех, `mini-frida` — промежуточный вариант.
+На полном train обучены $3$ базы из пилота: самая быстрая, `cointegrated/rubert-tiny2`, самая точная, `deepvk/RuModernBERT-small`, и средняя по обоим, `sergeyzh/rubert-mini-frida`. Все они выпущены как модели aiw-ru: `modernbert` точнее всех и ставится по умолчанию, `transformer` считает быстрее всех, `mini-frida` — промежуточный вариант.
 
 ROC AUC и accuracy посчитаны на полном valid у PyTorch, «ROC AUC int8» — у ONNX int8;
 «сменил метку» — доля текстов valid, где int8 и PyTorch расходятся по порогу $0.5$.
@@ -69,7 +69,7 @@ ROC AUC и accuracy посчитаны на полном valid у PyTorch, «ROC
 | `sergeyzh/rubert-mini-frida` | `mini-frida` | $0.9916$ | $0.948$ | $0.9913$ | $0.6\%$ | fp32 | $130$ | $137.2$ | $216.2$ |
 | `deepvk/RuModernBERT-small` | `modernbert` | $0.9935$ | $0.963$ | $0.9926$ | $1.1\%$ | fp32 | $140$ | $272.8$ | $367.9$ |
 
-RuModernBERT-small — самая точная из трёх баз, обученных на полном train. Моделью по умолчанию стала tiny2: в int8 она в $4$ раза быстрее. RuModernBERT выпущена отдельно, для тех, кому точность важнее скорости. Квантование ей вредит: int8 меняет ответ у $1.1\%$ текстов valid, и квантование одних матриц весов без таблицы эмбеддингов этого не исправляет. Поэтому в поставке fp32.
+RuModernBERT-small — самая точная из трёх баз, обученных на полном train, и модель aiw-ru по умолчанию. Эта ревизия обучена заново на окне в $8192$ токена вместо $512$: она читает целиком $99.9\%$ текстов test против $86.5\%$ у прежней, а на текстах от $400$ слов её accuracy $0.982$ против $0.966$. Локальное внимание — $\pm 64$ токена, как в исходном ModernBERT; transformers по умолчанию читает окно этой базы как $\pm 128$. На пилотах ($20\,000$ текстов, одна эпоха, два сида) ни длина окна ($512$, $2048$, $8192$), ни ширина локального окна не дали разницы больше разброса между сидами, а при $\pm 64$ локальные слои считают внимание блоками вдвое меньше. Квантование модели вредит: int8 меняет ответ у $1.0\%$ текстов valid. Поэтому в поставке fp32.
 
 ## Данные
 
@@ -81,9 +81,9 @@ RuModernBERT-small — самая точная из трёх баз, обуче�
 Метка «ИИ» стоит на любом тексте с участием модели: написанном с нуля
 (`create`) и на человеческом тексте, который модель правила, сокращала или
 дописывала (`update`, `delete`, `expand`). При обучении от текста длиннее
-$512$ токенов остаётся только начало. Таких в train
-$13.1\%$, в valid $13.0\%$, в test
-$13.5\%$.
+$8192$ токенов остаётся только начало. Таких в train
+$0.1\%$, в valid $0.1\%$, в test
+$0.1\%$.
 
 ## Нормализация
 
@@ -135,64 +135,66 @@ ROC AUC каждой приметы по отдельности на valid: $0.5
 | --- | --: |
 | База | [`deepvk/RuModernBERT-small`](https://huggingface.co/deepvk/RuModernBERT-small), ревизия `06d09cc59b2c` |
 | Параметров | $34.5$ млн |
-| Устройство | Tesla T4, `cuda` |
-| Точность | `fp16`, GPU без bf16 (T4): fp16 с масштабированием потерь (GradScaler) |
+| Устройство | NVIDIA GeForce RTX 4090, `cuda` |
+| Точность | `bf16`, GPU умеет bf16: диапазон как у fp32, масштабировать потери не нужно |
 | Эпох | не больше $3$, лучшая проверка на эпохе $2.00$ |
-| Ранняя остановка | после $3$ проверок без роста ROC AUC на valid, не понадобилась |
+| Ранняя остановка | после $3$ проверок без роста ROC AUC на valid, сработала |
 | Проверок на valid за эпоху | $2$ |
 | Оптимизатор | AdamW, скорость `0.0001`, разогрев $6.0\%$ шагов, линейный спад |
 | Затухание весов, клиппинг градиента | `0.01`, `1` |
-| Пачка | $32$ текста близкой длины |
-| `max_length` | $512$ токенов |
+| Пачка | $32$ текста близкой длины, лимит пачки — $16\,384$ токена |
+| `max_length` | $8192$ токена |
+| Локальное окно внимания | ±$64$ токена |
 | `seed` | $1$ |
-| Время обучения | $64$ мин, $185$ текстов в секунду |
+| Время обучения | $16$ мин, $742$ текста в секунду |
 | Файл модели | `model.onnx`, веса fp32, $140$ МБ |
-| Обучено | 2026-09-25, коммит `60cb897+правки` |
+| Обучено | 2026-09-26, коммит `5cd5f2d` |
 
 Проверки на valid по ходу обучения:
 
 | Шаг | Эпоха | loss train | ROC AUC valid | Accuracy valid | logloss valid |
 | --- | --: | --: | --: | --: | --: |
-| $3718$ | $0.50$ | $0.2769$ | $0.9880$ | $0.945$ | $0.1418$ |
-| $7436$ | $1.00$ | $0.1371$ | $0.9913$ | $0.943$ | $0.1591$ |
-| $11\,154$ | $1.50$ | $0.0726$ | $0.9927$ | $0.959$ | $0.1230$ |
-| $14\,872$ | $2.00$ | $0.0675$ | $0.9935$ | $0.963$ | $0.1332$ |
-| $18\,590$ | $2.50$ | $0.0197$ | $0.9911$ | $0.957$ | $0.2384$ |
-| $22\,308$ | $3.00$ | $0.0165$ | $0.9927$ | $0.964$ | $0.1762$ |
+| $4301$ | $0.50$ | $0.2778$ | $0.9891$ | $0.947$ | $0.1499$ |
+| $8602$ | $1.00$ | $0.1346$ | $0.9916$ | $0.958$ | $0.1125$ |
+| $12\,903$ | $1.50$ | $0.0763$ | $0.9925$ | $0.960$ | $0.1371$ |
+| $17\,204$ | $2.00$ | $0.0741$ | $0.9934$ | $0.964$ | $0.1179$ |
+| $21\,505$ | $2.50$ | $0.0319$ | $0.9923$ | $0.962$ | $0.2010$ |
+| $25\,806$ | $3.00$ | $0.0201$ | $0.9928$ | $0.965$ | $0.1758$ |
+| $25\,809$ | $3.00$ | $0.0005$ | $0.9928$ | $0.965$ | $0.1758$ |
 
 ## Результаты на test
 
-Текст считается написанным ИИ, если вероятность не меньше $0.5$. Текст длиннее $512$ токенов модель читает только до этой границы: среднее по окнам на valid не точнее.
+Текст считается написанным ИИ, если вероятность не меньше $0.5$. Текст длиннее $8192$ токенов модель читает только до этой границы: среднее по окнам на valid не точнее. `aiw-ru classify` вдобавок проверяет длинный текст фрагментами по $512$ токенов: на окне целиком ИИ-вставка тонет в человеческом тексте.
 
 | Класс | Precision | Recall | F1 | Текстов |
 | --- | --: | --: | --: | --: |
-| люди | $0.951$ | $0.957$ | $0.954$ | $21\,417$ |
-| ИИ | $0.970$ | $0.966$ | $0.968$ | $31\,104$ |
-| accuracy |  |  | $0.962$ | $52\,521$ |
-| среднее по классам | $0.960$ | $0.961$ | $0.961$ | $52\,521$ |
+| люди | $0.945$ | $0.966$ | $0.956$ | $21\,417$ |
+| ИИ | $0.976$ | $0.962$ | $0.969$ | $31\,104$ |
+| accuracy |  |  | $0.963$ | $52\,521$ |
+| среднее по классам | $0.961$ | $0.964$ | $0.962$ | $52\,521$ |
 
 | На test | Эта модель | `mini-frida` | `transformer` | LightGBM | Правила aiw-ru |
 | --- | --: | --: | --: | --: | --: |
-| Accuracy | $0.962$ | $0.948$ | $0.945$ | $0.868$ | $0.503$ |
+| Accuracy | $0.963$ | $0.948$ | $0.945$ | $0.868$ | $0.503$ |
 | ROC AUC | $0.993$ | $0.991$ | $0.987$ | $0.943$ | $0.615$ |
 | ROC AUC, люди против текстов с нуля | $0.994$ | $0.992$ | $0.989$ | $0.946$ | $0.597$ |
-| F1, среднее по классам | $0.961$ | $0.945$ | $0.943$ | $0.863$ | $0.466$ |
-| Людей принято за ИИ | $4.3\%$ | $9.5\%$ | $7.2\%$ | $16.5\%$ | $5.9\%$ |
+| F1, среднее по классам | $0.962$ | $0.945$ | $0.943$ | $0.863$ | $0.466$ |
+| Людей принято за ИИ | $3.4\%$ | $9.5\%$ | $7.2\%$ | $16.5\%$ | $5.9\%$ |
 
-На valid accuracy $0.963$, ROC AUC $0.993$.
+На valid accuracy $0.964$, ROC AUC $0.993$.
 
 ### По жанрам
 
 | Жанр | Людей | ИИ | Accuracy | ROC AUC | ROC AUC LightGBM | ROC AUC правил |
 | --- | --: | --: | --: | --: | --: | --: |
-| `article` | $5109$ | $5343$ | $0.966$ | $0.995$ | $0.963$ | $0.709$ |
-| `factual` | $1383$ | $2209$ | $0.935$ | $0.984$ | $0.896$ | $0.673$ |
-| `news` | $3326$ | $3488$ | $0.957$ | $0.992$ | $0.890$ | $0.566$ |
-| `poetry` | $3561$ | $3383$ | $0.958$ | $0.991$ | $0.932$ | $0.488$ |
-| `question` | $1932$ | $5894$ | $0.972$ | $0.995$ | $0.951$ | $0.729$ |
-| `review` | $2678$ | $4019$ | $0.974$ | $0.995$ | $0.960$ | $0.638$ |
-| `short_form` | $450$ | $3000$ | $0.941$ | $0.985$ | $0.942$ | $0.556$ |
-| `story` | $2978$ | $3768$ | $0.967$ | $0.995$ | $0.967$ | $0.570$ |
+| `article` | $5109$ | $5343$ | $0.966$ | $0.994$ | $0.963$ | $0.709$ |
+| `factual` | $1383$ | $2209$ | $0.943$ | $0.986$ | $0.896$ | $0.673$ |
+| `news` | $3326$ | $3488$ | $0.955$ | $0.993$ | $0.890$ | $0.566$ |
+| `poetry` | $3561$ | $3383$ | $0.960$ | $0.989$ | $0.932$ | $0.488$ |
+| `question` | $1932$ | $5894$ | $0.969$ | $0.994$ | $0.951$ | $0.729$ |
+| `review` | $2678$ | $4019$ | $0.979$ | $0.995$ | $0.960$ | $0.638$ |
+| `short_form` | $450$ | $3000$ | $0.941$ | $0.989$ | $0.942$ | $0.556$ |
+| `story` | $2978$ | $3768$ | $0.973$ | $0.995$ | $0.967$ | $0.570$ |
 
 ### По длине текста
 
@@ -200,10 +202,10 @@ ROC AUC каждой приметы по отдельности на valid: $0.5
 
 | Слов в тексте | Текстов | Accuracy | ROC AUC | Accuracy LightGBM | ROC AUC LightGBM |
 | --- | --: | --: | --: | --: | --: |
-| $0\text{–}49$ | $14\,742$ | $0.942$ | $0.986$ | $0.819$ | $0.902$ |
-| $50\text{–}149$ | $17\,766$ | $0.962$ | $0.993$ | $0.849$ | $0.924$ |
-| $150\text{–}399$ | $16\,327$ | $0.979$ | $0.997$ | $0.913$ | $0.968$ |
-| $400$ и больше | $3686$ | $0.966$ | $0.987$ | $0.952$ | $0.970$ |
+| $0\text{–}49$ | $14\,742$ | $0.940$ | $0.985$ | $0.819$ | $0.902$ |
+| $50\text{–}149$ | $17\,766$ | $0.963$ | $0.994$ | $0.849$ | $0.924$ |
+| $150\text{–}399$ | $16\,327$ | $0.981$ | $0.997$ | $0.913$ | $0.968$ |
+| $400$ и больше | $3686$ | $0.982$ | $0.988$ | $0.952$ | $0.970$ |
 
 ### По типу задания генератору
 
@@ -212,10 +214,10 @@ ROC AUC каждой приметы по отдельности на valid: $0.5
 
 | Задание генератору | ИИ-текстов | Recall | Recall LightGBM |
 | --- | --: | --: | --: |
-| `create` | $14\,064$ | $0.969$ | $0.899$ |
-| `delete` | $5966$ | $0.936$ | $0.812$ |
-| `expand` | $4850$ | $0.981$ | $0.945$ |
-| `update` | $6224$ | $0.975$ | $0.903$ |
+| `create` | $14\,064$ | $0.964$ | $0.899$ |
+| `delete` | $5966$ | $0.934$ | $0.812$ |
+| `expand` | $4850$ | $0.979$ | $0.945$ |
+| `update` | $6224$ | $0.970$ | $0.903$ |
 
 ### По моделям-генераторам
 
@@ -223,21 +225,21 @@ ROC AUC каждой приметы по отдельности на valid: $0.5
 
 | Модель-генератор | Текстов в test | Recall | Recall LightGBM |
 | --- | --: | --: | --: |
-| `gpt-3.5` | $4772$ | $0.981$ | $0.929$ |
-| `gpt-4o` | $3884$ | $0.981$ | $0.908$ |
-| `databricks/dbrx-instruct` | $1513$ | $0.947$ | $0.859$ |
-| `google/gemma-2-27b-it` | $1498$ | $0.985$ | $0.888$ |
-| `01-ai/Yi-1.5-34B-Chat` | $1472$ | $0.967$ | $0.898$ |
-| `yandex/YandexGPT-5-Lite-8B-instruct` | $1469$ | $0.931$ | $0.853$ |
-| `CohereForAI/c4ai-command-r-08-2024` | $1461$ | $0.989$ | $0.951$ |
+| `gpt-3.5` | $4772$ | $0.977$ | $0.929$ |
+| `gpt-4o` | $3884$ | $0.976$ | $0.908$ |
+| `databricks/dbrx-instruct` | $1513$ | $0.941$ | $0.859$ |
+| `google/gemma-2-27b-it` | $1498$ | $0.978$ | $0.888$ |
+| `01-ai/Yi-1.5-34B-Chat` | $1472$ | $0.963$ | $0.898$ |
+| `yandex/YandexGPT-5-Lite-8B-instruct` | $1469$ | $0.936$ | $0.853$ |
+| `CohereForAI/c4ai-command-r-08-2024` | $1461$ | $0.992$ | $0.951$ |
 | `unsloth/Llama-3.3-70B-Instruct` | $1452$ | $0.963$ | $0.915$ |
-| `Qwen/Qwen2.5-72B-Instruct` | $1449$ | $0.973$ | $0.887$ |
-| `mistralai/Ministral-8B-Instruct-2410` | $1396$ | $0.922$ | $0.829$ |
+| `Qwen/Qwen2.5-72B-Instruct` | $1449$ | $0.970$ | $0.887$ |
+| `mistralai/Ministral-8B-Instruct-2410` | $1396$ | $0.920$ | $0.829$ |
 | `Qwen/QwQ-32B` | $1386$ | $0.980$ | $0.885$ |
-| `GigaChat-Max` | $1266$ | $0.972$ | $0.931$ |
-| `gigachat` | $1181$ | $0.941$ | $0.831$ |
-| `deepseek-ai/DeepSeek-R1-Distill-Qwen-32B` | $942$ | $0.964$ | $0.869$ |
-| `WizardLM-2-7B` | $891$ | $0.992$ | $0.926$ |
+| `GigaChat-Max` | $1266$ | $0.974$ | $0.931$ |
+| `gigachat` | $1181$ | $0.929$ | $0.831$ |
+| `deepseek-ai/DeepSeek-R1-Distill-Qwen-32B` | $942$ | $0.966$ | $0.869$ |
+| `WizardLM-2-7B` | $891$ | $0.989$ | $0.926$ |
 
 ### Детектор без модели
 
@@ -252,44 +254,35 @@ ROC AUC каждой приметы по отдельности на valid: $0.5
 
 ## Вывод на CPU
 
-Ниже варианты одной и той же модели. int8 идёт в поставку, если на valid теряет не больше $0.002$ ROC AUC и меняет ответ не больше чем у $0.5\%$ текстов; test в этом решении не участвует. Здесь в поставке fp32: int8 меняет ответ у $1.1\%$ текстов valid.
+Ниже варианты одной и той же модели. int8 идёт в поставку, если на valid теряет не больше $0.002$ ROC AUC и меняет ответ не больше чем у $0.5\%$ текстов; test в этом решении не участвует. Здесь в поставке fp32: int8 меняет ответ у $1.0\%$ текстов valid.
 
 | Вариант | ROC AUC valid | Accuracy valid |
 | --- | --: | --: |
-| PyTorch на GPU | $0.9935$ | $0.9630$ |
-| ONNX fp32 на CPU | $0.9935$ | $0.9630$ |
-| ONNX int8 на CPU | $0.9926$ | $0.9590$ |
+| PyTorch на GPU | $0.9934$ | $0.9642$ |
+| ONNX fp32 на CPU | $0.9934$ | $0.9642$ |
+| ONNX int8 на CPU | $0.9932$ | $0.9636$ |
 
 Варианты сравнивались только на valid, по нему выбираются веса. На test посчитан только вариант из поставки, ONNX fp32.
 
 Сверка с PyTorch на $300$ текстах valid: у ONNX fp32 наибольшая
-разница вероятностей $2.3\cdot 10^{-6}$, у int8 $0.928$,
-метки int8 совпадают у $98.3\%$ текстов. Вывод по `inference.json`, текст за текстом, как в aiw-ru, расходится с итоговыми вероятностями оценки на $300$ текстах valid не больше чем на $9.5\cdot 10^{-7}$.
+разница вероятностей $1.0\cdot 10^{-6}$, у int8 $0.832$,
+метки int8 совпадают у $99.0\%$ текстов. Вывод по `inference.json`, текст за текстом, как в aiw-ru, расходится с итоговыми вероятностями оценки на $300$ текстах valid не больше чем на $1.4\cdot 10^{-6}$.
 
 Правило для длинных текстов выбрано по valid, в test таких текстов
-$7080$:
+$63$:
 
 | Правило | ROC AUC valid | Accuracy valid | ROC AUC test | Accuracy test |
 | --- | --: | --: | --: | --: |
-| начало текста | $0.990$ | $0.971$ | $0.991$ | $0.967$ |
-| среднее по окнам | $0.988$ | $0.971$ | $0.988$ | $0.969$ |
+| начало текста | $1.000$ | $1.000$ | $0.988$ | $0.968$ |
+| среднее по окнам | $1.000$ | $0.958$ | $0.960$ | $0.984$ |
 
-Задержка на один текст в миллисекундах, медиана $30$ прогонов, Apple M1, 8 ядер:
+Задержка на один текст в миллисекундах, медиана $30$ прогонов, у вызовов дольше секунды $5$, Apple M1, 8 ядер:
 
-| Среда | 128 токенов, потоков: 1 | 128 токенов, потоков: 8 | 512 токенов, потоков: 1 | 512 токенов, потоков: 8 |
-| --- | --: | --: | --: | --: |
-| onnxruntime fp32 | $54.8$ | $29.0$ | $272.8$ | $122.2$ |
-| onnxruntime int8 | $25.4$ | $18.9$ | $161.5$ | $90.1$ |
-| torch fp32 | $13.0$ | $15.6$ | $67.9$ | $46.0$ |
-
-На двух ядрах виртуальной машины Colab, это ближе к слабому ноутбуку на x86,
-Intel(R) Xeon(R) CPU @ 2.00GHz, 2 ядра:
-
-| Среда | 128 токенов, потоков: 1 | 128 токенов, потоков: 2 | 512 токенов, потоков: 1 | 512 токенов, потоков: 2 |
-| --- | --: | --: | --: | --: |
-| onnxruntime fp32 | $52.3$ | $51.7$ | $367.9$ | $334.5$ |
-| onnxruntime int8 | $43.7$ | $44.9$ | $318.2$ | $309.2$ |
-| torch fp32 | $66.4$ | $82.2$ | $269.7$ | $265.5$ |
+| Среда | 128 токенов, потоков: 1 | 128 токенов, потоков: 8 | 512 токенов, потоков: 1 | 512 токенов, потоков: 8 | 2048 токенов, потоков: 1 | 2048 токенов, потоков: 8 | 8192 токена, потоков: 1 | 8192 токена, потоков: 8 |
+| --- | --: | --: | --: | --: | --: | --: | --: | --: |
+| onnxruntime fp32 | $57.6$ | $43.5$ | $207.2$ | $99.9$ | $1081.6$ | $427.0$ | $7851.4$ | $2966.6$ |
+| onnxruntime int8 | $27.9$ | $23.1$ | $107.8$ | $64.3$ | $641.1$ | $320.5$ | $6061.6$ | $2611.3$ |
+| torch fp32 | $16.8$ | $18.0$ | $70.9$ | $48.3$ | $632.7$ | $284.6$ | $8664.1$ | $3106.6$ |
 
 Размер зависимостей вывода после установки через uv для Python 3.12:
 
@@ -306,7 +299,7 @@ Intel(R) Xeon(R) CPU @ 2.00GHz, 2 ядра:
 Размер считается вместе со всеми зависимостями, в том числе numpy и
 huggingface-hub, которые aiw-ru с extra `ml` и так ставит для LightGBM.
 
-На этой машине torch считает быстрее onnxruntime: $67.9$ мс против $272.8$ мс у ONNX fp32 на $512$ токенах в один поток. Но torch с transformers занимает на диске в $5.3\text{–}5.8$ раза больше, а на Linux со сборкой torch под CUDA по умолчанию — $5649$ МБ. aiw-ru ставят и на слабые ноутбуки, поэтому в поставке ONNX: установка лёгкая, а ROC AUC на test совпадает с PyTorch до четвёртого знака.
+На этой машине torch считает быстрее onnxruntime: $70.9$ мс против $207.2$ мс у ONNX fp32 на $512$ токенах в один поток. Но torch с transformers занимает на диске в $5.3\text{–}5.8$ раза больше, а на Linux со сборкой torch под CUDA по умолчанию — $5649$ МБ. aiw-ru ставят и на слабые ноутбуки, поэтому в поставке ONNX: установка лёгкая, а ROC AUC на test совпадает с PyTorch до четвёртого знака.
 
 ## Как пользоваться
 
@@ -315,7 +308,7 @@ huggingface-hub, которые aiw-ru с extra `ml` и так ставит дл
 ```bash
 uv tool install "aiw-ru[ml]"
 aiw-ru models install modernbert
-aiw-ru classify --model modernbert текст.md
+aiw-ru classify текст.md
 ```
 
 Из Python без aiw-ru нужны только onnxruntime, tokenizers и numpy:
@@ -349,9 +342,8 @@ def probability(text: str) -> float:
     for rule in spec["normalize"]:
         text = re.sub(rule["pattern"], rule["replacement"], text, flags=re.MULTILINE)
     ids = tokenizer.encode(text.strip(), add_special_tokens=False).ids
-    prefix = spec["prefix_ids"] if "prefix_ids" in spec else [spec["cls_id"]]
-    suffix = spec["suffix_ids"] if "suffix_ids" in spec else [spec["sep_id"]]
-    width = spec["max_length"] - len(prefix) - len(suffix)
+    prefix, suffix = [spec["cls_id"]], [spec["sep_id"]]
+    width = spec.get("read_length", spec["max_length"]) - len(prefix) - len(suffix)
     windows = [ids[i : i + width] for i in range(0, max(len(ids), 1), width)][: spec["max_windows"]]
     windows = [[*prefix, *w, *suffix] for w in windows]
     batch = np.full((len(windows), max(map(len, windows))), spec["pad_id"], dtype=np.int64)
@@ -373,69 +365,37 @@ $0.5$ и число окон для длинных текстов.
 
 ## Как воспроизвести
 
-Модель обучена на коммите `60cb897`, к которому `scripts/train_transformer.py` и `scripts/colab_transformer.py` ещё не были закоммичены. Для повтора берите их версию из коммита, в котором появился этот отчёт. Базовая модель — ревизия `06d09cc59b2c4f61cb84e398e96e17aeead5b8b8`, корпус — ревизия
+Модель обучена на коммите `5cd5f2d`. Базовая модель — ревизия `06d09cc59b2c4f61cb84e398e96e17aeead5b8b8`, корпус — ревизия
 `252e21e3dca713bc82bc3c1ef73bf533d7c9fc7e`, её закрепляет `scripts/llmtrace.py`. Окружение:
 
 | Компонент | Версия |
 | --- | --: |
-| python | `3.13.15` |
+| python | `3.12.12` |
 | torch | `2.14.0+cu130` |
 | transformers | `5.17.0` |
 | tokenizers | `0.23.2` |
 | onnxruntime | `1.30.0` |
 | numpy | `2.5.3` |
 | scikit-learn | `1.9.1` |
-| platform | `Linux 6.6.122+, x86_64, 2 ядра` |
+| platform | `Linux, x86_64, 32 ядра` |
 | cuda | `13.0` |
 | device | `cuda` |
-| gpu | `Tesla T4` |
+| gpu | `NVIDIA GeForce RTX 4090` |
 | onnx | `1.23.0` |
-| evaluate_python | `3.14.6` |
-| evaluate_torch | `2.14.0` |
-| evaluate_platform | `Darwin 25.6.0, arm64, 8 ядер` |
 
-Обучение идёт на GPU. В Colab на бесплатной T4 это делает
-`scripts/colab_transformer.py` через официальный Colab CLI (google-colab-cli,
-`colab sessions` должен работать). Корпус скачивается прямо на VM, через ваш
-компьютер идут только исходники и готовая модель:
-
-```bash
-uv run scripts/colab_transformer.py up --gpu T4
-uv run scripts/colab_transformer.py setup
-uv run scripts/colab_transformer.py start --name modernbert --job "train --base deepvk/RuModernBERT-small --epochs 3 --lr 0.0001 --batch 32 --max-length 512 --evals-per-epoch 2 --patience 3"
-uv run scripts/colab_transformer.py status --name modernbert
-uv run scripts/colab_transformer.py fetch /content/data/transformer/runs/rumodernbert-small ~/.cache/aiw-ru/llmtrace/transformer/full
-```
-
-Colab CLI через час после `up` может счесть VM потерянной, когда у него истекает
-токен прокси, и перестать её поддерживать; тогда VM отбирают. Поэтому перед
-каждым вызовом CLI токен обновлялся из ответа Colab, а лучший шаг забирался
-на этот компьютер после каждой проверки на valid.
-
-Задержка на x86 меряется на CPU той же VM, после обучения, пока GPU свободен:
-
-```bash
-uv run scripts/colab_transformer.py start --name x86 --job "export /content/data/transformer/runs/rumodernbert-small --json export-x86.json"
-uv run scripts/colab_transformer.py fetch /content/data/transformer/runs/rumodernbert-small/export-x86.json ~/.cache/aiw-ru/llmtrace/transformer/full/rumodernbert-small
-uv run scripts/colab_transformer.py down
-```
-
-Локально на CUDA или MPS вместо Colab:
+Модель обучена на NVIDIA GeForce RTX 4090, `bf16`. На той же машине считались ONNX,
+сверка с PyTorch и оценка на valid и test. Задержку в карточке мерил `export`
+на M1 в копии папки запуска с ключом `--json export-latency.json`: файл
+кладётся в папку запуска, и `report` берёт задержку из него. Абзац о выборе базы передаётся ключом `--why`, его текст приведён в этом отчёте.
 
 ```bash
 uv run --group train scripts/llmtrace.py fetch --set classification --split train
 uv run --group train scripts/llmtrace.py fetch --set classification --split valid
 uv run --group train scripts/llmtrace.py fetch --set classification --split test
-uv run --group train --group transformer scripts/train_transformer.py train --base deepvk/RuModernBERT-small --epochs 3 --lr 0.0001 --batch 32 --max-length 512 --evals-per-epoch 2 --patience 3
-```
-
-Дальше на своём CPU: ONNX и сверка с PyTorch, задержка, оценка на valid и test,
-карточка и этот отчёт. Абзац о выборе базы передаётся ключом `--why`, его текст приведён в этом отчёте.
-
-```bash
-uv run --group train --group transformer scripts/train_transformer.py export ~/.cache/aiw-ru/llmtrace/transformer/full/rumodernbert-small
-uv run --group train --group transformer scripts/train_transformer.py evaluate ~/.cache/aiw-ru/llmtrace/transformer/full/rumodernbert-small --int8-valid-only
-uv run --group train --group transformer scripts/train_transformer.py report ~/.cache/aiw-ru/llmtrace/transformer/full/rumodernbert-small --finalist ~/.cache/aiw-ru/llmtrace/transformer/full/rubert-tiny2 --finalist ~/.cache/aiw-ru/llmtrace/transformer/full/rubert-mini-frida --finalist ~/.cache/aiw-ru/llmtrace/transformer/full/rumodernbert-small --related ~/.cache/aiw-ru/llmtrace/transformer/full/rubert-tiny2 --related ~/.cache/aiw-ru/llmtrace/transformer/full/rubert-mini-frida
+uv run --group train --group transformer scripts/train_transformer.py train --base deepvk/RuModernBERT-small --epochs 3 --lr 0.0001 --batch 32 --max-length 8192 --evals-per-epoch 2 --patience 3 --batch-tokens 16384 --sliding-window 64 --out ~/.cache/aiw-ru/llmtrace/transformer/full/rumodernbert-small-8k
+uv run --group train --group transformer scripts/train_transformer.py export ~/.cache/aiw-ru/llmtrace/transformer/full/rumodernbert-small-8k
+uv run --group train --group transformer scripts/train_transformer.py evaluate ~/.cache/aiw-ru/llmtrace/transformer/full/rumodernbert-small-8k --int8-valid-only
+uv run --group train --group transformer scripts/train_transformer.py report ~/.cache/aiw-ru/llmtrace/transformer/full/rumodernbert-small-8k --finalist ~/.cache/aiw-ru/llmtrace/transformer/full/rubert-tiny2 --finalist ~/.cache/aiw-ru/llmtrace/transformer/full/rubert-mini-frida --finalist ~/.cache/aiw-ru/llmtrace/transformer/full/rumodernbert-small --related ~/.cache/aiw-ru/llmtrace/transformer/full/rubert-tiny2 --related ~/.cache/aiw-ru/llmtrace/transformer/full/rubert-mini-frida
 ```
 
 Обучение на GPU не детерминировано до бита, повтор может разойтись в третьем
@@ -447,7 +407,7 @@ uv run --group train --group transformer scripts/train_transformer.py report ~/.
 - Корпус один. На научных статьях, дипломах и диссертациях модель не
   проверялась, а жанры за пределами таблицы по жанрам она не видела.
 - Вероятность — не доказательство авторства. Не используйте модель для
-  решений о людях: на test она принимает за ИИ $4.3\%$ человеческих текстов.
+  решений о людях: на test она принимает за ИИ $3.4\%$ человеческих текстов.
 - Правку человеческого текста моделью распознать труднее, чем текст с нуля,
   см. таблицу по типу задания.
 - Нормализация убирает оформление, но не длину: короткие тексты модель

@@ -19,13 +19,13 @@
 
 | Модель | Людей принято за ИИ | ROC AUC | Accuracy | Файл, МБ | M1, мс | x86, мс |
 | --- | --: | --: | --: | --: | --: | --: |
-| [`modernbert`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-modernbert) | $4.3\%$ | $0.9930$ | $0.962$ | $140$ | $272.8$ | $367.9$ |
+| [`modernbert`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-modernbert) | $3.4\%$ | $0.9930$ | $0.963$ | $140$ | $207.2$ | — |
 | [`transformer`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-bert) | $7.2\%$ | $0.9869$ | $0.945$ | $29.7$ | $39.8$ | $101.1$ |
 | [`mini-frida`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-mini-frida), эта модель | $9.5\%$ | $0.9909$ | $0.948$ | $130$ | $137.2$ | $216.2$ |
 | [`lightgbm`](https://huggingface.co/toiletsandpaper/russian-ai-text-detector-lightgbm) | $16.5\%$ | $0.9431$ | $0.868$ | $10.0$ | — | — |
 
-- `modernbert` — самая точная, но тяжёлая и в несколько раз медленнее: для мощных машин и спорных текстов.
-- `transformer` — почти так же точна, лёгкая и быстрая: выбор по умолчанию.
+- `modernbert` — самая точная: выбор по умолчанию, но тяжелее трансформера и в несколько раз медленнее.
+- `transformer` — почти так же точна, лёгкая и в несколько раз быстрее ModernBERT: для слабой машины.
 - `mini-frida` (эта модель) — ROC AUC выше, чем у трансформера, но при пороге 50 % чаще принимает людей за ИИ; в 4 раза тяжелее и в 3 раза медленнее.
 - `lightgbm` — самая лёгкая, работает и без onnxruntime (Mac на Intel), но заметно менее точна.
 
@@ -56,7 +56,7 @@ FRIDA взята его дистилляция `sergeyzh/rubert-mini-frida`.
 | `cointegrated/rubert-tiny2` | MIT | нет | $29.2$ млн | $0.960$ | $0.898$ | $29.7$ | $40.3$ |
 | `deepvk/RuModernBERT-small` | Apache 2.0 | да | $34.5$ млн | $0.973$ | $0.914$ | $36.1$ | $161.6$ |
 
-На полном train обучены $3$ базы из пилота: самая быстрая, `cointegrated/rubert-tiny2`, самая точная, `deepvk/RuModernBERT-small`, и средняя по обоим, `sergeyzh/rubert-mini-frida`. Все они выпущены как модели aiw-ru: `transformer` ставится по умолчанию и считает быстрее всех, `modernbert` точнее всех, `mini-frida` — промежуточный вариант.
+На полном train обучены $3$ базы из пилота: самая быстрая, `cointegrated/rubert-tiny2`, самая точная, `deepvk/RuModernBERT-small`, и средняя по обоим, `sergeyzh/rubert-mini-frida`. Все они выпущены как модели aiw-ru: `modernbert` точнее всех и ставится по умолчанию, `transformer` считает быстрее всех, `mini-frida` — промежуточный вариант.
 
 ROC AUC и accuracy посчитаны на полном valid у PyTorch, «ROC AUC int8» — у ONNX int8;
 «сменил метку» — доля текстов valid, где int8 и PyTorch расходятся по порогу $0.5$.
@@ -173,11 +173,11 @@ ROC AUC каждой приметы по отдельности на valid: $0.5
 
 | На test | Эта модель | `modernbert` | `transformer` | LightGBM | Правила aiw-ru |
 | --- | --: | --: | --: | --: | --: |
-| Accuracy | $0.948$ | $0.962$ | $0.945$ | $0.868$ | $0.503$ |
+| Accuracy | $0.948$ | $0.963$ | $0.945$ | $0.868$ | $0.503$ |
 | ROC AUC | $0.991$ | $0.993$ | $0.987$ | $0.943$ | $0.615$ |
 | ROC AUC, люди против текстов с нуля | $0.992$ | $0.994$ | $0.989$ | $0.946$ | $0.597$ |
-| F1, среднее по классам | $0.945$ | $0.961$ | $0.943$ | $0.863$ | $0.466$ |
-| Людей принято за ИИ | $9.5\%$ | $4.3\%$ | $7.2\%$ | $16.5\%$ | $5.9\%$ |
+| F1, среднее по классам | $0.945$ | $0.962$ | $0.943$ | $0.863$ | $0.466$ |
+| Людей принято за ИИ | $9.5\%$ | $3.4\%$ | $7.2\%$ | $16.5\%$ | $5.9\%$ |
 
 На valid accuracy $0.948$, ROC AUC $0.992$.
 
@@ -349,9 +349,8 @@ def probability(text: str) -> float:
     for rule in spec["normalize"]:
         text = re.sub(rule["pattern"], rule["replacement"], text, flags=re.MULTILINE)
     ids = tokenizer.encode(text.strip(), add_special_tokens=False).ids
-    prefix = spec["prefix_ids"] if "prefix_ids" in spec else [spec["cls_id"]]
-    suffix = spec["suffix_ids"] if "suffix_ids" in spec else [spec["sep_id"]]
-    width = spec["max_length"] - len(prefix) - len(suffix)
+    prefix, suffix = [spec["cls_id"]], [spec["sep_id"]]
+    width = spec.get("read_length", spec["max_length"]) - len(prefix) - len(suffix)
     windows = [ids[i : i + width] for i in range(0, max(len(ids), 1), width)][: spec["max_windows"]]
     windows = [[*prefix, *w, *suffix] for w in windows]
     batch = np.full((len(windows), max(map(len, windows))), spec["pad_id"], dtype=np.int64)
@@ -435,7 +434,7 @@ uv run --group train --group transformer scripts/train_transformer.py train --ba
 ```bash
 uv run --group train --group transformer scripts/train_transformer.py export ~/.cache/aiw-ru/llmtrace/transformer/full/rubert-mini-frida
 uv run --group train --group transformer scripts/train_transformer.py evaluate ~/.cache/aiw-ru/llmtrace/transformer/full/rubert-mini-frida --int8-valid-only
-uv run --group train --group transformer scripts/train_transformer.py report ~/.cache/aiw-ru/llmtrace/transformer/full/rubert-mini-frida --finalist ~/.cache/aiw-ru/llmtrace/transformer/full/rubert-tiny2 --finalist ~/.cache/aiw-ru/llmtrace/transformer/full/rubert-mini-frida --finalist ~/.cache/aiw-ru/llmtrace/transformer/full/rumodernbert-small --related ~/.cache/aiw-ru/llmtrace/transformer/full/rubert-tiny2 --related ~/.cache/aiw-ru/llmtrace/transformer/full/rumodernbert-small
+uv run --group train --group transformer scripts/train_transformer.py report ~/.cache/aiw-ru/llmtrace/transformer/full/rubert-mini-frida --finalist ~/.cache/aiw-ru/llmtrace/transformer/full/rubert-tiny2 --finalist ~/.cache/aiw-ru/llmtrace/transformer/full/rubert-mini-frida --finalist ~/.cache/aiw-ru/llmtrace/transformer/full/rumodernbert-small --related ~/.cache/aiw-ru/llmtrace/transformer/full/rubert-tiny2 --related ~/.cache/aiw-ru/llmtrace/transformer/full/rumodernbert-small-8k
 ```
 
 Обучение на GPU не детерминировано до бита, повтор может разойтись в третьем
