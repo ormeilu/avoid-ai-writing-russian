@@ -24,7 +24,10 @@ from huggingface_hub.errors import HfHubHTTPError, LocalTokenNotFoundError
 
 REPO = "toiletsandpaper/russian-ai-text-detector-lightgbm"
 COLLECTION = "aiw-ru"
-COLLECTION_DESCRIPTION = "Детекторы ИИ-текста для русского языка: необязательные модели aiw-ru"
+COLLECTION_DESCRIPTION = (
+    "Детекторы ИИ-текста для русского: три трансформера и бустинг LightGBM. "
+    "Порядок тот же, в котором их выбирает aiw-ru"
+)
 GITHUB = "https://github.com/ormeilu/avoid-ai-writing-russian"
 DATASET = "iitolstykh/LLMTrace_classification"
 DATASET_NAME = "LLMTrace classification (ru)"
