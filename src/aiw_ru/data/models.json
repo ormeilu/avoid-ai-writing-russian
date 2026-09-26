@@ -29,6 +29,11 @@
       },
       "download_mb": 137.8,
       "revision": "7d5e0ffbdf497c0b5edab0faf93e084ddcdfb744",
+      "blobs": {
+        "inference.json": "3724196102c5f60b2fd619d0935fd984d9a2b5be",
+        "model.onnx": "7cdbb41854bba7b29bf6912c8059ca2fd9da707968a306fa3fea3496b3999be3",
+        "tokenizer.json": "dbccc734d827674044f2b4f77e708023f2f67ff3"
+      },
       "measured": {
         "load_ms": 371.0,
         "short_ms": 18.0,
@@ -57,6 +62,11 @@
       },
       "download_mb": 30.7,
       "revision": "a27cd7459c68b1a19c0ef510c5b16df3123c193c",
+      "blobs": {
+        "inference.json": "df512732d0cc1d2ea25c309ac0ae5212ef8529a5",
+        "model.onnx": "0faa02998aac9091c2ef49b5a7b55c3919b4e0ca54a3056af8f9ee37c0dd2df6",
+        "tokenizer.json": "87c87dc7b2ed732a522945ad9d43f016615e63a7"
+      },
       "measured": {
         "load_ms": 244.8,
         "short_ms": 2.6,
@@ -85,6 +95,11 @@
       },
       "download_mb": 126.3,
       "revision": "86ec5c9b900a7f6ea26908218c3cf8064a39d443",
+      "blobs": {
+        "inference.json": "fa474202b8e77b6d837380bfe3d399b7866dc43e",
+        "model.onnx": "bbdaadb7ebd2301143dcaff61023f68386693fdc7683d6acdfc3d538853d1ce9",
+        "tokenizer.json": "87c87dc7b2ed732a522945ad9d43f016615e63a7"
+      },
       "measured": {
         "load_ms": 302.6,
         "short_ms": 5.9,
@@ -113,6 +128,10 @@
       },
       "download_mb": 10.0,
       "revision": "e264cae77d71cdbad171d1fadab9b8e13ff0bbee",
+      "blobs": {
+        "features.json": "d2df9bd2da6fcf2b662b5c414020aec1057488ed",
+        "model.txt": "6c0b6530dacbafcf4a7706cef43ba3373aa8368a"
+      },
       "measured": {
         "load_ms": 710.3,
         "short_ms": 1.7,

@@ -69,8 +69,10 @@ class Model:
     summary: str = ""
 
 
+# Карточка модели: меняется без переобучения и на ответы не влияет.
+CARD_FILES = ("metrics.json", "README.md")
 # model.onnx* — с внешними данными (model.onnx.data), если граф больше 2 ГБ.
-_ONNX_FILES = ("inference.json", "model.onnx*", "tokenizer.json", "metrics.json", "README.md")
+_ONNX_FILES = ("inference.json", "model.onnx*", "tokenizer.json", *CARD_FILES)
 _ONNX_DEPENDENCIES = ("onnxruntime", "tokenizers", "numpy", "huggingface_hub")
 
 MODERNBERT = Model(
@@ -107,7 +109,7 @@ LIGHTGBM = Model(
     "lightgbm",
     "LightGBM",
     "toiletsandpaper/russian-ai-text-detector-lightgbm",
-    ("model.txt", "features.json", "metrics.json", "README.md"),
+    ("model.txt", "features.json", *CARD_FILES),
     ("lightgbm", "huggingface_hub"),
     "AIW_RU_MODEL_DIR",
     kind="lightgbm",
@@ -176,6 +178,7 @@ class Loaded(Protocol):
     def coverage(self, text: str) -> Coverage: ...
 
 
+@cache
 def catalog() -> dict[str, Any]:
     """Замеры моделей из пакета (aiw_ru/data/models.json): качество, скорость, память, размер.
 
@@ -185,6 +188,14 @@ def catalog() -> dict[str, Any]:
     from importlib.resources import files
 
     return json.loads(files("aiw_ru").joinpath("data", "models.json").read_text(encoding="utf-8"))
+
+
+def pinned(model: Model = LIGHTGBM) -> dict[str, Any]:
+    """Запись модели в каталоге: ревизия на Hugging Face и хэши файлов, с которыми замерено качество.
+
+    blobs — имена файлов в кэше Hugging Face: sha256 у файлов в LFS, хэш git у остальных.
+    """
+    return next((e for e in catalog()["models"] if e["name"] == model.name), {})
 
 
 def get(name: str) -> Model:
@@ -212,11 +223,45 @@ def local_path(model: Model = LIGHTGBM) -> Path | None:
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import LocalEntryNotFoundError
 
-    try:
-        path = Path(snapshot_download(model.repo, allow_patterns=list(model.files), local_files_only=True))
-    except LocalEntryNotFoundError:
+    # Сначала ревизия из каталога: её качает models install, а refs/main на неё не переводит.
+    # Потом скачанная последней (refs/main): так ставили модели aiw-ru до 2.2.1.
+    for revision in dict.fromkeys((pinned(model).get("revision"), None)):
+        try:
+            path = Path(
+                snapshot_download(
+                    model.repo, allow_patterns=list(model.files), revision=revision, local_files_only=True
+                )
+            )
+        except LocalEntryNotFoundError:
+            continue
+        if (path / model.files[0]).exists():
+            return path
+    return None
+
+
+def outdated(model: Model = LIGHTGBM) -> bool | None:
+    """Скачанная модель не та, с которой в каталоге замерено качество: её обновит models install.
+
+    Файл в снапшоте кэша Hugging Face — ссылка на blobs/<хэш>, хэши сверяются с каталогом. Ревизии
+    не сравниваются: после модели в репозиторий идут коммиты с одной карточкой. None — сверить
+    не с чем: модели нет, её папка задана переменной окружения или кэш без ссылок (Windows без
+    режима разработчика).
+    """
+    blobs: dict[str, str] = pinned(model).get("blobs") or {}
+    if not blobs or os.environ.get(model.env):
         return None
-    return path if (path / model.files[0]).exists() else None
+    path = local_path(model)
+    if path is None:
+        return None
+    for name, etag in blobs.items():
+        file = path / name
+        if not file.exists():
+            return True
+        if not file.is_symlink():
+            return None
+        if Path(os.readlink(file)).name != etag:
+            return True
+    return False
 
 
 def status(model: Model = LIGHTGBM) -> Status:
@@ -224,11 +269,15 @@ def status(model: Model = LIGHTGBM) -> Status:
 
 
 def install(model: Model = LIGHTGBM, revision: str | None = None) -> Path:
-    """Скачивает модель с Hugging Face в общий кэш (~/.cache/huggingface)."""
+    """Скачивает модель с Hugging Face в общий кэш (~/.cache/huggingface).
+
+    Без revision — ревизию из каталога: ту, с которой замерено качество в models info и руководстве.
+    """
     if missing := missing_dependencies(model):
         raise ModelError(f"нет пакетов {', '.join(missing)}: {INSTALL_HINT}")
     from huggingface_hub import snapshot_download
 
+    revision = revision or pinned(model).get("revision")
     path = Path(snapshot_download(model.repo, allow_patterns=list(model.files), revision=revision))
     load.cache_clear()
     load(model)

@@ -458,7 +458,27 @@ def model_signal(a: Args, text: str, result: AnalysisResult | None = None) -> Si
 
 
 def signal(loaded: models.Loaded, text: str, result: AnalysisResult | None = None) -> Signal:
+    outdated_hint(loaded.model)
     return Signal(loaded, loaded.probability(text, result), loaded.coverage(text))
+
+
+# Модели, о старой версии которых уже сказано в этом запуске.
+told_outdated: set[str] = set()
+
+
+def outdated_hint(model: models.Model) -> None:
+    """В stderr, один раз за запуск: скачанная модель не та, с которой замерено её качество."""
+    if model.name in told_outdated or not models.outdated(model):
+        return
+    told_outdated.add(model.name)
+    sys.stderr.write(f"aiw-ru: {OUTDATED.format(name=model.name)}\n")
+    sys.stderr.flush()
+
+
+OUTDATED = (
+    "скачана не та версия модели {name}, с которой замерено её качество в каталоге aiw-ru; "
+    "обновить: aiw-ru models install {name}"
+)
 
 
 def grouped(n: int) -> str:
@@ -652,6 +672,7 @@ def signal_json(sig: Signal) -> dict[str, Any]:
         "ai": sig.ai,
         "nearThreshold": sig.near_threshold,
         "repo": m.repo,
+        "outdated": models.outdated(m),
         "read": coverage_json(sig.coverage),
     }
 
@@ -1101,6 +1122,7 @@ def model_state(model: models.Model) -> dict[str, Any]:
         "dependencies": st.dependencies,
         "missing": models.missing_dependencies(model),
         "path": str(st.path) if st.path else None,
+        "outdated": models.outdated(model),
         "ready": error is None,
         "error": error,
     }
@@ -1240,7 +1262,14 @@ def cmd_models(a: Args) -> int:
                     "Файлы",
                     x["path"] or Text.styled(f"не скачаны: aiw-ru models install {x['name']}", "yellow"),
                 ),
-                ("Состояние", Text.styled("готова", "green") if x["ready"] else Text.styled(x["error"], "yellow")),
+                (
+                    "Состояние",
+                    Text.styled(x["error"], "yellow")
+                    if not x["ready"]
+                    else Text.styled(f"готова, но {OUTDATED.format(name=x['name'])}", "yellow")
+                    if x["outdated"]
+                    else Text.styled("готова", "green"),
+                ),
             ]
         )
     return 0
@@ -1272,6 +1301,7 @@ def cmd_skill(a: Args) -> int:
 def main(argv: list[str]) -> int:
     global console
     console = make_console()
+    told_outdated.clear()
     try:
         a = parse(argv)
         if a.help or not a.cmd:

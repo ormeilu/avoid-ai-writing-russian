@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Каталог необязательных моделей для `aiw-ru models info`: качество, скорость, память, размер.
 
-    uv run --group train scripts/models_catalog.py [--packages]
+    uv run --group train scripts/models_catalog.py [--packages | --hub-only]
 
 Качество берётся из отчётов в docs/models/ (test и valid русской части LLMTrace),
-размер скачивания — из метаданных репозиториев на Hugging Face, без загрузки
-файлов. Скорость и память меряются на этой машине в отдельном процессе для
+размер скачивания, ревизия и хэши файлов модели — из метаданных репозиториев на
+Hugging Face, без загрузки файлов. По ревизии `aiw-ru models install` качает ту
+модель, с которой замерено качество, а по хэшам aiw-ru замечает, что скачана
+другая. `--hub-only` обновляет только эти поля, без замеров. Скорость и память меряются на этой машине в отдельном процессе для
 каждой скачанной модели: загрузка, медиана вероятности для короткого текста
 (60 слов) и длинного (около 800 слов, больше 512 токенов), пиковая память процесса.
 `--packages` дополнительно ставит `aiw-ru[ml]` во временное окружение и меряет,
@@ -107,7 +109,11 @@ def quality(m: dict[str, Any]) -> dict[str, Any]:
 
 
 def hub_files(model: Model) -> dict[str, Any]:
-    """Размер того, что скачает aiw-ru, и ревизия, по метаданным Hugging Face."""
+    """Размер того, что скачает aiw-ru, ревизия и хэши файлов модели по метаданным Hugging Face.
+
+    Хэш — имя файла в кэше Hugging Face: sha256 у файлов в LFS, хэш git у остальных. Карточку
+    (models.CARD_FILES) не хэшируем: она меняется без переобучения.
+    """
     import httpx
     from huggingface_hub import HfApi
     from huggingface_hub.errors import HfHubHTTPError
@@ -123,8 +129,10 @@ def hub_files(model: Model) -> dict[str, Any]:
         print(f"{model.name}: нет данных с Hugging Face ({e}), размер по {local}", file=sys.stderr)
         size = sum(f.stat().st_size for f in local.iterdir() if any(fnmatch(f.name, p) for p in model.files))
         return {"download_mb": round(size / 2**20, 1)}
-    size = sum(s.size or 0 for s in info.siblings or [] if any(fnmatch(s.rfilename, p) for p in model.files))
-    return {"download_mb": round(size / 2**20, 1), "revision": info.sha}
+    files = [s for s in info.siblings or [] if any(fnmatch(s.rfilename, p) for p in model.files)]
+    blobs = {s.rfilename: s.lfs.sha256 if s.lfs else s.blob_id for s in files if s.rfilename not in models.CARD_FILES}
+    size = sum(s.size or 0 for s in files)
+    return {"download_mb": round(size / 2**20, 1), "revision": info.sha, "blobs": dict(sorted(blobs.items()))}
 
 
 def bench(model: Model, text_path: Path) -> dict[str, Any]:
@@ -147,11 +155,35 @@ def packages_mb() -> float:
     return round(size / 2**20)
 
 
+# Поля каталога из метаданных Hugging Face; без сети остаются прежними.
+HUB_FIELDS = ("download_mb", "revision", "blobs")
+
+
+def write(catalog: dict[str, Any]) -> None:
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    OUT.write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"Каталог: {OUT.relative_to(ROOT)}")
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    ap.add_argument("--packages", action="store_true", help="измерить и размер пакетов extra ml")
+    group = ap.add_mutually_exclusive_group()
+    group.add_argument("--packages", action="store_true", help="измерить и размер пакетов extra ml")
+    group.add_argument("--hub-only", action="store_true", help="только ревизии, хэши и размеры с Hugging Face")
     args = ap.parse_args(argv)
     old = json.loads(OUT.read_text(encoding="utf-8")) if OUT.exists() else {}
+    if args.hub_only:
+        if not old:
+            sys.exit(f"{OUT.relative_to(ROOT)} нет: сначала полный замер без --hub-only")
+        for e in old["models"]:
+            hub = hub_files(models.get(e["name"]))
+            # Ключи на прежних местах, blobs — перед замерами, как в полном каталоге.
+            measured = e.pop("measured", None)
+            e.update(hub)
+            if measured is not None:
+                e["measured"] = measured
+        write(old)
+        return
     with tempfile.TemporaryDirectory() as tmp:
         text_path = Path(tmp) / "long.txt"
         text_path.write_text(long_text(), encoding="utf-8")
@@ -175,7 +207,7 @@ def main(argv: list[str] | None = None) -> None:
                     "weights": (m.get("inference") or {}).get("weights"),
                     "report": f"docs/models/{model.repo.split('/')[-1]}.md",
                     "quality": quality(m),
-                    **(hub_files(model) or {k: previous[k] for k in ("download_mb", "revision") if k in previous}),
+                    **(hub_files(model) or {k: previous[k] for k in HUB_FIELDS if k in previous}),
                     # Без свежего замера остаётся прошлый: модель могла быть не скачана.
                     "measured": measured or previous.get("measured", {}),
                 }
@@ -191,9 +223,7 @@ def main(argv: list[str] | None = None) -> None:
         "dataset": "iitolstykh/LLMTrace_classification (ru), test",
         "models": entries,
     }
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"Каталог: {OUT.relative_to(ROOT)}")
+    write(catalog)
 
 
 if __name__ == "__main__":

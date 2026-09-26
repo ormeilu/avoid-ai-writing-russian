@@ -1,0 +1,11 @@
+# Правила gitleaks по умолчанию и одно исключение.
+[extend]
+useDefault = true
+
+# Каталог моделей хранит хэши файлов с Hugging Face: хэш git (40 знаков) и sha256 (64). Рядом с
+# «tokenizer.json» правило generic-api-key принимает их за ключ.
+[[allowlists]]
+description = "хэши файлов моделей в каталоге aiw-ru"
+condition = "AND"
+paths = ['''^src/aiw_ru/data/models\.json$''']
+regexes = ['''^[0-9a-f]{40}$''', '''^[0-9a-f]{64}$''']

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -717,3 +718,130 @@ def test_cli_models_guide(capsys: pytest.CaptureFixture[str], root: Path):
     # разделы те же, что в файле скилла
     heads = [line for line in guide.splitlines() if line.startswith("## ")]
     assert heads and [line for line in out.splitlines() if line.startswith("## ")] == heads
+
+
+def test_catalog_pins_model_files():
+    """у каждой модели в каталоге ревизия и хэши файлов, от которых зависят ответы; карточки среди них нет"""
+    from fnmatch import fnmatch
+
+    for e in models.catalog()["models"]:
+        model = models.get(e["name"])
+        assert re.fullmatch(r"[0-9a-f]{40}", e["revision"])
+        assert e["blobs"] and not set(e["blobs"]) & set(models.CARD_FILES)
+        for name, etag in e["blobs"].items():
+            assert any(fnmatch(name, p) for p in model.files)
+            assert re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", etag)
+        assert {"model.onnx", "inference.json", "tokenizer.json"} <= set(e["blobs"]) or model.kind == "lightgbm"
+
+
+OLD, NEW, CARD = "1" * 40, "2" * 40, "3" * 40
+OLD_BLOBS = {"model.txt": "a" * 64, "features.json": "f" * 40}
+NEW_BLOBS = {"model.txt": "b" * 64, "features.json": "f" * 40}
+
+
+@pytest.fixture
+def hf_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Пустой кэш Hugging Face вместо настоящего; в каталоге LightGBM — ревизия NEW с файлами NEW_BLOBS."""
+    from huggingface_hub import constants
+
+    cache = (tmp_path / "hub").resolve()
+    cache.mkdir()
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(cache))
+    monkeypatch.delenv(models.LIGHTGBM.env, raising=False)
+    entry = {"name": "lightgbm", "revision": NEW, "blobs": NEW_BLOBS}
+    monkeypatch.setattr(models, "catalog", lambda: {"models": [entry]})
+    return cache
+
+
+def snapshot(cache: Path, commit: str, blobs: dict[str, str], *, main: bool = False, links: bool = True) -> Path:
+    """Снапшот LightGBM, как его кладёт huggingface_hub: файл — ссылка на blobs/<etag>, refs/main — коммит."""
+    repo = cache / f"models--{models.LIGHTGBM.repo.replace('/', '--')}"
+    folder = repo / "snapshots" / commit
+    folder.mkdir(parents=True)
+    (repo / "blobs").mkdir(exist_ok=True)
+    for name, etag in blobs.items():
+        (repo / "blobs" / etag).write_text(etag, encoding="utf-8")
+        if not links:
+            (folder / name).write_text(etag, encoding="utf-8")
+            continue
+        try:
+            (folder / name).symlink_to(Path("..", "..", "blobs", etag))
+        except OSError:
+            pytest.skip("символические ссылки недоступны")
+    if main:
+        (repo / "refs").mkdir(exist_ok=True)
+        (repo / "refs" / "main").write_text(commit, encoding="utf-8")
+    return folder
+
+
+def test_model_downloaded_before_pinning_is_outdated(hf_cache: Path):
+    """модель, скачанная aiw-ru до 2.2.1 (refs/main на старом снапшоте), находится, но с каталогом не совпадает"""
+    old = snapshot(hf_cache, OLD, OLD_BLOBS, main=True)
+    assert models.local_path() == old
+    assert models.outdated() is True
+
+
+def test_catalog_revision_wins_over_main(hf_cache: Path):
+    """models install кладёт ревизию из каталога, а refs/main остаётся на старой: берётся ревизия каталога"""
+    snapshot(hf_cache, OLD, OLD_BLOBS, main=True)
+    new = snapshot(hf_cache, NEW, NEW_BLOBS)
+    assert models.local_path() == new
+    assert models.outdated() is False
+
+
+def test_card_only_commit_is_not_outdated(hf_cache: Path):
+    """у другой ревизии те же файлы модели, после неё менялась только карточка: модель не устарела"""
+    snapshot(hf_cache, CARD, NEW_BLOBS, main=True)
+    assert models.outdated() is False
+
+
+def test_outdated_unknown_without_links(hf_cache: Path):
+    """кэш без символических ссылок (Windows без режима разработчика): сверить не с чем"""
+    snapshot(hf_cache, OLD, OLD_BLOBS, main=True, links=False)
+    assert models.local_path() is not None
+    assert models.outdated() is None
+
+
+def test_outdated_unknown_for_folder_from_env(model_dir: Path):
+    """папку из переменной окружения собрали руками: с каталогом её не сверяют"""
+    assert models.outdated() is None
+
+
+def test_install_downloads_catalog_revision(model_dir: Path, monkeypatch: pytest.MonkeyPatch):
+    """models install качает ревизию из каталога, с которой замерено качество, а не последнюю"""
+    import huggingface_hub
+
+    revisions = []
+
+    def download(repo_id: str, **kwargs: Any) -> str:
+        revisions.append(kwargs.get("revision"))
+        return str(model_dir)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", download)
+    models.install()
+    models.install(revision="main")
+    assert revisions == [models.pinned(models.LIGHTGBM)["revision"], "main"]
+
+
+def test_outdated_model_is_reported(
+    model_dir: Path,
+    transformer_dir: Path,
+    texts: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """скачанная модель не совпадает с каталогом: models и classify подсказывают models install, один раз"""
+    monkeypatch.setattr(models, "outdated", lambda model=models.LIGHTGBM: model is models.LIGHTGBM)
+    _, out, _ = cli(capsys, "models", "--json")
+    state = {m["name"]: m["outdated"] for m in json.loads(out)["models"]}
+    assert state["lightgbm"] is True and state["transformer"] is False
+    _, out, _ = cli(capsys, "models")
+    assert "aiw-ru models install lightgbm" in " ".join(out.split())
+    _, out, err = cli(capsys, "classify", "--json", texts["ai"])
+    assert json.loads(out)["outdated"] is False and err == ""
+    _, out, err = cli(capsys, "classify", "--json", "--model", "lightgbm", texts["ai"])
+    assert json.loads(out)["outdated"] is True
+    assert err.count("aiw-ru models install lightgbm") == 1
+    _, out, err = cli(capsys, "scan", "--json", "--model", "lightgbm", texts["ai"], texts["human"])
+    assert all(d["classifier"]["outdated"] for d in json.loads(out))
+    assert err.count("aiw-ru models install lightgbm") == 1
