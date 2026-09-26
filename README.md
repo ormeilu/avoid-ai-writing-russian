@@ -302,6 +302,8 @@ git push --follow-tags
 
 Спасибо авторам и участникам, на чьи находки опирается исходный проект и, через него, этот: [blader/humanizer](https://github.com/blader/humanizer), [brandonwise/humanizer](https://github.com/brandonwise/humanizer), [Aboudjem/humanizer-skill](https://github.com/Aboudjem/humanizer-skill), [isatimur/de-slop](https://github.com/isatimur/de-slop), [welttowelt/stop-slop-refined](https://github.com/welttowelt/stop-slop-refined), [LLM cliché highlighter](https://tools.simonwillison.net/llm-cliche-highlighter) Саймона Уиллисона и [tropes.fyi](https://tropes.fyi).
 
+Спасибо [Илье Утову](https://github.com/ilyautov) за [humanizer-ru](https://github.com/ilyautov/humanizer-ru). Оттуда идеи сверки фактов в `aiw-ru validate`, проверки правки свежим агентом, теста на переносимость и трёх примет детектора: «почерк модели», обвязка ответа чата и оборванный текст. Код, словари и замеры здесь свои.
+
 Русская часть многим обязана традиции борьбы с канцеляритом, которая старше нейросетей на полвека: Корнею Чуковскому, придумавшему само слово «канцелярит» в книге «Живой как жизнь», Норе Галь с её «Словом живым и мёртвым» и Максиму Ильяхову и Людмиле Сарычевой с книгой «Пиши, сокращай».
 
 ## Лицензия
