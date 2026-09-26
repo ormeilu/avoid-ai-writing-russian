@@ -349,12 +349,13 @@ below.
 
 ```bash
 uv tool install "aiw-ru[ml] @ git+{GITHUB}"
-aiw-ru models install
-aiw-ru classify текст.md
+aiw-ru models install lightgbm
+aiw-ru classify --model lightgbm текст.md
 ```
 
-С установленной моделью `aiw-ru scan` и `aiw-ru antiplagiat` показывают
-вероятность рядом со своей оценкой. Из Python:
+`aiw-ru models install` без имени ставит её вместе с ModernBERT. Если других
+моделей нет, `aiw-ru scan` и `aiw-ru antiplagiat` показывают её вероятность
+рядом со своей оценкой. Из Python:
 
 ```python
 import lightgbm as lgb
@@ -422,8 +423,9 @@ def report(m: dict, repo: str) -> str:
 
 Необязательная модель aiw-ru: LightGBM оценивает вероятность, что русский
 текст написала языковая модель. Пользователь ставит её командой
-`aiw-ru models install` (нужен extra `ml`), после чего `aiw-ru classify` даёт
-вероятность, а `scan` и `antiplagiat` показывают её рядом со своей оценкой.
+`aiw-ru models install lightgbm` (нужен extra `ml`), после чего
+`aiw-ru classify --model lightgbm` даёт вероятность; без других моделей её
+показывают и `scan` с `antiplagiat` рядом со своей оценкой.
 Правила детектора показывают, что править в тексте; модель отвечает на другой
 вопрос и на корпусе отвечает на него точнее: ROC AUC {num(m["test"]["roc_auc"])} против
 {num(m["detector"]["roc_auc"])} у оценки правил.

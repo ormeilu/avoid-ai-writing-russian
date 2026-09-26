@@ -112,6 +112,10 @@ LOG_EVERY = 200
 CHARS_PER_TOKEN = 24
 # Сколько окон по max_length токенов смотреть в длинном тексте при выводе.
 MAX_WINDOWS = 8
+# Фрагменты classify не длиннее этого: на окне в 8192 токена ИИ-вставка тонет в человеческом тексте
+# (docs/long-documents.md). Модель с окном длиннее читает им текст целиком (read_length в inference.json),
+# а aiw-ru до 2.2 знает только max_length и работает с ней как с моделью на 512 токенов.
+FRAGMENT_LENGTH = 512
 LATENCY_LENGTHS = (128, 512)
 PARITY_TEXTS = 300
 # Версия inference.json: её проверяет aiw_ru.models перед выводом.
@@ -909,10 +913,17 @@ def latency_inputs(enc: Encoded, length: int, suffix: Sequence[int]) -> tuple[np
     return ids, np.ones_like(ids)
 
 
-def measure_latency(model: Any, onnx_files: dict[str, Path], enc: Encoded, suffix: Sequence[int]) -> list[dict]:
+def latency_lengths(max_length: int) -> tuple[int, ...]:
+    """Длины для замера задержки: 128 и 512 токенов у всех, у длинного окна ещё 2048 и всё окно."""
+    return tuple(sorted({*LATENCY_LENGTHS, *(n for n in (2048, max_length) if 512 < n <= max_length)}))
+
+
+def measure_latency(
+    model: Any, onnx_files: dict[str, Path], enc: Encoded, suffix: Sequence[int], lengths: Sequence[int]
+) -> list[dict]:
     """Задержка на один текст: ONNX Runtime и PyTorch на CPU, один поток и все ядра."""
     out: list[dict] = []
-    for length in LATENCY_LENGTHS:
+    for length in lengths:
         ids, mask = latency_inputs(enc, length, suffix)
         for threads in sorted({1, os.cpu_count() or 1}):
             for variant, path in onnx_files.items():
@@ -973,7 +984,7 @@ def cmd_export(args: argparse.Namespace) -> None:
     if parity["fp32"]["max_abs_diff"] > 1e-3 or parity["spec_vs_batch_max_abs_diff"] > 1e-3:
         raise SystemExit("ONNX fp32 или вывод по спецификации расходятся с PyTorch, см. сверку выше")
 
-    latency = measure_latency(model, {"fp32": fp32, "int8": int8}, valid, suffix)
+    latency = measure_latency(model, {"fp32": fp32, "int8": int8}, valid, suffix, latency_lengths(p["max_length"]))
     table(
         "Задержка на один текст, мс",
         ["Среда", "Токенов", "Потоков", "мс"],
@@ -1023,6 +1034,8 @@ def inference_spec(p: dict, wrap: dict, long_texts: str, weights: str = "int8") 
     wrap — токены вокруг окна: cls_id, sep_id и pad_id.
     """
     windows = MAX_WINDOWS if long_texts == "mean_of_windows" else 1
+    read = p["max_length"]
+    fragment = min(read, FRAGMENT_LENGTH)
     return {
         "version": INFERENCE_VERSION,
         "format": "onnx",
@@ -1033,8 +1046,9 @@ def inference_spec(p: dict, wrap: dict, long_texts: str, weights: str = "int8") 
         "output": "logits",
         "labels": list(LABELS),
         "threshold": THRESHOLD,
-        "max_length": p["max_length"],
-        "max_chars": p["max_length"] * CHARS_PER_TOKEN * MAX_WINDOWS,
+        "max_length": fragment,
+        **({"read_length": read} if read > fragment else {}),
+        "max_chars": read * CHARS_PER_TOKEN * MAX_WINDOWS,
         **wrap,
         "long_texts": long_texts,
         "max_windows": windows,
@@ -1056,7 +1070,8 @@ def windows(
 
 
 def window_probs(sess: Session, ids: Sequence[int], spec: dict) -> np.ndarray:
-    ws = windows(ids, spec["max_length"], *spec_wrap(spec), spec["max_windows"])
+    """Вероятности окон текста целиком: окно read_length, если оно есть, иначе max_length."""
+    ws = windows(ids, spec.get("read_length", spec["max_length"]), *spec_wrap(spec), spec["max_windows"])
     arr = np.full((len(ws), max(len(w) for w in ws)), spec["pad_id"], dtype=np.int64)
     mask = np.zeros_like(arr)
     for k, w in enumerate(ws):
@@ -1305,6 +1320,21 @@ def copy_onnx(src: Path, dst: Path) -> None:
         import onnx
 
         onnx.save(onnx.load(src), dst, save_as_external_data=True, location=dst.name + ".data")
+
+
+def cpu_latency(run_dir: Path, m: dict) -> dict:
+    """Задержка с другой машины: export в копии папки запуска кладёт export-latency.json.
+
+    Нужен, когда обучение, экспорт и оценка шли на машине с GPU, а задержку в карточках
+    сравнивают на M1. Оценка остаётся с машины обучения, в hardware видно обе.
+    """
+    path = run_dir / "export-latency.json"
+    if not path.exists():
+        return {}
+    e = json.loads(path.read_text(encoding="utf-8"))
+    evaluated = json.loads((run_dir / "export.json").read_text(encoding="utf-8"))["cpu"]
+    hardware = f"обучение: {m['params']['gpu']}; оценка: {evaluated}; задержка: {e['cpu']}"
+    return {"latency": e["latency"], "latency_cpu": e["cpu"], "params": {**m["params"], "hardware": hardware}}
 
 
 def x86_latency(run_dir: Path) -> dict:
@@ -2097,8 +2127,21 @@ def _params_md(m: dict) -> str:
             ["Проверок на valid за эпоху", count(p["evals_per_epoch"])],
             ["Оптимизатор", f"AdamW, скорость `{p['lr']:g}`, разогрев {pct(p['warmup'])} шагов, линейный спад"],
             ["Затухание весов, клиппинг градиента", f"`{p['weight_decay']:g}`, `{p['grad_clip']:g}`"],
-            ["Пачка", f"{_nw(p['batch'], 'текст', 'текста', 'текстов')} близкой длины"],
+            [
+                "Пачка",
+                f"{_nw(p['batch'], 'текст', 'текста', 'текстов')} близкой длины"
+                + (
+                    f", лимит пачки — {_nw(p['batch_tokens'], 'токен', 'токена', 'токенов')}"
+                    if p.get("batch_tokens")
+                    else ""
+                ),
+            ],
             ["`max_length`", _nw(p["max_length"], "токен", "токена", "токенов")],
+            *(
+                [["Локальное окно внимания", "±" + _nw(p["sliding_window"], "токен", "токена", "токенов")]]
+                if p.get("sliding_window")
+                else []
+            ),
             ["`seed`", count(p["seed"])],
             [
                 "Время обучения",
@@ -2249,7 +2292,7 @@ def probability(text: str) -> float:
         text = re.sub(rule["pattern"], rule["replacement"], text, flags=re.MULTILINE)
     ids = tokenizer.encode(text.strip(), add_special_tokens=False).ids
     prefix, suffix = [spec["cls_id"]], [spec["sep_id"]]
-    width = spec["max_length"] - len(prefix) - len(suffix)
+    width = spec.get("read_length", spec["max_length"]) - len(prefix) - len(suffix)
     windows = [ids[i : i + width] for i in range(0, max(len(ids), 1), width)][: spec["max_windows"]]
     windows = [[*prefix, *w, *suffix] for w in windows]
     batch = np.full((len(windows), max(map(len, windows))), spec["pad_id"], dtype=np.int64)
@@ -2327,7 +2370,13 @@ def _long_rule(m: dict) -> str:
             f"Текст длиннее {n} режется на окна по столько же токенов, вероятность — среднее "
             f"по первым {count(inf['max_windows'])} окнам: на valid так точнее, чем по началу текста."
         )
-    return f"Текст длиннее {n} модель читает только до этой границы: среднее по окнам на valid не точнее."
+    fragments = (
+        f" `aiw-ru classify` вдобавок проверяет длинный текст фрагментами по {_tokens_gen(inf['max_length'])}: "
+        "на окне целиком ИИ-вставка тонет в человеческом тексте."
+        if inf.get("read_length")
+        else ""
+    )
+    return f"Текст длиннее {n} модель читает только до этой границы: среднее по окнам на valid не точнее.{fragments}"
 
 
 def _trained_on(m: dict) -> str:
@@ -2367,7 +2416,8 @@ def card_body(m: dict, repo: str) -> str:
     )
     b = bundle_for(p["base"])
     install = (
-        f"Ставится она командой `aiw-ru models install {b.name}`, только если пользователь попросит."
+        f"Ставит её `aiw-ru models install` без имени, вместе с LightGBM, или `aiw-ru models install {b.name}`, "
+        "и только если пользователь попросит."
         if b.default
         else f"Ставится она только по имени, командой `aiw-ru models install {b.name}`, и только если "
         f"пользователь попросит; в `aiw-ru classify` её выбирают ключом `--model {b.name}`."
@@ -2475,8 +2525,10 @@ def _reproduce_md(m: dict) -> str:
     b = bundle_for(p["base"])
     vm_run = f"/content/data/transformer/runs/{run}"
     full = "~/.cache/aiw-ru/llmtrace/transformer/full"
-    local = f"{full}/{run}"
     ra = m.get("report_args", {})
+    local = f"{full}/{ra.get('run') or run}"
+    # Colab даёт T4; на своей видеокарте обучение, экспорт и оценка идут на одной машине.
+    colab = "T4" in (p.get("gpu") or "")
     eval_flags = "" if p.get("weights_choice", "auto") == "auto" else f" --weights {p['weights_choice']}"
     if p.get("int8_valid_only"):
         eval_flags += " --int8-valid-only"
@@ -2509,10 +2561,33 @@ def _reproduce_md(m: dict) -> str:
         else f"Модель обучена на коммите `{commit}`."
     )
     env = md_table(["Компонент", "Версия"], [[k, f"`{val}`"] for k, val in m["environment"].items()])
-    return f"""{checkout} Базовая модель — ревизия `{p["base_revision"]}`, корпус — ревизия
+    head = f"""{checkout} Базовая модель — ревизия `{p["base_revision"]}`, корпус — ревизия
 `{m["dataset"]["revision"]}`, её закрепляет `scripts/llmtrace.py`. Окружение:
 
-{env}
+{env}"""
+    tail = """Обучение на GPU не детерминировано до бита, повтор может разойтись в третьем
+знаке. Пилот повторяется командой `pilot --base ИМЯ` с настройками по умолчанию
+(`--limit 20000 --epochs 1`)."""
+    if not colab:
+        return f"""{head}
+
+Модель обучена на {p.get("gpu") or "GPU"}, `{p["precision"]}`. На той же машине считались ONNX,
+сверка с PyTorch и оценка на valid и test. Задержку в карточке мерил `export`
+на M1 в копии папки запуска с ключом `--json export-latency.json`: файл
+кладётся в папку запуска, и `report` берёт задержку из него.{why_note}
+
+```bash
+uv run --group train scripts/llmtrace.py fetch --set classification --split train
+uv run --group train scripts/llmtrace.py fetch --set classification --split valid
+uv run --group train scripts/llmtrace.py fetch --set classification --split test
+{uv} scripts/train_transformer.py {train_args} --out {local}
+{uv} scripts/train_transformer.py export {local}
+{uv} scripts/train_transformer.py evaluate {local}{eval_flags}
+{uv} scripts/train_transformer.py report {local}{report_flags}
+```
+
+{tail}"""
+    return f"""{head}
 
 Обучение идёт на GPU. В Colab на бесплатной T4 это делает
 `scripts/colab_transformer.py` через официальный Colab CLI (google-colab-cli,
@@ -2558,9 +2633,7 @@ uv run --group train scripts/llmtrace.py fetch --set classification --split test
 {uv} scripts/train_transformer.py report {local}{report_flags}
 ```
 
-Обучение на GPU не детерминировано до бита, повтор может разойтись в третьем
-знаке. Пилот повторяется командой `pilot --base ИМЯ` с настройками по умолчанию
-(`--limit 20000 --epochs 1`)."""
+{tail}"""
 
 
 def _spec_parity(m: dict) -> str:
@@ -2816,8 +2889,8 @@ def cmd_report(args: argparse.Namespace) -> None:
     run_dir: Path = args.folder
     m = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
     repo = args.repo or bundle_for(m["params"]["base"]).repo
-    # Замер на x86 мог появиться после evaluate, метрики LightGBM — обновиться.
-    m |= x86_latency(run_dir)
+    # Замеры задержки могли появиться после evaluate, метрики LightGBM — обновиться.
+    m |= cpu_latency(run_dir, m) | x86_latency(run_dir)
     m["lightgbm"] = lightgbm_block() or m.get("lightgbm")
     if args.why:
         m["params"]["why"] = args.why
@@ -2826,6 +2899,7 @@ def cmd_report(args: argparse.Namespace) -> None:
     if args.related:
         m["related"] = [related_row(d) for d in args.related]
     m["report_args"] = {
+        "run": run_dir.name,
         "finalist": [d.name for d in args.finalist or []],
         "related": [d.name for d in args.related or []],
     }

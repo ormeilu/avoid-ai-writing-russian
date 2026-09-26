@@ -156,6 +156,32 @@ def word_tokenizer() -> tokenizers.Tokenizer:
     return tok
 
 
+def test_inference_spec_splits_long_window():
+    """Окно длиннее 512: max_length 512 для фрагментов и старых aiw-ru, read_length для текста целиком."""
+    wrap = {"cls_id": 1, "sep_id": 2, "pad_id": 0}
+    short = tt.inference_spec({"max_length": 512, "normalize": True}, wrap, "head")
+    assert short["max_length"] == 512 and "read_length" not in short
+    long = tt.inference_spec({"max_length": 8192, "normalize": True}, wrap, "head")
+    assert long["max_length"] == 512 and long["read_length"] == 8192
+    assert long["max_chars"] == 8192 * tt.CHARS_PER_TOKEN * tt.MAX_WINDOWS
+
+
+def test_long_rule_mentions_fragments_for_long_window():
+    m = fake_metrics()
+    assert "фрагментами" not in tt._long_rule(m)
+    m["params"]["max_length"] = 8192
+    m["inference"] = {**m["inference"], "max_length": 512, "read_length": 8192, "long_texts": "head"}
+    rule = tt._long_rule(m)
+    assert "Текст длиннее $8192$ токенов" in rule and "фрагментами по $512$ токенов" in rule
+
+
+def test_latency_lengths_follow_window():
+    """У модели на 512 токенов задержка на 128 и 512, у длинного окна ещё на 2048 и на всё окно."""
+    assert tt.latency_lengths(512) == (128, 512)
+    assert tt.latency_lengths(2048) == (128, 512, 2048)
+    assert tt.latency_lengths(8192) == (128, 512, 2048, 8192)
+
+
 def test_predict_text_follows_spec(tmp_path: Path):
     spec = tt.inference_spec({"max_length": 6, "normalize": True}, {"cls_id": 1, "sep_id": 2, "pad_id": 0}, "head")
     assert spec["max_windows"] == 1 and spec["threshold"] == 0.5
@@ -354,6 +380,35 @@ def fake_metrics() -> dict:
     }
 
 
+def test_cpu_latency_from_separate_export(tmp_path: Path):
+    """Задержка с M1 из export-latency.json, оценка — с машины обучения; без файла ничего не меняется."""
+    m = {"params": {"gpu": "NVIDIA GeForce RTX 4090", "hardware": "старое"}, "latency": [], "latency_cpu": "x"}
+    assert tt.cpu_latency(tmp_path, m) == {}
+    (tmp_path / "export.json").write_text(json.dumps({"cpu": "Intel Core i9"}), encoding="utf-8")
+    row = {"runtime": "onnxruntime fp32", "tokens": 512, "threads": 1, "ms": 207.2}
+    (tmp_path / "export-latency.json").write_text(json.dumps({"cpu": "Apple M1", "latency": [row]}), encoding="utf-8")
+    got = tt.cpu_latency(tmp_path, m)
+    assert got["latency"] == [row] and got["latency_cpu"] == "Apple M1"
+    assert got["params"]["hardware"] == "обучение: NVIDIA GeForce RTX 4090; оценка: Intel Core i9; задержка: Apple M1"
+    assert m["params"]["hardware"] == "старое"
+
+
+def test_report_for_run_on_own_gpu():
+    """Обучение на своей видеокарте: прямые команды в папку запуска, без Colab; из железа только GPU."""
+    m = fake_metrics()
+    m["params"] |= {"gpu": "NVIDIA GeForce RTX 4090", "precision": "bf16", "max_length": 8192, "batch_tokens": 16384}
+    m["report_args"] = {"run": "rumodernbert-small-8k", "finalist": [], "related": []}
+    text = tt.report_body(m, tt.REPO)
+    repro = text.split("## Как воспроизвести")[1]
+    assert "Модель обучена на NVIDIA GeForce RTX 4090, `bf16`" in repro and "colab_transformer.py" not in repro
+    assert "--batch-tokens 16384 --out ~/.cache/aiw-ru/llmtrace/transformer/full/rumodernbert-small-8k" in repro
+    assert "export ~/.cache/aiw-ru/llmtrace/transformer/full/rumodernbert-small-8k" in repro
+    train = text.split("## Обучение")[1].split("\n## ")[0]
+    assert "| Пачка | $32$ текста близкой длины, лимит пачки — $16\\,384$ токена |" in train
+    m["params"]["sliding_window"] = 64
+    assert "| Локальное окно внимания | ±$64$ токена |" in tt.report_body(m, tt.REPO)
+
+
 def test_report_from_fake_metrics():
     text = tt.report_body(fake_metrics(), tt.REPO)
     for part in ("# Отчёт об обучении: russian-ai-text-detector-bert", "## Выбор базы", "## Нормализация"):
@@ -465,6 +520,7 @@ def test_card_and_report_for_fp32_bundle():
     body = card.text
     # ModernBERT ставится по умолчанию, поэтому classify без --model.
     assert "aiw-ru models install modernbert" in body and "aiw-ru classify текст.md" in body
+    assert "Ставит её `aiw-ru models install` без имени, вместе с LightGBM" in body
     assert "`model_int8.onnx`" in body and "## Какую модель выбрать" in body
     assert "точный вариант" in body
     choose = body.split("## Какую модель выбрать")[1].split("\n## ")[0]
