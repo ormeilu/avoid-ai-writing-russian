@@ -250,6 +250,21 @@ def test_coverage_of_text_longer_than_window(transformer_dir: Path):
     assert not models.load(models.TRANSFORMER).coverage(text).truncated
 
 
+def test_read_length_reads_whole_text_fragments_stay_small(transformer_dir: Path):
+    """read_length — окно для текста целиком, max_length — для фрагментов: aiw-ru до 2.2 знает только max_length"""
+    text = "ну вот короче типа\n\nявляется ключевую данный еще"
+    set_spec(transformer_dir, max_length=18, max_windows=1, long_texts="head")
+    whole = models.load(models.TRANSFORMER).probability(text)
+    set_spec(transformer_dir, max_length=6, read_length=18, max_windows=1, long_texts="head")
+    loaded = models.load(models.TRANSFORMER)
+    c = loaded.coverage(text)
+    assert not c.truncated and c.window == 18 and (c.tokens, c.total_tokens) == (8, 8)
+    assert loaded.probability(text) == pytest.approx(whole, abs=1e-6)
+    assert len(models.chunk_spans(loaded, text, overlap=0)) == 2
+    assert models.needs_fragments(loaded, c)
+    assert not models.needs_fragments(loaded, loaded.coverage("ну вот"))
+
+
 def test_lightgbm_reads_whole_text(model_dir: Path):
     c = models.load(models.LIGHTGBM).coverage(TEXT * 50)
     assert not c.truncated and c.tokens is None and c.window is None and c.words == c.total_words
@@ -575,6 +590,15 @@ def long_doc(transformer_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPa
     # newline="": на Windows write_text иначе пишет \r\n, и в файле становится больше знаков.
     path.write_text(LONG_DOC, encoding="utf-8", newline="")
     return str(path)
+
+
+def test_classify_fragments_text_read_whole(long_doc: str, transformer_dir: Path, capsys: pytest.CaptureFixture[str]):
+    """модель с длинным окном читает текст целиком, а classify всё равно ищет ИИ по фрагментам"""
+    set_spec(transformer_dir, read_length=18)
+    code, out, _ = cli(capsys, "classify", "--json", long_doc)
+    data = json.loads(out)
+    assert code == 0 and not data["read"]["truncated"] and data["read"]["window"] == 18
+    assert (data["fragments"]["count"], data["fragments"]["aboveThreshold"]) == (3, 1)
 
 
 def test_classify_long_text_by_fragments(long_doc: str, capsys: pytest.CaptureFixture[str]):

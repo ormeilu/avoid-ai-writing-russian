@@ -1057,7 +1057,7 @@ def cmd_classify(a: Args) -> int:
 
     def one(text: str) -> tuple[Signal, models.ChunkScan | None]:
         sig = signal(loaded, text)
-        if a.no_fragments or not sig.coverage.truncated:
+        if a.no_fragments or not models.needs_fragments(loaded, sig.coverage):
             return sig, None
         return sig, models.scan_chunks(loaded, text, limit=a.max_fragments, progress=eta(loaded))
 

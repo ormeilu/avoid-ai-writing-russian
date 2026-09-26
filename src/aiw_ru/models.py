@@ -9,9 +9,10 @@ Face (`aiw-ru models install`). Пока их нет, scan и antiplagiat раб
 Если стоят несколько, вероятность в scan, antiplagiat и classify даёт первая из
 установленных в порядке MODELS, если не выбрана другая.
 
-Трансформер читает одно окно в max_length токенов (около 300 слов). Докуда он дочитал,
-говорит coverage(); длинный текст целиком проверяет scan_chunks(): режет его на
-фрагменты в одно окно по границам предложений, с перекрытием соседних.
+Трансформер читает текст одним окном: read_length токенов, если оно есть в inference.json
+(у ModernBERT 8192, 4–5 тысяч слов), иначе max_length (512, около 300 слов). Докуда он
+дочитал, говорит coverage(). Где в тексте ИИ, показывает scan_chunks(): режет текст на
+фрагменты по max_length токенов по границам предложений, с перекрытием соседних.
 """
 
 from __future__ import annotations
@@ -113,7 +114,7 @@ LIGHTGBM = Model(
     summary="самая лёгкая, работает и без onnxruntime (Mac на Intel), но заметно менее точна",
 )
 # Порядок — предпочтение: первая установленная модель даёт вероятность по умолчанию. Модели идут
-# по доле людей, принятых за ИИ на test (4,3 %, 7,2 %, 9,5 %, 16,5 %), а не по ROC AUC: ошибиться
+# по доле людей, принятых за ИИ на test (3,4 %, 7,2 %, 9,5 %, 16,5 %), а не по ROC AUC: ошибиться
 # в человеке для скилла дороже, чем пропустить ИИ-текст.
 MODELS: dict[str, Model] = {m.name: m for m in (MODERNBERT, TRANSFORMER, MINI_FRIDA, LIGHTGBM)}
 LIGHTGBM_REPO = LIGHTGBM.repo
@@ -321,9 +322,15 @@ class _Transformer:
 
     @property
     def width(self) -> int:
-        """Токенов текста в одном окне: max_length без служебных токенов."""
+        """Токенов текста во фрагменте: max_length без служебных токенов."""
         prefix, suffix = _frame(self.spec)
         return self.spec["max_length"] - len(prefix) - len(suffix)
+
+    @property
+    def read_length(self) -> int:
+        """Окно для текста целиком. read_length в inference.json длиннее max_length у модели, которая
+        читает длинный текст сразу, а фрагменты режет короче; aiw-ru до 2.2 знает только max_length."""
+        return self.spec.get("read_length", self.spec["max_length"])
 
     def ids(self, text: str) -> list[int]:
         return self.tokenizer.encode(self.normalize(text), add_special_tokens=False).ids
@@ -352,7 +359,7 @@ class _Transformer:
         """Вероятность по первому окну текста или среднее по окнам, как записано в inference.json."""
         s = self.spec
         prefix, suffix = _frame(s)
-        probs = self._run(windows(self.ids(text[: s["max_chars"]]), s["max_length"], prefix, suffix, s["max_windows"]))
+        probs = self._run(windows(self.ids(text[: s["max_chars"]]), self.read_length, prefix, suffix, s["max_windows"]))
         return sum(probs) / len(probs)
 
     def probabilities(self, texts: list[str], progress: Progress | None = None) -> list[float]:
@@ -371,13 +378,14 @@ class _Transformer:
         return out
 
     def coverage(self, text: str) -> Coverage:
-        """Докуда модель читает текст: max_windows окон, но не дальше max_chars знаков."""
+        """Докуда модель читает текст: max_windows окон по read_length, но не дальше max_chars знаков."""
         s = self.spec
-        budget = self.width * s["max_windows"]
+        prefix, suffix = _frame(s)
+        budget = (self.read_length - len(prefix) - len(suffix)) * s["max_windows"]
         total = len(self.ids(text))
         limit = min(len(text), s["max_chars"])
         if total <= budget and limit == len(text):
-            return replace(_whole(text), tokens=total, total_tokens=total, window=s["max_length"])
+            return replace(_whole(text), tokens=total, total_tokens=total, window=self.read_length)
         # Самое длинное начало исходника, которое после нормализации укладывается в окна: так место
         # обрыва точное, даже если нормализация меняет длину текста.
         hi = min(limit, budget * 8)
@@ -404,7 +412,7 @@ class _Transformer:
             _lines(text),
             len(self.ids(head)),
             total,
-            s["max_length"],
+            self.read_length,
         )
 
     def _units(self, text: str, cap: int) -> list[tuple[int, int, int]]:
@@ -571,6 +579,11 @@ def chunk_spans(
     if not isinstance(loaded, _Transformer):
         return [(0, len(text))]
     return loaded.spans(text, OVERLAP if overlap is None else overlap, UNIT if unit is None else unit)
+
+
+def needs_fragments(loaded: Loaded, coverage: Coverage) -> bool:
+    """Текст длиннее одного фрагмента: classify проверяет его по фрагментам, даже если модель прочитала его целиком."""
+    return isinstance(loaded, _Transformer) and (coverage.total_tokens or 0) > loaded.width
 
 
 def scan_chunks(
