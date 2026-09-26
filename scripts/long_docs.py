@@ -3,6 +3,7 @@
 
     uv run --group train --extra ml scripts/long_docs.py build  [--split test] [--docs 600] [--seed 1]
     uv run --group train --extra ml scripts/long_docs.py eval   [--split test] --model ИМЯ [--overlap 0.25]
+                                                                 [--label МЕТКА]
     uv run --group train --extra ml scripts/long_docs.py report [--split test] [--models ИМЯ…] [--overlaps …]
 
 В LLMTrace смешанных документов длиннее одного окна модели почти нет: у смешанных
@@ -20,6 +21,10 @@ build пишет документы в ~/.cache/aiw-ru/llmtrace/long/, eval пр
 документам. С --out report заменяет таблицы в отчёте между метками
 <!-- long-docs:… -->; текст вокруг них пишется руками. Параметры нарезки
 сравниваются на valid, итоговые числа — на test.
+
+Новую версию модели сравнивают со старой так: папку новой задают переменной окружения
+модели (AIW_RU_MODERNBERT_DIR и подобные), а прогону дают свою --label, по умолчанию
+это имя модели. Метка идёт в имя кэша и в --models у report.
 """
 
 from __future__ import annotations
@@ -459,6 +464,7 @@ def main(argv: list[str] | None = None) -> None:
         if name == "eval":
             p.add_argument("--model", required=True, choices=[m for m in models.MODELS if m != "lightgbm"])
             p.add_argument("--overlap", type=float, default=models.OVERLAP)
+            p.add_argument("--label", help="имя прогона в кэше и отчёте, по умолчанию имя модели")
         if name == "report":
             p.add_argument("--models", nargs="+", default=["modernbert", "transformer", "mini-frida"])
             p.add_argument("--overlap", type=float, default=models.OVERLAP, help="перекрытие для таблиц моделей")
@@ -479,8 +485,9 @@ def main(argv: list[str] | None = None) -> None:
     docs = read_docs(path)
     if args.command == "eval":
         loaded = models.load(models.get(args.model))
-        out = eval_path(args.split, args.docs, args.seed, args.model, args.overlap)
-        print(f"{args.model}, перекрытие {args.overlap:g}: {out}", flush=True)
+        label = args.label or args.model
+        out = eval_path(args.split, args.docs, args.seed, label, args.overlap)
+        print(f"{label} ({models.local_path(loaded.model)}), перекрытие {args.overlap:g}: {out}", flush=True)
         evaluate(docs, loaded, args.overlap, out)
         return
     results = {
