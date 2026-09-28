@@ -477,6 +477,9 @@ def test_card_from_fake_metrics():
     assert not re.search(r"\S\\\\\(", body)
     # пример на Python выключает телеметрию onnxruntime до импорта, иначе процесс может упасть на выходе
     assert body.index('os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")') < body.index("import onnxruntime")
+    # веса PyTorch: где лежат и как их взять, по-русски и по-английски
+    assert "`model.safetensors` на \\\\(111\\\\) МБ" in body and "PyTorch weights for fine-tuning" in body
+    assert 'AutoModelForSequenceClassification.from_pretrained("toiletsandpaper/russian-ai-text-detector-bert")' in body
 
 
 def test_card_and_report_for_fp32_bundle():
@@ -588,6 +591,7 @@ def test_bundle_hub_layout(tmp_path):
         "model/tokenizer.json",
         "model/tokenizer_config.json",
         "model/config.json",
+        "model/model.safetensors",
         "inference.json",
         "metrics.json",
     ):
@@ -595,6 +599,8 @@ def test_bundle_hub_layout(tmp_path):
         (tmp_path / f).write_text(f, encoding="utf-8")
     hub = tt.bundle_hub(tmp_path, "onnx/model.onnx")
     assert (hub / "model.onnx").read_text(encoding="utf-8") == "onnx/model.onnx"
+    # веса PyTorch в корне рядом с config.json: from_pretrained(repo) читает их без subfolder
+    assert (hub / "model.safetensors").read_text(encoding="utf-8") == "model/model.safetensors"
     assert (hub / "model_int8.onnx").exists() and not (hub / "model_fp32.onnx").exists()
     hub = tt.bundle_hub(tmp_path, "onnx/model_int8.onnx")
     assert (hub / "model.onnx").read_text(encoding="utf-8") == "onnx/model_int8.onnx"

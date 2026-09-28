@@ -373,6 +373,19 @@ print(probability(open("текст.md", encoding="utf-8").read()))
 `max_length`, токены вокруг окна, правила нормализации из обучения, порог
 $0.5$ и число окон для длинных текстов.
 
+Для дообучения и своего экспорта в репозитории есть веса PyTorch, `model.safetensors`.
+aiw-ru и пример выше их не скачивают. Их читает transformers:
+
+```python
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+model = AutoModelForSequenceClassification.from_pretrained("toiletsandpaper/russian-ai-text-detector-bert")
+tokenizer = AutoTokenizer.from_pretrained("toiletsandpaper/russian-ai-text-detector-bert")
+```
+
+Текст перед токенизатором нормализуй по правилам `normalize` из `inference.json`, как в
+примере выше: на нём модель и обучалась.
+
 ## Как воспроизвести
 
 Модель обучена на коммите `60cb897`, к которому `scripts/train_transformer.py` и `scripts/colab_transformer.py` ещё не были закоммичены. Для повтора берите их версию из коммита, в котором появился этот отчёт. Базовая модель — ревизия `e8ed3b0c8bbf4fb6984c3de043bf7d2f4e5969ae`, корпус — ревизия

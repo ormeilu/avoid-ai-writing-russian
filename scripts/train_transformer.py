@@ -1284,7 +1284,8 @@ def bundle_hub(run_dir: Path, shipped_file: str) -> Path:
     """Папка hub/ для репозитория модели: model.onnx — то, что в поставке, рядом другой вариант весов.
 
     aiw-ru скачивает inference.json, model.onnx, tokenizer.json, metrics.json и README.md;
-    model_fp32.onnx или model_int8.onnx лежит для тех, кому нужен другой вариант.
+    model_fp32.onnx или model_int8.onnx лежит для тех, кому нужен другой вариант, а веса PyTorch
+    (model.safetensors с config.json и токенизатором рядом) — для дообучения и своего экспорта.
     """
     hub_dir = run_dir / "hub"
     shutil.rmtree(hub_dir, ignore_errors=True)
@@ -1294,7 +1295,7 @@ def bundle_hub(run_dir: Path, shipped_file: str) -> Path:
         files["model_fp32.onnx"] = "onnx/model.onnx"
     elif (run_dir / "onnx" / "model_int8.onnx").exists():
         files["model_int8.onnx"] = "onnx/model_int8.onnx"
-    for name in ("tokenizer.json", "tokenizer_config.json", "config.json"):
+    for name in ("tokenizer.json", "tokenizer_config.json", "config.json", "model.safetensors"):
         files[name] = f"model/{name}"
     files |= {"inference.json": "inference.json", "metrics.json": "metrics.json"}
     for dst, src in files.items():
@@ -2310,7 +2311,27 @@ print(probability(open("текст.md", encoding="utf-8").read()))
 
 `inference.json` описывает вывод целиком: файл ONNX, токенизатор,
 `max_length`, токены вокруг окна, правила нормализации из обучения, порог
-{num(m["inference"]["threshold"], 1)} и число окон для длинных текстов."""
+{num(m["inference"]["threshold"], 1)} и число окон для длинных текстов.{_pytorch_md(m, repo)}"""
+
+
+def _pytorch_md(m: dict, repo: str) -> str:
+    """Как взять веса PyTorch из репозитория: для дообучения и своего экспорта."""
+    if not m["sizes_mb"].get("safetensors"):
+        return ""
+    return f"""
+
+Для дообучения и своего экспорта в репозитории есть веса PyTorch, `model.safetensors`.
+aiw-ru и пример выше их не скачивают. Их читает transformers:
+
+```python
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+model = AutoModelForSequenceClassification.from_pretrained("{repo}")
+tokenizer = AutoTokenizer.from_pretrained("{repo}")
+```
+
+Текст перед токенизатором нормализуй по правилам `normalize` из `inference.json`, как в
+примере выше: на нём модель и обучалась."""
 
 
 def _int8_changes(m: dict) -> float | None:
@@ -2319,20 +2340,25 @@ def _int8_changes(m: dict) -> float | None:
 
 
 def _extra_weights(m: dict) -> tuple[str, str]:
-    """Второй файл весов рядом с model.onnx: по-русски и по-английски."""
+    """Другие файлы весов рядом с model.onnx: по-русски и по-английски."""
     if _weights(m) == "int8":
         fp32 = _mb(m["sizes_mb"]["onnx_fp32"])
-        return (
+        ru, en = (
             f" Рядом лежит `model_fp32.onnx` на {fp32} МБ с весами fp32, aiw-ru его не скачивает.",
             f" An fp32 export, `model_fp32.onnx`, is an optional extra file of {fp32} MB.",
         )
-    int8, ch = _mb(m["sizes_mb"]["onnx_int8"]), _int8_changes(m)
-    why_ru = f": int8 меняет ответ у {pct(ch)} текстов valid" if ch is not None else ""
-    why_en = f" because int8 flips the label on {pct(ch)} of validation texts" if ch is not None else ""
-    return (
-        f" Рядом лежит `model_int8.onnx` на {int8} МБ с весами int8, aiw-ru его не скачивает{why_ru}.",
-        f" An int8 export, `model_int8.onnx`, is an optional extra file of {int8} MB; aiw-ru uses fp32{why_en}.",
-    )
+    else:
+        int8, ch = _mb(m["sizes_mb"]["onnx_int8"]), _int8_changes(m)
+        why_ru = f": int8 меняет ответ у {pct(ch)} текстов valid" if ch is not None else ""
+        why_en = f" because int8 flips the label on {pct(ch)} of validation texts" if ch is not None else ""
+        ru, en = (
+            f" Рядом лежит `model_int8.onnx` на {int8} МБ с весами int8, aiw-ru его не скачивает{why_ru}.",
+            f" An int8 export, `model_int8.onnx`, is an optional extra file of {int8} MB; aiw-ru uses fp32{why_en}.",
+        )
+    if pytorch := m["sizes_mb"].get("safetensors"):
+        ru += f" Веса PyTorch для дообучения и своего экспорта — `model.safetensors` на {_mb(pytorch)} МБ."
+        en += f" PyTorch weights for fine-tuning or your own export are in `model.safetensors`, {_mb(pytorch)} MB."
+    return ru, en
 
 
 def _probs_note(m: dict) -> str:
