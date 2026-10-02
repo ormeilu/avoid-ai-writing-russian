@@ -388,7 +388,9 @@ AI_URL_RE = jsre(
     "gi",
 )
 PLACEHOLDER_RE = jsre(
-    "\\[(?:Ваш[аеи]?|Вставьте|Укажите|Добавьте|Введите|Опишите|Название|Имя|Фамилия|Дата|ДАТА|Источник|Ссылка"
+    "\\[(?:Ваш[аеи]?|Вставьте|Укажите|Добавьте|Введите|Опишите|Название|Имя|Фамилия"
+    # «[Дата обращения: 12.03.2026]» в записи литературы — не заглушка.
+    "|Дата(?![ \\t]+(?:обращения|доступа)[:\\s]*\\d)|ДАТА|Источник|Ссылка"
     "|Your|Insert|Add|Enter)[^\\]\\n]{0,60}\\]|\\b(?:19|20)XX\\b|\\b\\d{4}-XX-XX\\b"
     "|<!--\\s*(?:добавь|добавьте|вставь|вставьте|todo|TODO|заполни|укажите|add|insert)[^>]*-->",
     "g",
@@ -524,18 +526,21 @@ EMOJI_RE = jsre("\\p{Extended_Pictographic}", "u")
 BOLD_RE = jsre("\\*\\*[^*\\n]{1,80}\\*\\*", "g")
 BOLD_LEAD_RE = jsre("^\\s*(?:[-*+]\\s+|\\d+[.)]\\s+|[\\p{Lu}\\d]{1,3}\\.\\s+)?$", "u")
 BOLD_AFTER_RE = jsre("^\\s*(?:—|:|\\[|$)")
+# Номер записи или пункта, выделенный жирным: **12.**, **12)**, **1.2.** — разметка нумерации, а не акцент.
+BOLD_NUMBER_RE = jsre("^\\*\\*\\d{1,3}(?:\\.\\d{1,3})*[.)]\\*\\*$")
 
 
 def _detect_typography(ctx: _Ctx, bs: list[Block]) -> None:
     p, mode = ctx.p, ctx.mode
     if mode == "chat":
         return
-    # Кавычки считаем по тексту без кода (в prose они замаскированы как цитаты).
+    # Кавычки считаем по тексту без кода (в prose они замаскированы как цитаты). В записях
+    # литературы кавычки стоят как в источнике, поэтому служебные части пропускаем.
     for m in STRAIGHT_QUOTES_RE.finditer(p.no_code):
-        if CYR.search(m.group(1) or ""):
+        if CYR.search(m.group(1) or "") and not _hits_range(p.service, m.start(), len(m.group())):
             _add(ctx, "straight-quotes", "straight", "P2", m.start(), m.group(), "«ёлочки» вместо прямых кавычек")
     for m in ENGLISH_QUOTES_RE.finditer(p.no_code):
-        if CYR.search(m.group(1) or ""):
+        if CYR.search(m.group(1) or "") and not _hits_range(p.service, m.start(), len(m.group())):
             _add(
                 ctx,
                 "english-quotes",
@@ -620,6 +625,8 @@ def _detect_typography(ctx: _Ctx, bs: list[Block]) -> None:
             at = m.start()
             line_start = b.text.rfind("\n", 0, at) + 1
             lead = bool(BOLD_LEAD_RE.search(b.text[line_start:at]))
+            if lead and BOLD_NUMBER_RE.search(m.group()):
+                continue
             after = b.text[m.end() : m.end() + 4]
             # Выделенный термин в начале строки перед «—», «:» или ссылкой — типографика, а не акцент.
             if lead and BOLD_AFTER_RE.search(after):

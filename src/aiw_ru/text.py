@@ -247,19 +247,43 @@ ABSTRACT_RE = jsre(
     f"^[ \\t]*(?:#{{1,6}}[ \\t]+)?{_OPEN}[ \\t]*(?:abstract|annotation|summary)[ \\t]*{_OPEN}[ \\t]*([:.—–-]|$)", "iu"
 )
 MD_HEADING_RE = jsre("^#{1,6}[ \\t]")
+# Строка-реквизит шапки или хвоста: УДК, ББК, «Для цитирования:», даты поступления и
+# принятия. Строка целиком служебная, остальной абзац нет.
+FRONT_LINE_RE = jsre(
+    f"^[ \\t]*{_OPEN}[ \\t]*(?:(?:УДК|ББК)(?![\\p{{L}}\\d])|UDC(?![\\p{{L}}\\d])|BBK(?![\\p{{L}}\\d])"
+    "|(?:поступил[аио]?[ \\t]+в[ \\t]+редакцию|принят[аоы]?[ \\t]+(?:к[ \\t]+публикации|в[ \\t]+печать)"
+    "|received|accepted|revised)[ \\t]*[:.]?[ \\t]*(?:\\d|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\\p{L}*\\.?[ \\t]+\\d))",
+    "iu",
+)
+# «Для цитирования: …» и «For citation: …» занимают абзац: это библиографическая запись статьи.
+CITE_AS_RE = jsre(
+    f"^[ \\t]*{_OPEN}[ \\t]*(?:для[ \\t]+цитирования|for[ \\t]+citation|how[ \\t]+to[ \\t]+cite|cite[ \\t]+as)[ \\t]*{_OPEN}[ \\t]*:",
+    "iu",
+)
 # Библиографическая запись: номер или «Фамилия И. О.» в начале строки, год и хотя бы одна
-# примета записи (//, «— С.», Vol., №, DOI, URL, ISBN, et al.). Номер может быть жирным: **12.**
-RECORD_NUMBER_RE = jsre("^[ \\t]*(?:[-*+][ \\t]+)?(?:\\*\\*|__)?\\[?\\d{1,3}[.)\\]](?:\\*\\*|__)?[ \\t]+", "u")
+# примета записи (//, «— С.», Vol., №, DOI, URL, ISBN, et al., «Город : Издательство, год»,
+# «— Текст : электронный»). Номер может быть жирным: **12.**; pandoc экранирует точку после номера
+# и скобки: 12\. и \[12\].
+RECORD_NUMBER_RE = jsre(
+    "^[ \\t]*(?:[-*+][ \\t]+)?(?:\\*\\*|__)?(?:\\\\?\\[)?\\d{1,3}\\\\?[.)\\]](?:\\*\\*|__)?[ \\t]+", "u"
+)
 RECORD_AUTHOR_RE = jsre("^[ \\t]*\\p{Lu}\\p{Ll}+(?:-\\p{Lu}\\p{Ll}+)?,?[ \\t]+\\p{Lu}\\.[ \\t]?(?:\\p{Lu}\\.)?", "u")
 RECORD_YEAR_RE = jsre("(?<!\\d)(?:1[89]|20)\\d\\d(?!\\d)")
 RECORD_MARK_RE = jsre(
-    "//|[ \\t][—–][ \\t](?:(?:1[89]|20)\\d\\d|(?:[СсТт№]|[PpNn])\\.?[ \\t]|URL|DOI|Vol|Iss|(?:М|СПб|Л|Киев|Минск)\\.?[ \\t]?:)"
+    "//|[ \\t][—–][ \\t](?:(?:1[89]|20)\\d\\d|(?:[СсТт№]|[PpNn])\\.?[ \\t]|URL|DOI|Vol|Iss|(?:М|СПб|Л|Киев|Минск)\\.?[ \\t]?:"
+    "|\\d{1,4}[ \\t]с\\.|Текст[ \\t]?[:.])"
     "|(?<!\\p{L})(?:Vol|Iss|pp|Pp|Bd)\\."
     "|№[ \\t]*\\d|(?<!\\p{L})(?:DOI|doi|URL|ISBN|ISSN)(?!\\p{L})|(?<!\\p{L})et[ \\t]+al\\."
-    "|(?<!\\p{L})(?:[СсТт]|[Pp])\\.[ \\t]?\\d",
+    "|(?<!\\p{L})(?:[СсТт]|[Pp])\\.[ \\t]?\\d"
+    "|[ \\t]:[ \\t]\\p{Lu}[^\\n:]{1,60},[ \\t]*(?:1[89]|20)\\d\\d"
+    "|Электронный[ \\t]+ресурс|[ \\t]/[ \\t]\\p{Lu}\\.[ \\t]?(?:\\p{Lu}\\.[ \\t]?)?\\p{Lu}\\p{Ll}",
     "u",
 )
 RECORD_MAX_CHARS = 600
+# Английский заголовочный блок перед «Abstract» (название, авторы, организации): не больше
+# столько абзацев, по столько слов в каждом.
+ENGLISH_HEAD_PARAGRAPHS = 4
+ENGLISH_HEAD_WORDS = 60
 # Записей подряд, чтобы считать их списком литературы без заголовка.
 RECORD_RUN = 3
 
@@ -289,8 +313,9 @@ def cyrillic_share(s: str) -> float | None:
 
 def service_ranges(s: str) -> list[tuple[int, int]]:
     """Отрезки [начало, конец) служебных частей: список литературы, ключевые слова,
-    английская аннотация, сведения об авторах. YAML-шапка и код сюда не входят, их
-    маскирует _mask_code; строки внутри них заголовками не считаются.
+    английская аннотация с названием и авторами над ней, сведения об авторах, строки УДК,
+    «Для цитирования» и даты поступления. YAML-шапка и код сюда не входят, их маскирует
+    _mask_code; строки внутри них заголовками не считаются.
 
     Раздел по заголовку длится до следующего заголовка Markdown или до конца текста.
     Список литературы без заголовка — три записи подряд и больше. Отрезки отсортированы
@@ -315,7 +340,34 @@ def _service_in(masked: str) -> list[tuple[int, int]]:
             k += 1
         return k
 
+    def english_head(k: int, floor: int) -> int:
+        """Первая строка английского заголовочного блока (название, авторы, организации) над строкой k.
+
+        Берутся абзацы с латиницей подряд, не выше строки floor, не длиннее ENGLISH_HEAD_WORDS слов.
+        """
+        first = k
+        i = k - 1
+        for _ in range(ENGLISH_HEAD_PARAGRAPHS):
+            while i >= floor and not trim(lines[i]):
+                i -= 1
+            if i < floor:
+                break
+            a = i
+            while a > floor and trim(lines[a - 1]):
+                a -= 1
+            part = "\n".join(lines[a : i + 1])
+            share = cyrillic_share(part)
+            if share is None or share >= 0.5 or len(words(part)) > ENGLISH_HEAD_WORDS:
+                break
+            if any(MD_HEADING_RE.search(x) for x in lines[a : i + 1]):
+                break
+            first = a
+            i = a - 1
+        return first
+
     out: list[tuple[int, int]] = []
+    # Первая строка, с которой может начаться следующая служебная часть: за концом предыдущей.
+    floor = 0
     k = 0
     while k < len(lines):
         line = lines[k]
@@ -324,14 +376,27 @@ def _service_in(masked: str) -> list[tuple[int, int]]:
             j = k + 1
             while j < len(lines) and not (MD_HEADING_RE.search(lines[j]) and not SERVICE_HEADING_RE.search(lines[j])):
                 j += 1
-            if j > k + 1:
-                out.append((starts[k + 1], end_of(j - 1)))
-            k = j
+            # Заголовок Markdown остаётся заголовком, строка-заголовок без решётки входит в часть:
+            # иначе из неё получился бы абзац из двух слов.
+            begin = k + 1 if MD_HEADING_RE.search(line) else k
+            if j > begin:
+                out.append((starts[begin], end_of(j - 1)))
+            k = floor = j
             continue
+        if FRONT_LINE_RE.search(line):
+            out.append((starts[k], end_of(k)))
+            k = floor = k + 1
+            continue
+        if CITE_AS_RE.search(line):
+            j = paragraph_end(k)
+            if end_of(j) - starts[k] <= RECORD_MAX_CHARS:
+                out.append((starts[k], end_of(j)))
+                k = floor = j + 1
+                continue
         if KEYWORDS_RE.search(line):
             j = paragraph_end(k)
             out.append((starts[k], end_of(j)))
-            k = j + 1
+            k = floor = j + 1
             continue
         m = ABSTRACT_RE.search(line)
         if m:
@@ -344,8 +409,8 @@ def _service_in(masked: str) -> list[tuple[int, int]]:
             j = paragraph_end(first) if first < len(lines) else k
             share = cyrillic_share("\n".join(lines[first : j + 1]))
             if share is not None and share < 0.5:
-                out.append((starts[k], end_of(j)))
-                k = j + 1
+                out.append((starts[english_head(k, floor)], end_of(j)))
+                k = floor = j + 1
                 continue
         if _is_record(line):
             run = [k]
@@ -360,10 +425,11 @@ def _service_in(masked: str) -> list[tuple[int, int]]:
                 j += 1
             if len(run) >= RECORD_RUN:
                 out.append((starts[run[0]], end_of(run[-1])))
-                k = run[-1] + 1
+                k = floor = run[-1] + 1
                 continue
         k += 1
-    return out
+    # Раздел из одних пустых строк (заголовок, за ним сразу следующий заголовок) частью не считается.
+    return [(a, b) for a, b in out if trim(masked[a:b])]
 
 
 def blank(s: str, ranges: Sequence[tuple[int, int]]) -> str:
