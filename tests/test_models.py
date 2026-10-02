@@ -331,6 +331,7 @@ def test_chunk_probabilities(transformer_dir: Path):
     scan = models.scan_chunks(loaded, text, overlap=0)
     assert [(c.line, c.end_line, c.words) for c in scan.chunks] == [(1, 1, 4), (3, 3, 4)]
     human, ai = scan.chunks
+    assert human.probability is not None and ai.probability is not None
     assert human.probability < loaded.threshold < ai.probability
     assert scan.total == 2 and scan.seconds >= 0
     assert ai.probability == pytest.approx(loaded.probability("является ключевую данный еще"), abs=1e-6)
