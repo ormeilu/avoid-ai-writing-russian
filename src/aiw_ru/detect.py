@@ -54,6 +54,8 @@ WEIGHTS: dict[str, float] = {
     "phrase3-cluster": 3,
     "model-idiolect": 3,
     "calque": 3,
+    # Жаргон и транслитерации: совет по стилю, как канцелярит (см. JARGON в lexicon.py).
+    "jargon": 0.5,
     "template": 3,
     "transition": 1.5,
     "transition-run": 3,
@@ -123,6 +125,7 @@ TYPE_LABELS: dict[str, str] = {
     "phrase3-cluster": "Скопление фразовых штампов",
     "model-idiolect": "Почерк модели",
     "calque": "Калька с английского",
+    "jargon": "Жаргон и транслитерация с английского",
     "template": "Шаблонная конструкция",
     "transition": "Шаблонный переход",
     "transition-run": "Переходы в начале абзацев подряд",

@@ -393,9 +393,7 @@ def truncate(cell: str | Text, width: int) -> str | Text:
     return f"{set_cell_size(cell, max(0, width - 1)).rstrip()}…"
 
 
-LEGEND = (
-    "P0 — исправить сразу · P1 — исправить до публикации · P2 — шлифовка · стиль — краткость, не довод об авторстве"
-)
+LEGEND = "P0 — исправить сразу · P1 — исправить до публикации · P2 — шлифовка · стиль — канцелярит и жаргон, не довод об авторстве"
 
 
 def dump(value: Record | list[dict[str, Any]] | dict[str, Any], pretty: bool = True) -> str:
