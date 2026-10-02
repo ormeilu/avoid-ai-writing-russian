@@ -110,8 +110,8 @@ def test_example_from_issue_found(text: str, fragment: str):
 
 
 def test_each_finding_is_p1_style_only():
-    """находки жаргона — P1, совет по стилю, вес 0,5"""
-    assert WEIGHTS["jargon"] == 0.5
+    """находки жаргона — P1, совет по стилю, в оценку не идут: у людей жаргон чаще, чем у моделей"""
+    assert WEIGHTS["jargon"] == 0
     for text, _ in [*TRANSLITERATIONS, *CALQUE_WORDS, *GENERAL_JARGON]:
         for i in analyze(text).issues:
             if i.type == "jargon":
@@ -342,3 +342,17 @@ def test_challenge_skipped_in_chat():
 def test_human_corpus_has_no_jargon_findings(path: Path, mode: ContextMode):
     """ни одно правило жаргона не срабатывает на живых текстах корпуса ни в одном режиме"""
     assert hits(path.read_text(encoding="utf-8"), mode) == []
+
+
+def test_jargon_does_not_raise_score():
+    """жаргон не поднимает оценку ИИ-стиля"""
+    plain = "Мы собрали конвейер обработки и проверили его на базовом уровне за неделю."
+    jargon = "Мы собрали пайплайн обработки и проверили его на бейзлайне за неделю."
+    assert analyze(jargon).score == analyze(plain).score == 0
+
+
+def test_landmarks_need_face_context():
+    """«ландмарки лица» — жаргон, масонские «ландмарки» — нет"""
+    assert hits("Сеть находит ландмарки лица на каждом кадре.")
+    assert hits("Лендмарки извлекаем библиотекой Dlib.")
+    assert not hits("Ложа приняла древние масонские ландмарки.")
