@@ -231,12 +231,15 @@ _OPEN = "(?:\\*\\*|__|\\*|_)?"
 # Заголовок раздела: строка Markdown с # или отдельная строка, можно жирным и с номером.
 _HEADING_LINE = f"^[ \\t]*(?:#{{1,6}}[ \\t]+)?{_OPEN}[ \\t]*(?:\\d{{1,2}}\\.?[ \\t]+)?(?:"
 _HEADING_END = f")[ \\t]*[.:]?[ \\t]*{_OPEN}[ \\t]*[.:]?[ \\t]*$"
-SERVICE_HEADING_RE = jsre(
+BIB_HEADING_RE = jsre(
     _HEADING_LINE
     + "список[ \\t]+(?:использованн\\p{L}*[ \\t]+)?(?:литературы|источников)(?:[ \\t]+и[ \\t]+литературы)?"
     "|библиографическ\\p{L}*[ \\t]+список|библиография|литература|источники"
-    "|references|bibliography|literature|works[ \\t]+cited"
-    "|(?:сведения|информация)[ \\t]+об[ \\t]+автор(?:е|ах)|об[ \\t]+автор(?:е|ах)"
+    "|references|bibliography|literature|works[ \\t]+cited" + _HEADING_END,
+    "iu",
+)
+AUTHORS_HEADING_RE = jsre(
+    _HEADING_LINE + "(?:сведения|информация)[ \\t]+об[ \\t]+автор(?:е|ах)|об[ \\t]+автор(?:е|ах)"
     "|(?:information[ \\t]+)?about[ \\t]+the[ \\t]+authors?|authors?[ \\t]+information" + _HEADING_END,
     "iu",
 )
@@ -270,7 +273,7 @@ RECORD_NUMBER_RE = jsre(
 RECORD_AUTHOR_RE = jsre("^[ \\t]*\\p{Lu}\\p{Ll}+(?:-\\p{Lu}\\p{Ll}+)?,?[ \\t]+\\p{Lu}\\.[ \\t]?(?:\\p{Lu}\\.)?", "u")
 RECORD_YEAR_RE = jsre("(?<!\\d)(?:1[89]|20)\\d\\d(?!\\d)")
 RECORD_MARK_RE = jsre(
-    "//|[ \\t][—–][ \\t](?:(?:1[89]|20)\\d\\d|(?:[СсТт№]|[PpNn])\\.?[ \\t]|URL|DOI|Vol|Iss|(?:М|СПб|Л|Киев|Минск)\\.?[ \\t]?:"
+    "(?<![:/])//(?!/)|[ \\t][—–][ \\t](?:(?:1[89]|20)\\d\\d|(?:[СсТт№]|[PpNn])\\.?[ \\t]|URL|DOI|Vol|Iss|(?:М|СПб|Л|Киев|Минск)\\.?[ \\t]?:"
     "|\\d{1,4}[ \\t]с\\.|Текст[ \\t]?[:.])"
     "|(?<!\\p{L})(?:Vol|Iss|pp|Pp|Bd)\\."
     "|№[ \\t]*\\d|(?<!\\p{L})(?:DOI|doi|URL|ISBN|ISSN)(?!\\p{L})|(?<!\\p{L})et[ \\t]+al\\."
@@ -280,12 +283,31 @@ RECORD_MARK_RE = jsre(
     "u",
 )
 RECORD_MAX_CHARS = 600
+# Строка «Ключевые слова: …» не длиннее стольких знаков и с одной жирной подписью.
+KEYWORDS_MAX_CHARS = 400
+BOLD_LABEL_RE = jsre("\\*\\*[^*\\n]{1,40}:\\*\\*", "g")
+# Строка списка литературы попроще записи по ГОСТ: «Архив полковника Хауза. Избранное. М., 2004.»
+# Год и город издания, адрес или примета записи.
+CITY_RE = jsre("(?<!\\p{L})(?:М|СПб|Л|Киев|Минск)\\.,?[ \\t]")
+URL_LINE_RE = jsre("https?://")
+# Сведения об авторах: строки не длиннее столько слов и не больше столько строк подряд. Заголовок
+# без решётки («Об авторе») раздел открывает только во второй половине текста: в начале веб-страницы
+# это пункт меню.
+AUTHOR_LINE_WORDS = 40
+AUTHOR_LINES = 40
 # Английский заголовочный блок перед «Abstract» (название, авторы, организации): не больше
 # столько абзацев, по столько слов в каждом.
 ENGLISH_HEAD_PARAGRAPHS = 4
 ENGLISH_HEAD_WORDS = 60
 # Записей подряд, чтобы считать их списком литературы без заголовка.
 RECORD_RUN = 3
+
+
+def _reference_like(line: str) -> bool:
+    """Строка похожа на позицию списка литературы, хотя и не по ГОСТ: год и город, адрес или примета записи."""
+    if len(line) > RECORD_MAX_CHARS or not RECORD_YEAR_RE.search(line):
+        return False
+    return bool(RECORD_MARK_RE.search(line) or CITY_RE.search(line) or URL_LINE_RE.search(line))
 
 
 def _is_record(line: str) -> bool:
@@ -317,8 +339,10 @@ def service_ranges(s: str) -> list[tuple[int, int]]:
     «Для цитирования» и даты поступления. YAML-шапка и код сюда не входят, их маскирует
     _mask_code; строки внутри них заголовками не считаются.
 
-    Раздел по заголовку длится до следующего заголовка Markdown или до конца текста.
-    Список литературы без заголовка — три записи подряд и больше. Отрезки отсортированы
+    Раздел по заголовку идёт, пока строки похожи на его содержимое (записи, английский текст,
+    короткие строки сведений об авторах, другие служебные строки), и кончается на первой строке
+    прозы или на следующем заголовке Markdown. Раздел литературы без единой записи разделом не
+    считается. Список литературы без заголовка — три записи подряд и больше. Отрезки отсортированы
     и не пересекаются; концы строк внутри них сохраняются при маскировке.
     """
     return _service_in(_mask_code(s))
@@ -365,23 +389,66 @@ def _service_in(masked: str) -> list[tuple[int, int]]:
             i = a - 1
         return first
 
+    def heading_kind(line: str) -> str | None:
+        if BIB_HEADING_RE.search(line):
+            return "bib"
+        if AUTHORS_HEADING_RE.search(line):
+            return "authors"
+        return None
+
+    def service_line(line: str) -> bool:
+        return bool(
+            FRONT_LINE_RE.search(line)
+            or CITE_AS_RE.search(line)
+            or KEYWORDS_RE.search(line)
+            or ABSTRACT_RE.search(line)
+        )
+
+    def section(k: int, kind: str) -> int | None:
+        """Последняя строка раздела, который открывает заголовок в строке k; None — раздела нет."""
+        last, records, author_lines = k, 0, 0
+        j = k + 1
+        while j < len(lines):
+            line = lines[j]
+            if not trim(line):
+                j += 1
+                continue
+            sub_kind = heading_kind(line)
+            if MD_HEADING_RE.search(line) and sub_kind is None:
+                break
+            share = cyrillic_share(line)
+            if sub_kind is not None:
+                kind, author_lines = sub_kind, 0
+            elif _is_record(line) or (kind == "bib" and _reference_like(line)):
+                records += 1
+            elif service_line(line) or (share is not None and share < 0.5):
+                pass
+            elif kind == "authors" and len(words(line)) <= AUTHOR_LINE_WORDS and author_lines < AUTHOR_LINES:
+                author_lines += 1
+            else:
+                break
+            last = j
+            j += 1
+        if last == k or (kind == "bib" and not records and heading_kind(lines[k]) == "bib"):
+            return None
+        return last
+
     out: list[tuple[int, int]] = []
     # Первая строка, с которой может начаться следующая служебная часть: за концом предыдущей.
     floor = 0
     k = 0
     while k < len(lines):
         line = lines[k]
-        if SERVICE_HEADING_RE.search(line):
-            # Раздел до следующего заголовка Markdown, не служебного.
-            j = k + 1
-            while j < len(lines) and not (MD_HEADING_RE.search(lines[j]) and not SERVICE_HEADING_RE.search(lines[j])):
-                j += 1
+        kind = heading_kind(line)
+        md = bool(MD_HEADING_RE.search(line))
+        if kind == "authors" and not md and k < len(lines) // 2:
+            kind = None
+        last = section(k, kind) if kind else None
+        if last is not None:
             # Заголовок Markdown остаётся заголовком, строка-заголовок без решётки входит в часть:
             # иначе из неё получился бы абзац из двух слов.
-            begin = k + 1 if MD_HEADING_RE.search(line) else k
-            if j > begin:
-                out.append((starts[begin], end_of(j - 1)))
-            k = floor = j
+            out.append((starts[k + 1 if md else k], end_of(last)))
+            k = floor = last + 1
             continue
         if FRONT_LINE_RE.search(line):
             out.append((starts[k], end_of(k)))
@@ -393,10 +460,11 @@ def _service_in(masked: str) -> list[tuple[int, int]]:
                 out.append((starts[k], end_of(j)))
                 k = floor = j + 1
                 continue
-        if KEYWORDS_RE.search(line):
-            j = paragraph_end(k)
-            out.append((starts[k], end_of(j)))
-            k = floor = j + 1
+        if KEYWORDS_RE.search(line) and len(line) <= KEYWORDS_MAX_CHARS and len(BOLD_LABEL_RE.findall(line)) <= 1:
+            # Только сама строка: в текстах моделей за «Ключевыми словами» бывает проза без пустой строки,
+            # а в одной строке с ними «**Тэги:** … **Совет:** …» — это след генерации, а не реквизит статьи.
+            out.append((starts[k], end_of(k)))
+            k = floor = k + 1
             continue
         m = ABSTRACT_RE.search(line)
         if m:

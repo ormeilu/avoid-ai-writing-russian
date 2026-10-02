@@ -12,7 +12,7 @@ from collections.abc import Callable
 import pytest
 
 from aiw_ru import analyze, antiplagiat
-from aiw_ru.text import line_col, prepare, service_ranges
+from aiw_ru.text import cyrillic_share, line_col, prepare, service_ranges, words
 from aiw_ru.types import ContextMode
 
 # Где в фикстуре кончается проза и начинается список литературы.
@@ -76,9 +76,18 @@ def test_no_findings_from_service_parts(article: tuple[str, str, str]):
 
 
 def test_service_parts_do_not_count_as_words(article: tuple[str, str, str]):
-    """слова списка литературы и английского блока не входят в счётчик слов"""
-    _, text, body = article
-    assert analyze(text, "academic").stats.words - analyze(body, "academic").stats.words <= 2
+    """слова списка литературы и английского блока не входят в счётчик слов; русская аннотация
+    и повтор шапки в хвосте rgups-trudy — проза автора, они входят"""
+    name, text, body = article
+    lines = service_lines(text)
+    first = text[: text.index(LIST_START[name])].count("\n") + 1
+    prose_tail = [
+        line
+        for n, line in enumerate(text.splitlines(), start=1)
+        if n > first and n not in lines and (cyrillic_share(line) or 0) >= 0.5
+    ]
+    extra = len(words("\n".join(prose_tail)))
+    assert abs(analyze(text, "academic").stats.words - analyze(body, "academic").stats.words - extra) <= 2
 
 
 def test_antiplagiat_skips_list_and_english_block(article: tuple[str, str, str]):
