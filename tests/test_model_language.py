@@ -390,3 +390,32 @@ def test_normalize_keeps_short_whitespace(transformer: Path):
     assert loaded.normalize("ну   вот\n\n\nкороче") == "ну вот короче"
     assert loaded.normalize("ну" + " " * 63 + "вот") == "ну вот"
     assert loaded.normalize("ну" + " " * 64 + "вот") == "ну вот"
+
+
+# ── длинный абзац не на русском вырезается до модели ──
+
+LONG_ENGLISH = "This paragraph is written in English and quotes the original abstract"
+WITH_QUOTE = f"{HUMAN}\n\n{LONG_ENGLISH}\n\n{AI}\n"
+
+
+def test_long_foreign_paragraph_is_cut(transformer: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    """абзац не на русском длиннее FOREIGN_LETTERS букв модель не читает: строки названы, фрагмента нет,
+    вероятность та же, что без него"""
+    data = classify(capsys, put(tmp_path, "quote.md", WITH_QUOTE))
+    assert data["notRussianLines"] == [[3, 3]]
+    assert data["probability"] == classify(capsys, put(tmp_path, "plain.md", f"{HUMAN}\n\n\n\n{AI}\n"))["probability"]
+    lines = [(i["line"], i["endLine"]) for i in data["fragments"]["items"]]
+    assert (3, 3) not in lines
+    assert data["fragments"]["skipped"] == 0
+
+
+def test_long_foreign_paragraph_in_scan_output(transformer: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    out = flat(cli(capsys, "scan", put(tmp_path, "quote.md", WITH_QUOTE))[1])
+    assert "Не на русском строка 3: модель её не читала" in out
+
+
+def test_foreign_lines_ignore_short_latin():
+    """короткая строка латиницей («Python 3.12») и русский абзац с названиями моделей не вырезаются"""
+    text = "Python 3.12\n\nМодели SAM и DINOv2 мы запускали на одной видеокарте, без дообучения.\n"
+    assert models.foreign_lines(text) == []
+    assert models.visible(text) == text

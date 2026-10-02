@@ -16,7 +16,8 @@ Face (`aiw-ru models install`). Пока их нет, scan и antiplagiat раб
 
 Модели обучены на русском тексте. YAML-шапку, блоки кода и служебные части статьи (список
 литературы, ключевые слова, английскую аннотацию, сведения об авторах) им не показывают, а у
-фрагмента, где кириллицы меньше половины букв, вероятности нет. Это делают visible(), is_russian()
+фрагмента, где кириллицы меньше половины букв, вероятности нет. Абзацы не на русском модели тоже
+не показывают. Это делают visible(), foreign_lines(), is_russian()
 и scan_chunks(); низкоуровневые probability() и probabilities() читают текст как есть.
 """
 
@@ -36,7 +37,7 @@ from typing import Any, Protocol
 
 from aiw_ru.detect import analyze
 from aiw_ru.features import CONTEXT, FEATURE_NAMES, FEATURES_VERSION, features
-from aiw_ru.text import Sentence, cyrillic_share, model_text, sentences, words
+from aiw_ru.text import Sentence, blank, cyrillic_share, letter_share, model_text, sentences, words
 from aiw_ru.types import AnalysisResult
 
 # onnxruntime 1.30 при импорте запускает телеметрию Microsoft: секунд через десять она шлёт данные,
@@ -54,6 +55,10 @@ INFERENCE_VERSION = 1
 # где кириллицы меньше половины букв, модели не оценивают. Считаются кириллические и латинские
 # буквы: цифры, знаки и другие письменности в долю не входят, а текст совсем без букв не оценивается.
 RUSSIAN_SHARE = 0.5
+# Абзац с кириллицей меньше RUSSIAN_SHARE и хотя бы столькими буквами модели не показывают: английская
+# аннотация или цитата посреди русского текста иначе попадает в русский фрагмент и тянет его вверх.
+# Короткие строки вроде «Python 3.12» или «Results» остаются: русский текст вокруг их перевешивает.
+FOREIGN_LETTERS = 20
 
 # Серия пропусков от 64 знаков. Так выглядят вырезанные YAML-шапка, код и служебные части: их
 # заменяют пробелами, чтобы номера строк и смещения остались как в исходнике. Правила нормализации
@@ -631,14 +636,52 @@ OVERLAP = 0.25
 UNIT = 0.25
 
 
+def _foreign(text: str) -> list[tuple[int, int]]:
+    """Абзацы (строки подряд без пустой между ними), где кириллицы меньше RUSSIAN_SHARE букв, а букв
+    не меньше FOREIGN_LETTERS; отрезки [начало, конец) в text."""
+    out: list[tuple[int, int]] = []
+    para: tuple[int, int] | None = None
+    pos = 0
+
+    def close() -> None:
+        if para is None:
+            return
+        cyr, lat = letter_share(text[para[0] : para[1]])
+        if cyr + lat >= FOREIGN_LETTERS and cyr / (cyr + lat) < RUSSIAN_SHARE:
+            out.append(para)
+
+    for line in text.split("\n"):
+        end = pos + len(line)
+        if line.strip():
+            para = (para[0] if para else pos, end)
+        else:
+            close()
+            para = None
+        pos = end + 1
+    close()
+    return out
+
+
 @lru_cache(maxsize=2)
+def _clean(text: str) -> tuple[str, tuple[tuple[int, int], ...]]:
+    base = model_text(text)
+    foreign = _foreign(base)
+    return blank(base, foreign), tuple(foreign)
+
+
 def visible(text: str) -> str:
-    """Текст, который видят модели: YAML-шапка, блоки кода и служебные части статьи заменены пробелами.
+    """Текст, который видят модели: YAML-шапка, блоки кода, служебные части статьи и абзацы не на русском
+    заменены пробелами.
 
     Длина и переводы строк сохраняются, поэтому смещения и номера строк те же, что в исходнике
     (aiw_ru.text.model_text). Результат кэшируется: signal и scan_chunks получают один и тот же
     файл и чистят его один раз."""
-    return model_text(text)
+    return _clean(text)[0]
+
+
+def foreign_lines(text: str) -> list[tuple[int, int]]:
+    """Строки исходника (с единицы, первая и последняя) абзацев не на русском, которые модели не показывают."""
+    return [(text.count("\n", 0, a) + 1, text.count("\n", 0, b) + 1) for a, b in _clean(text)[1]]
 
 
 def russian(share: float | None) -> bool:
