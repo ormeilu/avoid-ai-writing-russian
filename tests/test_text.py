@@ -4,7 +4,20 @@ import time
 
 import pytest
 
-from aiw_ru.text import blocks, cv, line_col, mattr, mean, plural, prepare, sentences, words
+from aiw_ru.text import (
+    blocks,
+    cv,
+    cyrillic_share,
+    line_col,
+    mattr,
+    mean,
+    model_text,
+    plural,
+    prepare,
+    sentences,
+    service_ranges,
+    words,
+)
 
 ZW = chr(0x200B)
 SHY = chr(0x00AD)
@@ -316,3 +329,103 @@ def test_plural_groups_thousands():
     assert plural(52521, "текст", "текста", "текстов") == f"52{nbsp}521 текст"
     assert plural(1000, "текст", "текста", "текстов") == "1000 текстов"
     assert plural(1234567, "слово", "слова", "слов") == f"1{nbsp}234{nbsp}567 слов"
+
+
+# ─── служебные части статьи ─────────────────────────────────────────────
+
+GOST_TAIL = (
+    "## Список литературы\n\n"
+    "**1.** Иванов И. И. Оценка утомления // Транспорт. — 2023. — № 4. — С. 12–19.\n\n"
+    "**2.** Smith J. Drowsiness detection // Sensors. — 2023. — Vol. 23, № 20. — P. 8386.\n\n"
+    "**Abstract.** We compare three drowsiness detection methods on cab recordings.\n\n"
+    "**Keywords:** drowsiness, PERCLOS, train driver.\n\n"
+    "## Сведения об авторах\n\n"
+    "Иванов Иван Иванович, аспирант.\n"
+)
+
+
+def _service(s: str) -> list[str]:
+    return [s[a:b] for a, b in service_ranges(s)]
+
+
+def test_service_bibliography_by_heading():
+    """список литературы по заголовку: до конца текста, вместе с английским блоком и сведениями об авторах"""
+    s = "Мы сравнили три метода.\n\n" + GOST_TAIL
+    (part,) = _service(s)
+    assert "Иванов И. И." in part
+    assert "Abstract" in part
+    assert "Иванов Иван Иванович" in part
+    assert "Мы сравнили" not in part
+
+
+def test_service_heading_variants():
+    """заголовок списка литературы: Markdown, жирный, прописными, с номером"""
+    record = "\n\n1. Иванов И. И. Оценка // Транспорт. — 2023. — № 4. — С. 12–19.\n"
+    for heading in ("## Литература", "**Список использованных источников**", "СПИСОК ЛИТЕРАТУРЫ", "5. References"):
+        assert _service(f"Текст.\n\n{heading}{record}"), heading
+
+
+def test_service_section_ends_at_next_heading():
+    """раздел по заголовку кончается на следующем заголовке Markdown"""
+    s = "## Литература\n\n1. Иванов И. И. Оценка // Транспорт. — 2023.\n\n## Приложение А\n\nПроза приложения."
+    (part,) = _service(s)
+    assert "Приложение" not in part
+
+
+def test_service_records_without_heading():
+    """три записи подряд без заголовка — список литературы, две — ещё нет"""
+    records = [
+        "1. Иванов И. И. Оценка // Транспорт. — 2023. — № 4. — С. 12–19.",
+        "2. Smith J. Drowsiness // Sensors. — 2023. — Vol. 23. — P. 8386.",
+        "3. Петров П. П. Сон. — М. : Наука, 2019. — 240 с.",
+    ]
+    assert len(_service("Текст.\n\n" + "\n".join(records) + "\n\nДальше проза.")) == 1
+    assert _service("\n".join(records[:2])) == []
+
+
+def test_service_ignores_prose_lookalikes():
+    """проза со ссылками и годами и нумерованный список в теле — не литература"""
+    assert (
+        _service("В работе 2021 года [12, с. 45] показано.\nВ 2022 году [3, с. 7] подтвердили.\nВ 2023 году тоже.")
+        == []
+    )
+    assert _service("1. В 2020 году — 5 случаев.\n2. В 2021 году — 7 случаев.\n3. В 2022 году — 9 случаев.") == []
+    assert _service("**Abstract.** Русская аннотация, хотя подписана по-английски.") == []
+    assert _service("```\n## Литература\n```\nПроза.") == []
+
+
+def test_service_keywords_and_english_abstract():
+    """ключевые слова и английская аннотация — служебные, русская аннотация — проза"""
+    s = "**Аннотация.** Мы сравнили методы.\n\nКлючевые слова: сон, внимание.\n\nAbstract\n\nWe compare methods.\n"
+    parts = _service(s)
+    assert parts[0].startswith("Ключевые слова")
+    assert "We compare" in parts[1]
+    assert not any("Мы сравнили" in p for p in parts)
+
+
+def test_prepare_masks_service_in_prose():
+    """служебные части не попадают в prose, блоки помечены service"""
+    p = prepare("Мы сравнили три метода.\n\n" + GOST_TAIL)
+    assert "Иванов" not in p.prose
+    assert "Транспорт" in p.no_code
+    assert "service" in [b.kind for b in blocks(p)]
+
+
+def test_model_text_keeps_lines():
+    """текст для моделей: без шапки, кода и литературы, длина и строки те же"""
+    s = "---\nabstract-en: English.\n---\n\nМы сравнили методы.\n\n```\nкод\n```\n\n" + GOST_TAIL
+    m = model_text(s)
+    assert len(m) == len(s)
+    assert m.count("\n") == s.count("\n")
+    assert "English" not in m
+    assert "код" not in m
+    assert "Иванов" not in m
+    assert "Мы сравнили методы." in m
+
+
+def test_cyrillic_share():
+    """доля кириллицы среди букв; без букв — None"""
+    assert cyrillic_share("Мы") == 1
+    assert cyrillic_share("We") == 0
+    assert cyrillic_share("Модель SAM") == 6 / 9
+    assert cyrillic_share("12, 13.") is None
