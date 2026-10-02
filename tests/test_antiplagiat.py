@@ -5,6 +5,7 @@ from collections.abc import Callable
 
 from aiw_ru import (
     DEFAULT_MODEL,
+    Issue,
     Sample,
     antiplagiat,
     balanced_accuracy,
@@ -15,6 +16,7 @@ from aiw_ru import (
     predict_share,
     share_error,
 )
+from aiw_ru.antiplagiat import features_for
 
 # ─── antiplagiat ────────────────────────────────────────────────────────
 
@@ -86,3 +88,14 @@ def test_no_documents_keeps_model():
     """без документов модель не меняется"""
     assert fit_share(DEFAULT_MODEL, []) == DEFAULT_MODEL
     assert math.isnan(share_error(DEFAULT_MODEL, []))
+
+
+def test_jargon_is_not_clerical():
+    """жаргон (style_only) не входит в признак «канцелярит»: калибровки подобраны под канцелярит"""
+    text = "Мы собрали пайплайн и бейзлайн за неделю. " * 5
+
+    def issue(type_: str) -> Issue:
+        return Issue(type=type_, rule="r", severity="P1", text="x", index=0, line=1, column=1, hint="", style_only=True)
+
+    assert features_for(text, [issue("jargon")] * 4)[3] == 0
+    assert features_for(text, [issue("tier1-clarity")] * 4)[3] > 0

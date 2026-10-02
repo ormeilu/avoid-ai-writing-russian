@@ -62,10 +62,10 @@ from dataclasses import dataclass, field
 import regex
 from pydantic import Field
 
-from aiw_ru.compat import jsre
+from aiw_ru.compat import jsre, trim
 from aiw_ru.detect import AI_URL_RE, analyze
 from aiw_ru.lexicon import phrase
-from aiw_ru.text import WORD_END, WORD_START, Prepared, Sentence, blocks, prepare, sentences
+from aiw_ru.text import WORD_END, WORD_START, Prepared, Sentence, blocks, prepare, sentences, service_ranges
 from aiw_ru.types import ContextMode, Issue, Record
 
 
@@ -91,7 +91,8 @@ URL_RE = jsre('https?:\\/\\/[^\\s)>\\]»"]+', "g")
 URL_TAIL_RE = jsre("[?&]$")
 LOOSE_URL_RE = jsre("https?:\\/\\/\\S+", "g")
 NUMBER_RE = jsre("\\d+(?:[.,]\\d+)*", "g")
-CITATION_RE = jsre("\\[\\d+(?:[,;–-]\\s*\\d+)*(?:,\\s*с\\.\\s*\\d+(?:[–-]\\d+)?)?\\]", "g")
+# Скобки после pandoc -t gfm бывают экранированы: \[12\]; сравниваются без обратной косой.
+CITATION_RE = jsre("\\\\?\\[\\d+(?:[,;–-]\\s*\\d+)*(?:,\\s*с\\.\\s*\\d+(?:[–-]\\d+)?)?\\\\?\\]", "g")
 PANDOC_RE = jsre("\\[-?@[^\\]\\n]+\\]", "g")
 TABLE_RE = jsre("^[ \\t]*\\|.*$", "gm")
 BLOCKQUOTE_RE = jsre("^[ \\t]*>.*$", "gm")
@@ -110,6 +111,14 @@ def _all(pattern, s: str) -> list[str]:
 def _frontmatter(s: str) -> str:
     m = FRONTMATTER_RE.search(s)
     return m.group() if m else ""
+
+
+def _service_texts(s: str) -> list[str]:
+    """Служебные части статьи (service_ranges) построчно, без пустых строк и пробелов по краям."""
+    out: list[str] = []
+    for a, b in service_ranges(s):
+        out.extend(line for line in (trim(x) for x in s[a:b].split("\n")) if line)
+    return out
 
 
 def _strip_code(s: str) -> str:
@@ -740,7 +749,15 @@ def validate(before: str, after: str, context: ContextMode = "general") -> Valid
     b, a = _strip_code(before), _strip_code(after)
     _compare_exact("формула", _all(FORMULA_RE, b), _all(FORMULA_RE, a), v)
     _compare_exact("URL", _urls(before), _urls(after), v)
-    _compare_exact("ссылка на литературу", _all(CITATION_RE, b), _all(CITATION_RE, a), v)
+    _compare_exact(
+        "ссылка на литературу",
+        [c.replace("\\", "") for c in _all(CITATION_RE, b)],
+        [c.replace("\\", "") for c in _all(CITATION_RE, a)],
+        v,
+    )
+    # Список литературы, ключевые слова, английская аннотация и сведения об авторах — защищённое
+    # содержимое, как YAML-шапка; prose их не видит, поэтому сверяются целиком.
+    _compare_exact("служебная часть", _service_texts(before), _service_texts(after), v)
     _compare_exact("ссылка pandoc", _all(PANDOC_RE, b), _all(PANDOC_RE, a), v)
     _compare_exact("таблица", _all(TABLE_RE, b), _all(TABLE_RE, a), v)
     _compare_exact("цитата-блок", _all(BLOCKQUOTE_RE, b), _all(BLOCKQUOTE_RE, a), v)

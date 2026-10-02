@@ -429,3 +429,11 @@ def test_cyrillic_share():
     assert cyrillic_share("We") == 0
     assert cyrillic_share("Модель SAM") == 6 / 9
     assert cyrillic_share("12, 13.") is None
+
+
+def test_escaped_citations_masked():
+    """ссылки на литературу после pandoc (\\[12\\], \\[3, с. 7\\]) замаскированы, как [12]"""
+    p = prepare("Метод работает \\[12\\], см. \\[3, с. 7\\] и [4].")
+    assert "12" not in p.prose
+    assert "с. 7" not in p.prose
+    assert "4" not in p.prose
