@@ -18,7 +18,7 @@ import json
 import math
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -48,7 +48,7 @@ from aiw_ru.antiplagiat import (
 from aiw_ru.categories import TYPE_TO_SECTION
 from aiw_ru.compat import js_round, jsre, num_str, to_fixed, trim
 from aiw_ru.detect import TYPE_LABELS, analyze
-from aiw_ru.text import cyrillic_share, plural, words
+from aiw_ru.text import cyrillic_share, model_text, plural, words
 from aiw_ru.types import CONTEXT_MODES, PROFILE_TO_MODE, AnalysisResult, ContextMode, Record, Severity
 from aiw_ru.validate import validate
 
@@ -440,6 +440,8 @@ class Signal:
     coverage: models.Coverage | None
     # Доля кириллицы среди кириллических и латинских букв текста для модели; None, если букв нет.
     cyrillic: float | None = None
+    # Строки абзацев не на русском, которые модель не читала: (первая, последняя).
+    foreign: tuple[tuple[int, int], ...] = ()
 
     @property
     def skipped(self) -> bool:
@@ -471,16 +473,22 @@ def model_signal(a: Args, text: str, result: AnalysisResult | None = None) -> Si
 
 def signal(loaded: models.Loaded, text: str, result: AnalysisResult | None = None) -> Signal:
     """Вероятность по тексту целиком. Модель читает не файл, а models.visible(text): без YAML-шапки,
-    кода и служебных частей статьи. Если в нём меньше половины кириллицы, вероятности нет.
+    кода, служебных частей статьи и абзацев не на русском. Если в том, что осталось, меньше половины
+    кириллицы или нет букв, вероятности нет.
 
     result — ответ детектора на исходник; на visible(text) он даёт те же находки и статистику
-    (шапку, код и служебные части детектор маскирует так же), поэтому LightGBM его переиспользует."""
+    (шапку, код и служебные части детектор маскирует так же), поэтому LightGBM его переиспользует.
+    Абзацы не на русском детектор не вырезает: если они есть, LightGBM считает признаки заново."""
     outdated_hint(loaded.model)
     clean = models.visible(text)
-    share = cyrillic_share(clean)
-    if not models.russian(share):
-        return Signal(loaded, None, None, share)
-    return Signal(loaded, loaded.probability(clean, result), loaded.coverage(clean), share)
+    foreign = tuple(models.foreign_lines(text))
+    # Доля по тексту до вырезания абзацев не на русском: её видит пользователь. Решает доля в том, что
+    # осталось модели: русские абзацы английского документа модель оценивает.
+    share = cyrillic_share(model_text(text))
+    if not models.is_russian(clean):
+        return Signal(loaded, None, None, share, foreign)
+    reuse = None if foreign else result
+    return Signal(loaded, loaded.probability(clean, reuse), loaded.coverage(clean), share, foreign)
 
 
 # Модели, о старой версии которых уже сказано в этом запуске.
@@ -533,8 +541,26 @@ def read_fact(c: models.Coverage) -> tuple[str, str]:
     return ("Прочитано", f"{read_words(c)}, {lines} из {grouped(c.total_lines)}: окно модели {window}")
 
 
+def line_ranges(ranges: Sequence[tuple[int, int]]) -> str:
+    """«строка 11», «строки 11, 40–45»."""
+    parts = [str(a) if a == b else f"{a}–{b}" for a, b in ranges]
+    one = len(ranges) == 1 and ranges[0][0] == ranges[0][1]
+    return f"{'строка' if one else 'строки'} {', '.join(parts)}"
+
+
+def foreign_fact(sig: Signal) -> list[tuple[str, str]]:
+    """«Не на русском: строки 11, 40–45, модель их не читала»."""
+    if not sig.foreign or sig.skipped:
+        return []
+    it = "её" if len(sig.foreign) == 1 and sig.foreign[0][0] == sig.foreign[0][1] else "их"
+    return [("Не на русском", f"{line_ranges(sig.foreign)}: модель {it} не читала")]
+
+
 def read_facts(sig: Signal | None) -> list[tuple[str, str]]:
-    return [read_fact(sig.coverage)] if sig is not None and sig.coverage is not None and sig.truncated else []
+    if sig is None:
+        return []
+    read = [read_fact(sig.coverage)] if sig.coverage is not None and sig.truncated else []
+    return read + foreign_fact(sig)
 
 
 def fragments_hint(sig: Signal | None, file: str | None) -> None:
@@ -725,6 +751,7 @@ def signal_json(sig: Signal) -> dict[str, Any]:
         "repo": m.repo,
         "outdated": models.outdated(m),
         "read": None if sig.coverage is None else coverage_json(sig.coverage),
+        "notRussianLines": [list(r) for r in sig.foreign],
     }
 
 
@@ -1124,7 +1151,7 @@ def cmd_classify_all(a: Args) -> int:
         if sigs[0].skipped:
             facts([skip_fact(sigs)])
             continue
-        facts([signal_fact(s, s.loaded.model.title) for s in sigs])
+        facts([*(signal_fact(s, s.loaded.model.title) for s in sigs), *foreign_fact(sigs[0])])
         out(indented(agreement(sigs)))
         if any(s.truncated for s in sigs):
             target = f if f != "-" else "<файл>"
