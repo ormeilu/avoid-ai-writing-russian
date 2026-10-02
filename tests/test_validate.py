@@ -339,3 +339,30 @@ def test_facts_skip_protected_content():
     r = validate(before, before.replace("обычно работает в Москве", "работает в Воронеже"))
     assert kinds(r) == {"цитата"}
     assert r.warnings == []
+
+
+ARTICLE = (
+    "Мы сравнили три метода оценки сонливости \\[1, 2\\].\n\n"
+    "## Список литературы\n\n"
+    "**1.** Иванов И. И. Оценка утомления // Транспорт. — 2023. — № 4. — С. 12–19.\n\n"
+    "**2.** Smith J. Drowsiness detection // Sensors. — 2023. — Vol. 23, № 20. — P. 8386.\n"
+)
+
+
+def test_bibliography_is_protected():
+    """правка записи в списке литературы — нарушение, даже если числа те же"""
+    after = ARTICLE.replace("Оценка утомления", "Оценивание утомления", 1)
+    assert "служебная часть" in {v.kind for v in validate(ARTICLE, after).violations}
+
+
+def test_body_edit_keeps_bibliography():
+    """правка прозы при нетронутом списке литературы проходит"""
+    after = ARTICLE.replace("Мы сравнили три метода", "Сравнили три метода", 1)
+    assert validate(ARTICLE, after).ok
+
+
+def test_escaped_citations_from_pandoc():
+    """ссылки \\[1, 2\\] после pandoc: снятое экранирование не нарушение, потерянная ссылка — нарушение"""
+    assert validate(ARTICLE, ARTICLE.replace("\\[1, 2\\]", "[1, 2]", 1)).ok
+    lost = validate(ARTICLE, ARTICLE.replace(" \\[1, 2\\]", "", 1))
+    assert "ссылка на литературу" in {v.kind for v in lost.violations}

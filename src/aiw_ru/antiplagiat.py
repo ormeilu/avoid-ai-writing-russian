@@ -93,7 +93,9 @@ def features_for(text: str, fragment_issues: list[Issue]) -> list[float]:
     uniformity = max(0, 1 - cv(lens) / 0.6) if len(lens) >= 3 else 0.3
     m = mean(lens)
     typical = math.exp(-(((m - 19) / 7) ** 2)) if lens else 0
-    clerical = min(3, sum(1 for i in fragment_issues if i.style_only) * 100 / n / 2)
+    # Признак «канцелярит» и веса калибровок подобраны под канцелярит и многословие; жаргон тоже
+    # совет по стилю (style_only), но в этот признак не идёт.
+    clerical = min(3, sum(1 for i in fragment_issues if i.style_only and i.type != "jargon") * 100 / n / 2)
     rare = sum(1 for s in ss if RARE_PUNCT_RE.search(s.text))
     poor_punct = max(0, 1 - rare / len(ss) / 0.5) if len(ss) >= 3 else 0.3
     firsts = [(words(s.text) or [""])[0].lower() for s in ss]
