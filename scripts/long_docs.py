@@ -209,7 +209,8 @@ def run_doc(loaded: models.Loaded, doc: Doc, overlap: float) -> dict[str, Any]:
         "threshold": loaded.threshold,
         "head": round(loaded.probability(doc.text), 5),
         "seconds": round(scan.seconds, 4),
-        "chunks": [[c.start, c.end, round(c.probability, 5)] for c in scan.chunks],
+        # Фрагменты не на русском модель не оценивает, и в замер они не входят, как в classify.
+        "chunks": [[c.start, c.end, round(c.probability, 5)] for c in scan.chunks if c.probability is not None],
     }
 
 

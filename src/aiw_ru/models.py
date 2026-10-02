@@ -13,6 +13,11 @@ Face (`aiw-ru models install`). Пока их нет, scan и antiplagiat раб
 (у ModernBERT 8192, 4–5 тысяч слов), иначе max_length (512, около 300 слов). Докуда он
 дочитал, говорит coverage(). Где в тексте ИИ, показывает scan_chunks(): режет текст на
 фрагменты по max_length токенов по границам предложений, с перекрытием соседних.
+
+Модели обучены на русском тексте. YAML-шапку, блоки кода и служебные части статьи (список
+литературы, ключевые слова, английскую аннотацию, сведения об авторах) им не показывают, а у
+фрагмента, где кириллицы меньше половины букв, вероятности нет. Это делают visible(), is_russian()
+и scan_chunks(); низкоуровневые probability() и probabilities() читают текст как есть.
 """
 
 from __future__ import annotations
@@ -24,14 +29,14 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from functools import cache
+from functools import cache, lru_cache
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Protocol
 
 from aiw_ru.detect import analyze
 from aiw_ru.features import CONTEXT, FEATURE_NAMES, FEATURES_VERSION, features
-from aiw_ru.text import sentences, words
+from aiw_ru.text import Sentence, cyrillic_share, model_text, sentences, words
 from aiw_ru.types import AnalysisResult
 
 # onnxruntime 1.30 при импорте запускает телеметрию Microsoft: секунд через десять она шлёт данные,
@@ -43,6 +48,18 @@ os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
 INSTALL_HINT = 'uv sync --extra ml (или pip install "aiw-ru[ml]")'
 # Версия inference.json, которую понимает этот код.
 INFERENCE_VERSION = 1
+
+# Модели обучены на русской части LLMTrace. На другом языке вероятность ничего не значит:
+# ModernBERT на английской аннотации почти всегда уверенно говорит «ИИ». Поэтому текст и фрагмент,
+# где кириллицы меньше половины букв, модели не оценивают. Считаются кириллические и латинские
+# буквы: цифры, знаки и другие письменности в долю не входят, а текст совсем без букв не оценивается.
+RUSSIAN_SHARE = 0.5
+
+# Серия пропусков от 64 знаков. Так выглядят вырезанные YAML-шапка, код и служебные части: их
+# заменяют пробелами, чтобы номера строк и смещения остались как в исходнике. Правила нормализации
+# с `^[ ]*` на строке из тысяч пробелов работают за квадрат времени (20 000 пробелов — около 3 с),
+# и разбиение на предложения после точки тоже: серию пропусков обходят.
+LONG_BLANK = re.compile(r"\s{64,}")
 
 
 class ModelError(Exception):
@@ -364,7 +381,12 @@ class _Transformer:
     rules: list[tuple[re.Pattern[str], str]]
 
     def normalize(self, text: str) -> str:
-        """Та же нормализация, что при обучении: правила записаны в inference.json."""
+        """Та же нормализация, что при обучении: правила записаны в inference.json.
+
+        Серия пропусков от 64 знаков (LONG_BLANK) до правил сводится к одному пробелу или переводу
+        строки. Результат тот же: правила про начало строки пробелов не считают, а последнее
+        правило всё равно делает из любых пропусков один пробел."""
+        text = LONG_BLANK.sub(lambda m: "\n" if "\n" in m.group() else " ", text)
         for pattern, replacement in self.rules:
             text = pattern.sub(replacement, text)
         return text.strip()
@@ -466,7 +488,7 @@ class _Transformer:
 
     def _units(self, text: str, cap: int) -> list[tuple[int, int, int]]:
         """Предложения со своими токенами; предложение длиннее cap делится по словам пополам, пока не влезет."""
-        sents = sentences(text)
+        sents = _sentences(text)
         units: list[tuple[int, int, int]] = []
         for sent, n in zip(sents, self.counts([s.text for s in sents]), strict=True):
             self._split(text, sent.start, sent.end, n, cap, units)
@@ -511,6 +533,17 @@ class _Transformer:
                 back += units[k][2]
             i = k
         return [(units[a][0], units[b - 1][1]) for a, b in out]
+
+
+def _sentences(text: str) -> list[Sentence]:
+    """Предложения по кускам между длинными пропусками: sentences() на серии пробелов после точки
+    работает за квадрат времени, а серия пропусков предложение всё равно разделяет."""
+    out: list[Sentence] = []
+    pos = 0
+    for m in LONG_BLANK.finditer(text):
+        out += sentences(text[pos : m.start()], pos)
+        pos = m.end()
+    return out + sentences(text[pos:], pos)
 
 
 def _no_limits(tokenizer: Any) -> None:
@@ -598,6 +631,26 @@ OVERLAP = 0.25
 UNIT = 0.25
 
 
+@lru_cache(maxsize=2)
+def visible(text: str) -> str:
+    """Текст, который видят модели: YAML-шапка, блоки кода и служебные части статьи заменены пробелами.
+
+    Длина и переводы строк сохраняются, поэтому смещения и номера строк те же, что в исходнике
+    (aiw_ru.text.model_text). Результат кэшируется: signal и scan_chunks получают один и тот же
+    файл и чистят его один раз."""
+    return model_text(text)
+
+
+def russian(share: float | None) -> bool:
+    """Доли кириллицы (aiw_ru.text.cyrillic_share) хватает для моделей: не меньше RUSSIAN_SHARE.
+    None, то есть текст без букв, не годится."""
+    return share is not None and share >= RUSSIAN_SHARE
+
+
+def is_russian(text: str) -> bool:
+    return russian(cyrillic_share(text))
+
+
 @dataclass(frozen=True, slots=True)
 class Chunk:
     """Фрагмент длинного текста в одно окно модели и его вероятность."""
@@ -608,16 +661,40 @@ class Chunk:
     line: int
     end_line: int
     words: int
-    probability: float
+    # None у фрагмента не на русском: модель его не оценивала.
+    probability: float | None
+
+    @property
+    def skipped(self) -> bool:
+        return self.probability is None
+
+    def above(self, threshold: float) -> bool:
+        """Вероятность не ниже порога; у фрагмента без вероятности нет."""
+        return self.probability is not None and self.probability >= threshold
 
 
 @dataclass(frozen=True, slots=True)
 class ChunkScan:
     chunks: list[Chunk]
-    # Фрагментов в тексте всего; проверено len(chunks), если стоял предел.
+    # Фрагментов в тексте всего; просмотрено len(chunks), если стоял предел.
     total: int
     seconds: float
     overlap: float
+    # Текст для моделей (visible), по которому нарезаны фрагменты; start и end указывают и в него.
+    text: str = ""
+    # Слов в этом тексте без слов, которые есть только во фрагментах не на русском: на столько
+    # слов делится доля ИИ-слов. Слова из неоценённой за пределом --max-fragments части остаются.
+    words: int = 0
+
+    @property
+    def rated(self) -> list[Chunk]:
+        """Фрагменты, которые оценила модель."""
+        return [c for c in self.chunks if not c.skipped]
+
+    @property
+    def skipped(self) -> int:
+        """Фрагментов не на русском: модель их не оценивала."""
+        return sum(c.skipped for c in self.chunks)
 
 
 def chunk_spans(
@@ -635,6 +712,34 @@ def needs_fragments(loaded: Loaded, coverage: Coverage) -> bool:
     return isinstance(loaded, _Transformer) and (coverage.total_tokens or 0) > loaded.width
 
 
+def _merged(spans: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Отрезки по возрастанию, слитые там, где они пересекаются или касаются."""
+    out: list[tuple[int, int]] = []
+    for a, b in sorted(spans):
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
+def _outside(spans: list[tuple[int, int]], cover: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Части отрезков spans (слитых), не закрытые отрезками cover (слитыми)."""
+    out: list[tuple[int, int]] = []
+    for a, b in spans:
+        for c, d in cover:
+            if d <= a or c >= b:
+                continue
+            if c > a:
+                out.append((a, c))
+            a = max(a, d)
+            if a >= b:
+                break
+        if a < b:
+            out.append((a, b))
+    return out
+
+
 def scan_chunks(
     loaded: Loaded,
     text: str,
@@ -642,15 +747,33 @@ def scan_chunks(
     limit: int | None = None,
     progress: Progress | None = None,
 ) -> ChunkScan:
-    """Вероятность по каждому фрагменту длинного текста; limit — проверить только первые фрагменты."""
+    """Вероятность по каждому фрагменту длинного текста; limit — проверить только первые фрагменты.
+
+    text — исходник файла. Фрагменты режутся по visible(text): шапка, код и служебные части в них не
+    попадают, а start, end и номера строк остаются по исходнику. Фрагмент, где кириллицы меньше
+    RUSSIAN_SHARE букв, модель не читает: его probability равна None.
+    """
     overlap = OVERLAP if overlap is None else overlap
-    spans = chunk_spans(loaded, text, overlap)
+    clean = visible(text)
+    spans = chunk_spans(loaded, clean, overlap)
     checked = spans[:limit] if limit else spans
+    pieces = [clean[a:b] for a, b in checked]
+    in_russian = [is_russian(piece) for piece in pieces]
     started = time.perf_counter()
-    probs = loaded.probabilities([text[a:b] for a, b in checked], progress)
+    probs = iter(loaded.probabilities([p for p, ru in zip(pieces, in_russian, strict=True) if ru], progress))
     seconds = time.perf_counter() - started
     chunks = [
-        Chunk(a, b, text.count("\n", 0, a) + 1, text.count("\n", 0, b) + 1, len(words(text[a:b])), p)
-        for (a, b), p in zip(checked, probs, strict=True)
+        Chunk(
+            a,
+            b,
+            clean.count("\n", 0, a) + 1,
+            clean.count("\n", 0, b) + 1,
+            len(words(piece)),
+            next(probs) if ru else None,
+        )
+        for (a, b), piece, ru in zip(checked, pieces, in_russian, strict=True)
     ]
-    return ChunkScan(chunks, len(spans), seconds, overlap)
+    rated = _merged([(c.start, c.end) for c in chunks if not c.skipped])
+    foreign = _outside(_merged([(c.start, c.end) for c in chunks if c.skipped]), rated)
+    n = len(words(clean)) - sum(len(words(clean[a:b])) for a, b in foreign)
+    return ChunkScan(chunks, len(spans), seconds, overlap, clean, n)
