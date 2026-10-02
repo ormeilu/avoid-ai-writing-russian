@@ -190,6 +190,8 @@ class Prepared:
     soft_hyphens: list[int]
     homoglyphs: list[Homoglyph]
     line_starts: list[int]
+    # Служебные части статьи в `text` (service_ranges): в `prose` замаскированы.
+    service: list[tuple[int, int]]
 
 
 def _mask(chars: list[str], start: int, end: int) -> None:
@@ -203,15 +205,187 @@ def _mask_all(chars: list[str], text: str, pattern: str, flags: str = "g") -> No
         _mask(chars, m.start(), m.end())
 
 
+FRONTMATTER_RE = jsre("^---\\n[\\s\\S]*?\\n---(?:\\n|$)")
+FENCED_RE = jsre("^(```|~~~)[^\\n]*\\n[\\s\\S]*?^\\1[^\\n]*$", "gm")
+
+
 def _mask_code(text: str) -> str:
     """Маскирует YAML-шапку, блоки кода и инлайн-код."""
     chars = list(text)
-    fm = jsre("^---\\n[\\s\\S]*?\\n---(?:\\n|$)").search(text)
+    fm = FRONTMATTER_RE.search(text)
     if fm:
         _mask(chars, 0, fm.end())
-    _mask_all(chars, text, "^(```|~~~)[^\\n]*\\n[\\s\\S]*?^\\1[^\\n]*$", "gm")
+    for m in FENCED_RE.finditer(text):
+        _mask(chars, m.start(), m.end())
     _mask_all(chars, text, "`[^`\\n]+`")
     return "".join(chars)
+
+
+# ─── Служебные части статьи ─────────────────────────────────────────────
+# Список литературы, ключевые слова, английская аннотация и сведения об авторах — не
+# проза статьи. В docx, собранном по ГОСТ и переведённом в Markdown (pandoc -t gfm),
+# они идут в конце файла и без маскировки дают ложные находки: запись по ГОСТ Р 7.0.5
+# «Журнал. — 2023. — Vol. 23, № 20. — P. 8386.» выглядит как рубленые фрагменты.
+
+_OPEN = "(?:\\*\\*|__|\\*|_)?"
+# Заголовок раздела: строка Markdown с # или отдельная строка, можно жирным и с номером.
+_HEADING_LINE = f"^[ \\t]*(?:#{{1,6}}[ \\t]+)?{_OPEN}[ \\t]*(?:\\d{{1,2}}\\.?[ \\t]+)?(?:"
+_HEADING_END = f")[ \\t]*[.:]?[ \\t]*{_OPEN}[ \\t]*[.:]?[ \\t]*$"
+SERVICE_HEADING_RE = jsre(
+    _HEADING_LINE
+    + "список[ \\t]+(?:использованн\\p{L}*[ \\t]+)?(?:литературы|источников)(?:[ \\t]+и[ \\t]+литературы)?"
+    "|библиографическ\\p{L}*[ \\t]+список|библиография|литература|источники"
+    "|references|bibliography|literature|works[ \\t]+cited"
+    "|(?:сведения|информация)[ \\t]+об[ \\t]+автор(?:е|ах)|об[ \\t]+автор(?:е|ах)"
+    "|(?:information[ \\t]+)?about[ \\t]+the[ \\t]+authors?|authors?[ \\t]+information" + _HEADING_END,
+    "iu",
+)
+KEYWORDS_RE = jsre(
+    f"^[ \\t]*{_OPEN}[ \\t]*(?:ключевые[ \\t]+слова|keywords|key[ \\t]+words)[ \\t]*{_OPEN}[ \\t]*[:.—–-]", "iu"
+)
+ABSTRACT_RE = jsre(
+    f"^[ \\t]*(?:#{{1,6}}[ \\t]+)?{_OPEN}[ \\t]*(?:abstract|annotation|summary)[ \\t]*{_OPEN}[ \\t]*([:.—–-]|$)", "iu"
+)
+MD_HEADING_RE = jsre("^#{1,6}[ \\t]")
+# Библиографическая запись: номер или «Фамилия И. О.» в начале строки, год и хотя бы одна
+# примета записи (//, «— С.», Vol., №, DOI, URL, ISBN, et al.). Номер может быть жирным: **12.**
+RECORD_NUMBER_RE = jsre("^[ \\t]*(?:[-*+][ \\t]+)?(?:\\*\\*|__)?\\[?\\d{1,3}[.)\\]](?:\\*\\*|__)?[ \\t]+", "u")
+RECORD_AUTHOR_RE = jsre("^[ \\t]*\\p{Lu}\\p{Ll}+(?:-\\p{Lu}\\p{Ll}+)?,?[ \\t]+\\p{Lu}\\.[ \\t]?(?:\\p{Lu}\\.)?", "u")
+RECORD_YEAR_RE = jsre("(?<!\\d)(?:1[89]|20)\\d\\d(?!\\d)")
+RECORD_MARK_RE = jsre(
+    "//|[ \\t][—–][ \\t](?:(?:1[89]|20)\\d\\d|(?:[СсТт№]|[PpNn])\\.?[ \\t]|URL|DOI|Vol|Iss|(?:М|СПб|Л|Киев|Минск)\\.?[ \\t]?:)"
+    "|(?<!\\p{L})(?:Vol|Iss|pp|Pp|Bd)\\."
+    "|№[ \\t]*\\d|(?<!\\p{L})(?:DOI|doi|URL|ISBN|ISSN)(?!\\p{L})|(?<!\\p{L})et[ \\t]+al\\."
+    "|(?<!\\p{L})(?:[СсТт]|[Pp])\\.[ \\t]?\\d",
+    "u",
+)
+RECORD_MAX_CHARS = 600
+# Записей подряд, чтобы считать их списком литературы без заголовка.
+RECORD_RUN = 3
+
+
+def _is_record(line: str) -> bool:
+    if len(line) > RECORD_MAX_CHARS or not (RECORD_NUMBER_RE.search(line) or RECORD_AUTHOR_RE.search(line)):
+        return False
+    return bool(RECORD_YEAR_RE.search(line)) and bool(RECORD_MARK_RE.search(line))
+
+
+def letter_share(s: str) -> tuple[int, int]:
+    """Кириллических и латинских букв в строке."""
+    cyr = lat = 0
+    for c in s:
+        if CYRILLIC_RE.match(c):
+            cyr += 1
+        elif LATIN_RE.match(c):
+            lat += 1
+    return cyr, lat
+
+
+def cyrillic_share(s: str) -> float | None:
+    """Доля кириллицы среди кириллических и латинских букв; None, если букв нет."""
+    cyr, lat = letter_share(s)
+    return cyr / (cyr + lat) if cyr + lat else None
+
+
+def service_ranges(s: str) -> list[tuple[int, int]]:
+    """Отрезки [начало, конец) служебных частей: список литературы, ключевые слова,
+    английская аннотация, сведения об авторах. YAML-шапка и код сюда не входят, их
+    маскирует _mask_code; строки внутри них заголовками не считаются.
+
+    Раздел по заголовку длится до следующего заголовка Markdown или до конца текста.
+    Список литературы без заголовка — три записи подряд и больше. Отрезки отсортированы
+    и не пересекаются; концы строк внутри них сохраняются при маскировке.
+    """
+    return _service_in(_mask_code(s))
+
+
+def _service_in(masked: str) -> list[tuple[int, int]]:
+    """service_ranges по тексту, где код и YAML-шапка уже замаскированы."""
+    lines = masked.split("\n")
+    starts = [0]
+    for line in lines[:-1]:
+        starts.append(starts[-1] + len(line) + 1)
+
+    def end_of(k: int) -> int:
+        return starts[k] + len(lines[k])
+
+    def paragraph_end(k: int) -> int:
+        """Последняя строка абзаца, который начинается со строки k."""
+        while k + 1 < len(lines) and trim(lines[k + 1]):
+            k += 1
+        return k
+
+    out: list[tuple[int, int]] = []
+    k = 0
+    while k < len(lines):
+        line = lines[k]
+        if SERVICE_HEADING_RE.search(line):
+            # Раздел до следующего заголовка Markdown, не служебного.
+            j = k + 1
+            while j < len(lines) and not (MD_HEADING_RE.search(lines[j]) and not SERVICE_HEADING_RE.search(lines[j])):
+                j += 1
+            if j > k + 1:
+                out.append((starts[k + 1], end_of(j - 1)))
+            k = j
+            continue
+        if KEYWORDS_RE.search(line):
+            j = paragraph_end(k)
+            out.append((starts[k], end_of(j)))
+            k = j + 1
+            continue
+        m = ABSTRACT_RE.search(line)
+        if m:
+            # «Abstract» отдельной строкой — аннотация в следующем абзаце.
+            first = k
+            if not m.group(1):
+                first = k + 1
+                while first < len(lines) and not trim(lines[first]):
+                    first += 1
+            j = paragraph_end(first) if first < len(lines) else k
+            share = cyrillic_share("\n".join(lines[first : j + 1]))
+            if share is not None and share < 0.5:
+                out.append((starts[k], end_of(j)))
+                k = j + 1
+                continue
+        if _is_record(line):
+            run = [k]
+            j = k + 1
+            while j < len(lines):
+                if not trim(lines[j]):
+                    j += 1
+                    continue
+                if not _is_record(lines[j]):
+                    break
+                run.append(j)
+                j += 1
+            if len(run) >= RECORD_RUN:
+                out.append((starts[run[0]], end_of(run[-1])))
+                k = run[-1] + 1
+                continue
+        k += 1
+    return out
+
+
+def blank(s: str, ranges: Sequence[tuple[int, int]]) -> str:
+    """Заменяет отрезки пробелами, переводы строк оставляет: смещения и номера строк те же."""
+    chars = list(s)
+    for a, b in ranges:
+        _mask(chars, a, b)
+    return "".join(chars)
+
+
+def model_text(source: str) -> str:
+    """Текст для моделей: YAML-шапка, блоки кода и служебные части статьи заменены пробелами.
+
+    Длина и переводы строк сохраняются, поэтому номера строк фрагментов совпадают с исходным файлом.
+    Инлайн-код и цитаты остаются: без них предложение рвётся посередине.
+    """
+    ranges = list(service_ranges(source))
+    fm = FRONTMATTER_RE.search(source)
+    if fm:
+        ranges.append((0, fm.end()))
+    ranges += [m.span() for m in FENCED_RE.finditer(source)]
+    return blank(source, ranges)
 
 
 def _mask_protected(no_code: str) -> str:
@@ -310,7 +484,8 @@ def prepare(source: str) -> Prepared:
             homoglyphs.append(Homoglyph(to_source[start], word))
     text = "".join(kept).replace("ё", "е").replace("Ё", "Е")
     no_code = _mask_code(text)
-    prose = _mask_protected(no_code)
+    service = _service_in(no_code)
+    prose = blank(_mask_protected(no_code), service)
     return Prepared(
         source=source,
         text=text,
@@ -321,6 +496,7 @@ def prepare(source: str) -> Prepared:
         soft_hyphens=soft_hyphens,
         homoglyphs=homoglyphs,
         line_starts=_line_starts(source),
+        service=service,
     )
 
 
@@ -337,7 +513,7 @@ def plural(n: int, one: str, few: str, many: str) -> str:
     return f"{num} {form}"
 
 
-BlockKind = Literal["prose", "heading", "list", "table", "quote", "code", "empty"]
+BlockKind = Literal["prose", "heading", "list", "table", "quote", "code", "service", "empty"]
 
 
 @dataclass(slots=True)
@@ -378,6 +554,8 @@ def blocks(p: Prepared) -> list[Block]:
             kind = "code" if FENCE_RE.search(first_raw) or trim(raw) != "" else "empty"
             if TABLE_OR_QUOTE_RE.search(first_raw):
                 kind = "table" if TABLE_RE.search(first_raw) else "quote"
+            elif kind == "code" and any(a <= start < b for a, b in p.service):
+                kind = "service"
         elif all(trim(line) == "" or LIST_ITEM_RE.search(line) for line in cur_lines):
             kind = "list"
         out.append(Block(kind, start, start + len(text), text))
