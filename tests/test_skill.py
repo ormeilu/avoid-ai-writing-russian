@@ -18,8 +18,10 @@ from aiw_ru.cli import USAGE, main, parse
 ROOT = Path(__file__).parent.parent
 SKILLS = ROOT / "skills"
 REFERENCES = SKILLS / "avoid-ai-writing-russian" / "references"
-# Тематические файлы каталога примет; профили и задание проверяющему лежат отдельно.
-CATALOG_FILES = sorted(p for p in REFERENCES.glob("*.md") if p.name not in ("profiles.md", "review.md", "models.md"))
+# Тематические файлы каталога примет; профили, задания проверяющему и судье, руководство по моделям лежат отдельно.
+CATALOG_FILES = sorted(
+    p for p in REFERENCES.glob("*.md") if p.name not in ("profiles.md", "review.md", "models.md", "judge.md")
+)
 PROFILES = REFERENCES / "profiles.md"
 REVIEW = REFERENCES / "review.md"
 # Руководство по моделям: его печатает и `aiw-ru models guide`.
@@ -284,6 +286,36 @@ def test_ap_all_detector_commands_mentioned():
         assert f"aiw-ru {cmd}" in AP
 
 
+def test_ap_covers_domate():
+    """Думейт: триггер в описании, своя калибровка, справка о тепловой карте и красный уровень"""
+    head = AP.split("---", 2)[1]
+    assert "Думейт" in head and "Domate" in head
+    assert "--system domate" in AP
+    assert "](references/domate.md)" in AP
+    domate = read(SKILLS / "antiplagiat" / "references" / "domate.md")
+    assert "красный" in domate and "входит в процент" in domate.lower()
+    assert "aiw-ru calibrate --system domate" in domate
+
+
+def test_ap_report_first_and_judge():
+    """отчёт с подсветкой — первый шаг; без отчёта абзацы выбирает слепой судья, итог — проверяющий"""
+    steps = re.findall(r"^### (\d)\. (.+)$", AP, re.MULTILINE)
+    assert steps[0] == ("1", "Отчёт системы")
+    assert "](../avoid-ai-writing-russian/references/judge.md)" in AP
+    assert "](../avoid-ai-writing-russian/references/review.md)" in AP
+
+
+def test_judge_prompt_matches_cli():
+    """задание судьи в judge.md совпадает с тем, что печатает aiw-ru judge"""
+    from aiw_ru.judge import PROMPT
+
+    judge = read(REFERENCES / "judge.md")
+    block = re.search(r"```text\n(.+?)```", judge, re.DOTALL)
+    assert block is not None
+    assert block[1] == PROMPT
+    assert "](references/judge.md)" in MAIN
+
+
 # ─── каталог ↔ детектор ─────────────────────────────────────────────────
 
 CATALOG_TEXT = "\n\n".join(read(p) for p in CATALOG_FILES)
@@ -462,8 +494,9 @@ def test_examples_cover_most_lexical_types():
 
 
 def test_ap_asks_user_for_reports():
-    """просит у пользователя отчёты для calibrate"""
-    assert "попроси у пользователя отчёты «Антиплагиата»" in AP
+    """просит у пользователя отчёт с подсветкой в начале и отчёты для calibrate"""
+    assert "Спроси о нём один раз, в начале работы" in AP
+    assert "отчётов ты ещё не просил, попроси их сейчас" in AP
     assert "calibrate --doc" in AP
     assert ".gitignore" in AP
 
@@ -503,4 +536,5 @@ def test_ap_uncalibrated_marker_in_cli_output(
 
 def test_main_mentions_reports_when_switching():
     """основной скилл упоминает отчёты при переходе к antiplagiat"""
-    assert "прошлые отчёты «Антиплагиата»" in MAIN
+    assert "Он попросит у пользователя отчёт с подсветкой" in MAIN
+    assert "«Антиплагиат» или «Думейт»" in MAIN

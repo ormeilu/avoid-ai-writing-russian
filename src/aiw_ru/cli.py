@@ -1,9 +1,10 @@
 """aiw-ru — командная строка детектора.
 
     aiw-ru scan [файл…] [--context РЕЖИМ] [--json | --jsonl] [--min P0|P1|P2]
-    aiw-ru antiplagiat [файл] [--config ПУТЬ] [--json | --jsonl]
+    aiw-ru antiplagiat [файл] [--system СИСТЕМА] [--config ПУТЬ] [--json | --jsonl]
     aiw-ru validate ИСХОДНЫЙ ИСПРАВЛЕННЫЙ [--context РЕЖИМ] [--json]
-    aiw-ru calibrate --doc ФАЙЛ (--marked ФАЙЛ | --share ДОЛЯ) [--doc … ] [--config ПУТЬ]
+    aiw-ru calibrate --doc ФАЙЛ (--marked ФАЙЛ | --share ДОЛЯ) [--doc … ] [--system СИСТЕМА] [--config ПУТЬ]
+    aiw-ru judge [файл] | judge score ФАЙЛ --answers ФАЙЛ [--answers …] [--marked ФАЙЛ] [--json]
     aiw-ru classify [файл…] [--json | --jsonl]
     aiw-ru models [install]
 
@@ -35,19 +36,25 @@ from aiw_ru import models, skills
 from aiw_ru.antiplagiat import (
     DEFAULT_MODEL,
     FEATURE_NAMES,
+    SYSTEMS,
+    Calibration,
     CalibrationFile,
     Model,
+    System,
     antiplagiat,
     balanced_accuracy,
     document_sample,
+    empty_calibration_file,
     fit,
     fit_share,
     label_fragments,
+    marked_from_heatmap,
     share_error,
 )
 from aiw_ru.categories import TYPE_TO_SECTION
 from aiw_ru.compat import js_round, jsre, num_str, to_fixed, trim
 from aiw_ru.detect import TYPE_LABELS, analyze
+from aiw_ru.judge import judge_fragments, judge_prompt, judge_score
 from aiw_ru.text import cyrillic_share, model_text, plural, words
 from aiw_ru.types import CONTEXT_MODES, PROFILE_TO_MODE, AnalysisResult, ContextMode, Record, Severity
 from aiw_ru.validate import validate
@@ -57,11 +64,18 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
 Команды:
   scan [файл…]                 найти приметы (без файла — читать stdin)
   antiplagiat [файл]           оценка по фрагментам в духе модуля ИИ-детекции «Антиплагиата»
+                               или «Думейта» (--system domate)
   validate ИСХОДНЫЙ НОВЫЙ      проверить, что правка не повредила код, числа, цитаты, ссылки,
                                не сняла оговорки и не добавила имён, чисел и дат
   calibrate --doc Ф --marked Ф подстроить модель antiplagiat под ваши отчёты: документ и файл
-                               с фрагментами, которые отчёт подсветил как ИИ
+                               с фрагментами, которые отчёт подсветил как ИИ (текст через пустую
+                               строку или тепловая карта в JSON: из неё берутся красные фрагменты)
   calibrate --doc Ф --share N  то же, если известна только итоговая доля ИИ из отчёта, %
+  judge [файл]                 задание для слепого судьи: свежий агент без контекста оценивает
+                               пронумерованные фрагменты по шкале none/low/medium/high
+  judge score Ф --answers A    сводка ответов судьи (--answers на каждый прогон): средний уровень
+                               фрагментов, совпадение прогонов; с --marked — ROC AUC судьи и
+                               детектора против разметки отчёта
   classify [файл…]             вероятность ИИ по необязательной модели; текст длиннее окна модели
                                проверяется ещё и по фрагментам с перекрытием (на фрагмент уходит
                                примерно столько, сколько на текст в 800 слов в models info);
@@ -89,6 +103,8 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
   --min P0|P1|P2    показывать находки не ниже уровня (scan)
   --fail-above N    scan: код выхода 1, если оценка выше N
   --config ПУТЬ     файл калибровки (по умолчанию ./.aiw-ru.json, затем ~/.config/aiw-ru.json)
+  --system СИСТЕМА  antiplagiat, calibrate: antiplagiat (по умолчанию) или domate; у каждой
+                    системы своя калибровка в том же файле
   --model ИМЯ       scan, antiplagiat, classify: modernbert, transformer, mini-frida или lightgbm
                     (по умолчанию первая установленная в этом порядке)
   --no-model        scan, antiplagiat: не показывать вероятность от модели, даже если она есть
@@ -129,6 +145,11 @@ class Args:
     # classify: длинный текст без проверки по фрагментам; предел фрагментов (None — все).
     no_fragments: bool = False
     max_fragments: int | None = None
+    # antiplagiat, calibrate: система проверки, под которую калибруется оценка.
+    system: System = "antiplagiat"
+    # judge score: файлы с ответами судьи (по одному на прогон) и разметка отчёта.
+    answers: list[str] = field(default_factory=list)
+    judge_marked: str | None = None
     help: bool = False
 
 
@@ -191,6 +212,18 @@ def parse(argv: list[str]) -> Args:
                 raise UsageError("--fail-above ждёт число")
         elif x == "--config":
             a.config = need(i, x)
+            i += 1
+        elif x == "--system":
+            v = need(i, x)
+            i += 1
+            if v not in SYSTEMS:
+                raise UsageError(f"неизвестная --system: {v}; есть: {', '.join(SYSTEMS)}")
+            a.system = next(s for s in SYSTEMS if s == v)
+        elif x == "--answers":
+            a.answers.append(need(i, x))
+            i += 1
+        elif x == "--marked" and a.cmd == "judge":
+            a.judge_marked = need(i, x)
             i += 1
         elif x == "--doc":
             a.reports.append(Report(need(i, x)))
@@ -935,13 +968,16 @@ def load_calibration(path: str | None) -> CalibrationFile | None:
 
 
 def cmd_antiplagiat(a: Args) -> int:
-    cal = load_calibration(config_path(a))
+    file = load_calibration(config_path(a))
+    cal = file.get(a.system) if file else None
     model: Model | None = cal.model if cal else None
     mode = a.context or "academic"
     if a.jsonl:
-        return jsonl(a, lambda text: with_signal(antiplagiat(text, mode, model).to_dict(), model_signal(a, text)))
+        return jsonl(
+            a, lambda text: with_signal(antiplagiat(text, mode, model, a.system).to_dict(), model_signal(a, text))
+        )
     text = read(a.files[0] if a.files else None)
-    report = antiplagiat(text, mode, model)
+    report = antiplagiat(text, mode, model, a.system)
     p = model_signal(a, text)
     if a.json:
         sys.stdout.write(dump(with_signal(report.to_dict(), p)) + "\n")
@@ -992,9 +1028,12 @@ def cmd_antiplagiat(a: Args) -> int:
         ],
     )
     out()
+    genitive = SYSTEMS[a.system][1]
+    flag = "" if a.system == "antiplagiat" else f" --system {a.system}"
     note(
-        "Это приближение: классификатор «Антиплагиата» закрыт. Точнее станет после калибровки по вашим отчётам "
-        "(aiw-ru calibrate)."
+        f"Это приближение: классификатор {genitive} закрыт. На отшлифованном научном тексте оценка может быть "
+        "нулевой там, где система находит треть ИИ-текста; если есть отчёт с подсветкой, правьте по нему. "
+        f"Точнее станет после калибровки по вашим отчётам (aiw-ru calibrate{flag})."
     )
     return 0
 
@@ -1036,6 +1075,10 @@ MARKED_SPLIT_RE = jsre("\\n\\s*(?:---+\\s*)?\\n")
 
 
 def split_marked(text: str) -> list[str]:
+    """Куски из отчёта: тепловая карта в JSON (красные фрагменты) или текст через пустую строку."""
+    heat = marked_from_heatmap(text)
+    if heat is not None:
+        return heat
     return [t for t in (trim(s) for s in MARKED_SPLIT_RE.split(text)) if t]
 
 
@@ -1043,7 +1086,8 @@ def cmd_calibrate(a: Args) -> int:
     if not a.reports or any(r.marked is None and r.share is None for r in a.reports):
         raise UsageError("calibrate ждёт для каждого --doc ФАЙЛ разметку: --marked ФАЙЛ или --share ДОЛЯ")
     path = a.config or ".aiw-ru.json"
-    prev = load_calibration(path if os.path.exists(path) else None)
+    file = load_calibration(path if os.path.exists(path) else None) or empty_calibration_file()
+    prev = file.get(a.system)
     samples = list(prev.samples) if prev else []
     documents = list(prev.documents) if prev else []
     rows: list[list[str | Text]] = []
@@ -1067,7 +1111,7 @@ def cmd_calibrate(a: Args) -> int:
         samples.extend(labeled)
     start = prev.model if prev else DEFAULT_MODEL
     model = fit_share(fit(samples, start), documents)
-    data = CalibrationFile(version=1, model=model, samples=samples, documents=documents)
+    data = file.put(a.system, Calibration(model=model, samples=samples, documents=documents))
     Path(path).write_text(dump(data) + "\n", encoding="utf-8")
 
     heading("Отчёты")
@@ -1094,6 +1138,7 @@ def cmd_calibrate(a: Args) -> int:
     heading("Калибровка")
     facts(
         [
+            ("Система", SYSTEMS[a.system][0]),
             ("Фрагменты с разметкой", f"{len(samples)}, из них ИИ: {pos}"),
             ("Документы с долей", str(len(documents))),
             (
@@ -1113,6 +1158,86 @@ def cmd_calibrate(a: Args) -> int:
         "Точность и ошибка посчитаны на тех же отчётах, по которым шла калибровка, и поэтому завышены. Честная "
         "проверка: замер на отчёте, который в калибровку не входил. Файл содержит фрагменты вашего текста, не "
         "публикуйте его."
+    )
+    return 0
+
+
+LEVEL_NAMES = ("none", "low", "medium", "high")
+
+
+def cmd_judge(a: Args) -> int:
+    if a.files and a.files[0] == "score":
+        return cmd_judge_score(a)
+    if a.answers or a.judge_marked:
+        raise UsageError("--answers и --marked относятся к judge score")
+    text = read(a.files[0] if a.files else None)
+    mode = a.context or "academic"
+    if a.json:
+        data = {"prompt": judge_prompt(text, mode), "fragments": [f.to_dict() for f in judge_fragments(text, mode)]}
+        sys.stdout.write(dump(data) + "\n")
+    else:
+        sys.stdout.write(judge_prompt(text, mode))
+    return 0
+
+
+def cmd_judge_score(a: Args) -> int:
+    if len(a.files) != 2:
+        raise UsageError("judge score ждёт файл документа: judge score ФАЙЛ --answers ОТВЕТ [--answers …]")
+    if not a.answers:
+        raise UsageError("judge score ждёт ответы судьи: --answers ФАЙЛ на каждый прогон")
+    doc = read(a.files[1])
+    marked = split_marked(read(a.judge_marked)) if a.judge_marked else None
+    r = judge_score(doc, [read(x) for x in a.answers], marked, a.context or "academic")
+    if a.json:
+        sys.stdout.write(dump(r) + "\n")
+        return 0
+
+    def level(x: int | None) -> str:
+        return "—" if x is None else LEVEL_NAMES[x]
+
+    def mean_style(m: float | None) -> str:
+        return "dim" if m is None else "red" if m >= 1.5 else "yellow" if m >= 0.5 else "green"
+
+    heading(a.files[1])
+    rows: list[tuple[str, str | Text]] = [("Прогонов", str(r.runs))]
+    if r.agreement is not None:
+        rows.append(("Совпадение прогонов", f"{ru(r.agreement * 100, 0)} % фрагментов"))
+    rows.append(("Доля слов", f"medium и выше {ru(r.share_medium, 1)} %, low и выше {ru(r.share_low, 1)} %"))
+    if r.auc is not None or r.detector_auc is not None:
+        both = f"судья {'н/д' if r.auc is None else ru(r.auc)}, детектор {'н/д' if r.detector_auc is None else ru(r.detector_auc)}"
+        rows.append(("ROC AUC по отчёту", both))
+    facts(rows)
+    if r.missing:
+        warn(f"Нет ответа судьи для фрагментов: {', '.join(map(str, r.missing))}.", "yellow")
+    out()
+    table(
+        [
+            Col("№", justify="right"),
+            Col("Строки"),
+            Col("Слов", justify="right"),
+            Col("Уровни"),
+            Col("Среднее", justify="right"),
+            *([Col("Отчёт", justify="right")] if r.fragments and r.fragments[0].marked is not None else []),
+            Col("Начало фрагмента", flex=True, min=24),
+        ],
+        [
+            [
+                str(f.n),
+                Text.styled(str(f.line) if f.line == f.end_line else f"{f.line}–{f.end_line}", "dim"),
+                str(f.words),
+                " ".join(level(x) for x in f.levels),
+                Text.styled("—" if f.mean is None else ru(f.mean), mean_style(f.mean)),
+                *([f"{js_round(f.marked * 100)} %"] if f.marked is not None else []),
+                f"{f.preview}…",
+            ]
+            for f in r.fragments
+        ],
+    )
+    out()
+    note(
+        "Судья расставляет фрагменты по подсвеченности примерно как система проверки, но процент системы не "
+        "предсказывает и от прогона к прогону отвечает по-разному. Берите самые высокие средние как кандидатов "
+        "на правку, а итог проверяйте самой системой."
     )
     return 0
 
@@ -1413,6 +1538,7 @@ def main(argv: list[str]) -> int:
             "antiplagiat": cmd_antiplagiat,
             "validate": cmd_validate,
             "calibrate": cmd_calibrate,
+            "judge": cmd_judge,
             "classify": cmd_classify,
             "models": cmd_models,
             "skill": cmd_skill,
