@@ -1,18 +1,21 @@
-"""Оценка по фрагментам в духе модуля поиска сгенерированного текста системы «Антиплагиат».
+"""Оценка по фрагментам в духе модулей поиска сгенерированного текста «Антиплагиата» и «Думейта».
 
-Настоящий классификатор закрыт, поэтому здесь приближение: каждый фрагмент
+Настоящие классификаторы закрыты, поэтому здесь приближение: каждый фрагмент
 (абзац или склейка коротких абзацев) описывается набором интерпретируемых
 признаков, логистическая модель переводит их в вероятность, а доля ИИ-текста
 считается как доля знаков во фрагментах выше порога — так же выглядит итог в
 отчёте системы.
 
 Веса по умолчанию подобраны вручную. Команда `calibrate` дообучает их на
-фрагментах, которые система реально подсветила в ваших отчётах.
+фрагментах, которые система реально подсветила в ваших отчётах; у каждой системы
+своя калибровка.
 """
 
 from __future__ import annotations
 
+import json
 import math
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -32,6 +35,15 @@ FEATURE_NAMES: tuple[str, ...] = (
     "однообразные начала предложений",
     "бедный словарь",
 )
+
+
+System = Literal["antiplagiat", "domate"]
+
+# Системы проверки, под которые калибруется оценка: название и родительный падеж для подсказок.
+SYSTEMS: dict[System, tuple[str, str]] = {
+    "antiplagiat": ("«Антиплагиат»", "«Антиплагиата»"),
+    "domate": ("«Думейт»", "«Думейта»"),
+}
 
 
 class Model(Record):
@@ -64,6 +76,8 @@ class AntiplagiatReport(Record):
     suspicious_reasons: list[str]
     model: Literal["default", "calibrated"]
     threshold: float
+    # Система, под которую калибровалась модель (`--system`).
+    system: System = "antiplagiat"
 
 
 MIN_FRAGMENT_WORDS = 40
@@ -150,7 +164,9 @@ def _chars(s: str) -> int:
     return len(trim(SPACES_RE.sub(" ", s)))
 
 
-def antiplagiat(source: str, context: ContextMode = "academic", model: Model | None = None) -> AntiplagiatReport:
+def antiplagiat(
+    source: str, context: ContextMode = "academic", model: Model | None = None, system: System = "antiplagiat"
+) -> AntiplagiatReport:
     result, internals = analyze_internal(source, context)
     m = model or DEFAULT_MODEL
     p = internals.prepared
@@ -198,6 +214,7 @@ def antiplagiat(source: str, context: ContextMode = "academic", model: Model | N
         suspicious_reasons=reasons,
         model="calibrated" if model else "default",
         threshold=m.threshold,
+        system=system,
     )
 
 
@@ -225,41 +242,181 @@ class DocSample(Record):
     share: float
 
 
-class CalibrationFile(Record):
-    version: Literal[1]
+class Calibration(Record):
+    """Калибровка под одну систему проверки."""
+
     model: Model
     samples: list[Sample] = Field(default_factory=list)
     # Документы с одной итоговой долей (`calibrate --share`).
     documents: list[DocSample] = Field(default_factory=list)
 
 
-NORM_MARKUP_RE = jsre("[*_`#>|]", "g")
-NORM_QUOTES_RE = jsre('[«»„“”"]', "g")
+class CalibrationFile(Record):
+    """Файл `.aiw-ru.json`.
+
+    Поля верхнего уровня — калибровка «Антиплагиата», как в файлах до появления `--system`;
+    калибровки других систем лежат в `systems` под их именем. Старые версии aiw-ru поле
+    `systems` пропускают и читают файл как раньше.
+    """
+
+    version: Literal[1]
+    model: Model
+    samples: list[Sample] = Field(default_factory=list)
+    documents: list[DocSample] = Field(default_factory=list)
+    systems: dict[str, Calibration] = Field(default_factory=dict)
+
+    def get(self, system: System) -> Calibration | None:
+        """Калибровка системы; None, если по её отчётам ещё не калибровали."""
+        if system != "antiplagiat":
+            return self.systems.get(system)
+        if not self.samples and not self.documents:
+            return None
+        return Calibration(model=self.model, samples=self.samples, documents=self.documents)
+
+    def put(self, system: System, cal: Calibration) -> CalibrationFile:
+        if system == "antiplagiat":
+            return self.model_copy(update={"model": cal.model, "samples": cal.samples, "documents": cal.documents})
+        return self.model_copy(update={"systems": {**self.systems, system: cal}})
 
 
-def _norm(s: str) -> str:
-    s = s.lower().replace("ё", "е")
-    s = NORM_QUOTES_RE.sub("", NORM_MARKUP_RE.sub("", s))
-    return trim(SPACES_RE.sub(" ", s))
+def empty_calibration_file() -> CalibrationFile:
+    return CalibrationFile(version=1, model=DEFAULT_MODEL)
+
+
+# ─── Разметка из отчёта ─────────────────────────────────────────────────
+
+# Слово для сверки текста из отчёта с документом: буквы и цифры, без разметки и знаков.
+WORD_RE = re.compile(r"[^\W_]+")
+# Куски короче не ищутся: столько слов подряд встречаются в документе случайно.
+MIN_MARKED_WORDS = 5
+# Красный уровень тепловой карты «Думейта»: только он входит в итоговый процент ИИ-текста.
+HEAT_RED = 3
+
+
+def _tokens(s: str) -> list[tuple[int, int, str]]:
+    return [(m.start(), m.end(), m.group().lower().replace("ё", "е")) for m in WORD_RE.finditer(s)]
+
+
+def _find(words_: list[str], seq: list[str], start: int, *, last: bool = False) -> int | None:
+    """Первое вхождение начала (или конца, `last`) куска не раньше `start`: по 6 словам, если не нашлось — по 3."""
+    for k in (6, 5, 4, 3):
+        if len(seq) < k:
+            continue
+        q = seq[-k:] if last else seq[:k]
+        for i in range(start, len(words_) - k + 1):
+            if words_[i : i + k] == q:
+                return i + k - 1 if last else i
+    return None
+
+
+def marked_spans(source: str, marked: list[str]) -> list[tuple[int, int]]:
+    """Куски из отчёта как диапазоны знаков документа.
+
+    Кусок ищется по первым и последним словам, поэтому переносы строк, разметка, кавычки
+    и мелкие расхождения текстового слоя PDF внутри куска не мешают. Если конец не нашёлся
+    или кусок вышел заметно длиннее себя, засчитывается только его начало длиной в сам кусок.
+    """
+    toks = _tokens(source)
+    words_ = [w for _, _, w in toks]
+    spans: list[tuple[int, int]] = []
+    for m in marked:
+        seq = [w for _, _, w in _tokens(m)]
+        if len(seq) < MIN_MARKED_WORDS:
+            continue
+        a = _find(words_, seq, 0)
+        if a is None:
+            continue
+        b = _find(words_, seq, a, last=True)
+        if b is None or b - a + 1 > len(seq) * 1.5 + 20:
+            b = min(a + len(seq), len(toks)) - 1
+        spans.append((toks[a][0], toks[b][1]))
+    return spans
+
+
+@dataclass(slots=True)
+class MarkedFragment:
+    start: int
+    end: int
+    # Доля слов фрагмента внутри кусков из отчёта.
+    coverage: float
+    # Хотя бы один кусок целиком лежит внутри фрагмента: короткая подсветка в одном абзаце.
+    holds_piece: bool
+
+    @property
+    def marked(self) -> bool:
+        return self.holds_piece or self.coverage >= 0.5
+
+
+def marked_fragments(source: str, marked: list[str], context: ContextMode = "academic") -> list[MarkedFragment]:
+    """Фрагменты документа (те же, что у `antiplagiat`) с тем, насколько их подсветил отчёт.
+
+    Фрагмент считается подсвеченным, если куски из отчёта покрывают больше половины его слов
+    или какой-то кусок целиком лежит внутри него. Первое нужно тепловой карте «Думейта», где
+    подсветка идёт через несколько абзацев; второе — подсветке предложениями в «Антиплагиате».
+    """
+    _, internals = analyze_internal(source, context)
+    p = internals.prepared
+    spans = marked_spans(source, marked)
+    toks = _tokens(source)
+    out: list[MarkedFragment] = []
+    for r in _fragments_of(internals):
+        s = p.to_source[r.start] if r.start < len(p.to_source) else r.start
+        e = p.to_source[r.end] if r.end < len(p.to_source) else r.end
+        inside = [t for t in toks if s <= t[0] < e]
+        covered = sum(1 for t in inside if any(a <= t[0] < b for a, b in spans))
+        out.append(
+            MarkedFragment(
+                start=s,
+                end=e,
+                coverage=covered / len(inside) if inside else 0,
+                holds_piece=any(s <= a and b <= e for a, b in spans),
+            )
+        )
+    return out
 
 
 def label_fragments(source: str, marked: list[str]) -> list[Sample]:
     """Размечает фрагменты документа по кускам, которые система подсветила в отчёте.
 
-    Куски скопированы из отчёта в текстовый файл и разделены пустой строкой.
+    Куски скопированы из отчёта в текстовый файл и разделены пустой строкой или взяты из
+    тепловой карты (`marked_from_heatmap`).
     """
     result, internals = analyze_internal(source, "academic")
-    p = internals.prepared
-    keys = [k[:60] for k in (_norm(m) for m in marked) if len(k) >= 30]
     out: list[Sample] = []
-    for r in _fragments_of(internals):
-        s = p.to_source[r.start] if r.start < len(p.to_source) else r.start
-        e = p.to_source[r.end] if r.end < len(p.to_source) else r.end
-        inside = [i for i in result.issues if s <= i.index < e]
-        text = _norm(p.source[s:e])
-        y: Literal[0, 1] = 1 if any(k in text for k in keys) else 0
-        out.append(Sample(f=features_for(r.text, inside), y=y))
+    for r, m in zip(_fragments_of(internals), marked_fragments(source, marked), strict=True):
+        inside = [i for i in result.issues if m.start <= i.index < m.end]
+        out.append(Sample(f=features_for(r.text, inside), y=1 if m.marked else 0))
     return out
+
+
+class HeatFragment(Record):
+    """Фрагмент тепловой карты отчёта: уровень 3 — красный, 2 — оранжевый, 1 — жёлтый."""
+
+    level: int
+    text: str
+    pages: list[int] = Field(default_factory=list)
+
+
+def marked_from_heatmap(raw: str, min_level: int = HEAT_RED) -> list[str] | None:
+    """Куски из тепловой карты в JSON; None, если это не она.
+
+    Тепловая карта — список `{"level", "text"}` или объект с ним в поле `fragments` (так его
+    отдаёт скрипт из `skills/antiplagiat/references/domate.md`). По умолчанию берутся только
+    красные фрагменты: в «Думейте» только они входят в процент ИИ-текста.
+    """
+    head = raw.lstrip()[:1]
+    if head not in ("[", "{"):
+        return None
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            data = data.get("fragments")
+        if not isinstance(data, list):
+            return None
+        items = [HeatFragment.model_validate(x) for x in data]
+    except ValueError:
+        return None
+    return [x.text for x in items if x.level >= min_level]
 
 
 def fit(samples: list[Sample], start: Model = DEFAULT_MODEL) -> Model:

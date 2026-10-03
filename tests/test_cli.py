@@ -609,6 +609,7 @@ def test_skill_lists_skills(cli: Cli):
         f"references/{n}.md"
         for n in (
             "chat",
+            "judge",
             "models",
             "profiles",
             "review",
@@ -620,6 +621,7 @@ def test_skill_lists_skills(cli: Cli):
         )
     ]
     assert data[1]["description"].startswith("Подготовка русского текста")
+    assert data[1]["files"] == ["references/domate.md"]
 
 
 def test_skill_files_in_hidden_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -640,6 +642,8 @@ def test_skill_files_in_hidden_directory(tmp_path: Path, monkeypatch: pytest.Mon
         ("antiplagiat",),
         ("avoid-ai-writing-russian", "references/vocabulary.md"),
         ("avoid-ai-writing-russian", "references/review.md"),
+        ("avoid-ai-writing-russian", "references/judge.md"),
+        ("antiplagiat", "references/domate.md"),
     ],
 )
 def test_skill_text_needs_no_repository(cli: Cli, args: tuple[str, ...]):
@@ -647,7 +651,9 @@ def test_skill_text_needs_no_repository(cli: Cli, args: tuple[str, ...]):
     r = cli("skill", *args)
     assert r.code == 0 and r.err == ""
     assert "../" not in r.out and "uv run --project" not in r.out
-    assert "aiw-ru skill avoid-ai-writing-russian" in r.out
+    # Справка под-скилла ссылается на его SKILL.md, остальные файлы — на основной скилл.
+    owner = "antiplagiat" if args[1:] == ("references/domate.md",) else "avoid-ai-writing-russian"
+    assert f"aiw-ru skill {owner}" in r.out
 
 
 def test_skill_md_keeps_frontmatter(cli: Cli):
@@ -669,3 +675,82 @@ def test_skill_md_keeps_frontmatter(cli: Cli):
 def test_skill_unknown(cli: Cli, args: tuple[str, ...], message: str):
     r = cli("skill", *args)
     assert r.code == 2 and message in r.err
+
+
+# ─── системы проверки и слепой судья ────────────────────────────────────
+
+
+def test_calibrate_system_domate_keeps_antiplagiat(cli: Cli, tmp_path: Path):
+    """calibrate --system domate пишет калибровку «Думейта» отдельно; тепловая карта в JSON — разметка"""
+    doc = tmp_path / "doc.md"
+    ai = AI_VAK.read_text(encoding="utf-8")
+    doc.write_text(f"{HUMAN_VAK.read_text(encoding='utf-8')}\n\n{ai}", encoding="utf-8")
+    heat = tmp_path / "heat.json"
+    red, orange = ai.split("\n\n")[1], ai.split("\n\n")[2]
+    heat.write_text(json.dumps({"share": 0.4, "fragments": [{"level": 3, "text": red}, {"level": 2, "text": orange}]}))
+
+    cal = cli("calibrate", "--system", "domate", "--doc", str(doc), "--marked", str(heat), cwd=tmp_path)
+    assert cal.code == 0
+    assert "«Думейт»" in cal.out
+    saved = json.loads((tmp_path / ".aiw-ru.json").read_text(encoding="utf-8"))
+    assert saved["samples"] == []
+    assert [s["y"] for s in saved["systems"]["domate"]["samples"]] == [0, 0, 0, 1, 0]
+
+    domate = json.loads(cli("antiplagiat", "--json", "--system", "domate", str(doc), cwd=tmp_path).out)
+    assert domate["model"] == "calibrated" and domate["system"] == "domate"
+    plain = cli("antiplagiat", str(doc), cwd=tmp_path)
+    assert "по умолчанию, без калибровки" in plain.out
+    assert "классификатор «Антиплагиата» закрыт" in plain.out
+    assert "--system domate" in cli("antiplagiat", "--system", "domate", str(doc), cwd=tmp_path).out
+
+
+def test_unknown_system_exit_2(cli: Cli):
+    """неизвестная --system — код 2"""
+    r = cli("antiplagiat", "--system", "turnitin", str(AI_VAK))
+    assert r.code == 2
+    assert "domate" in r.err
+
+
+def test_judge_prints_prompt(cli: Cli):
+    """judge печатает задание с пронумерованными фрагментами, --json — ещё и фрагменты"""
+    r = cli("judge", str(AI_VAK))
+    assert r.code == 0
+    assert r.out.startswith("Ты детектор ИИ-текста")
+    assert "[P1]\n" in r.out and "[P2]\n" in r.out and "[P3]" not in r.out
+    data = json.loads(cli("judge", "--json", str(AI_VAK)).out)
+    assert data["prompt"] == r.out
+    assert [f["n"] for f in data["fragments"]] == [1, 2]
+    assert {"line", "endLine", "words", "text"} <= set(data["fragments"][0])
+
+
+def test_judge_score_table_and_json(cli: Cli, tmp_path: Path):
+    """judge score сводит прогоны и с --marked считает ROC AUC"""
+    doc = tmp_path / "doc.md"
+    ai = AI_VAK.read_text(encoding="utf-8")
+    doc.write_text(f"{HUMAN_VAK.read_text(encoding='utf-8')}\n\n{ai}", encoding="utf-8")
+    a, b, marked = tmp_path / "a.txt", tmp_path / "b.txt", tmp_path / "m.txt"
+    a.write_text("P1 none\nP2 none\nP3 low\nP4 high\nP5 medium", encoding="utf-8")
+    b.write_text("P1 none\nP2 low\nP3 none\nP4 medium\nP5 medium", encoding="utf-8")
+    marked.write_text(ai.split("\n\n", 1)[1], encoding="utf-8")
+    args = ("judge", "score", str(doc), "--answers", str(a), "--answers", str(b), "--marked", str(marked))
+    r = cli(*args)
+    assert r.code == 0
+    for s in ("Прогонов", "Совпадение прогонов", "ROC AUC по отчёту", "high medium", "Отчёт"):
+        assert s in r.out
+    data = json.loads(cli(*args, "--json").out)
+    assert data["runs"] == 2
+    assert data["auc"] == 1
+    assert [f["mean"] for f in data["fragments"]] == [0, 0.5, 0.5, 2.5, 2]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        pytest.param(["judge", "score", str(AI_VAK)], id="score без --answers"),
+        pytest.param(["judge", "score", "--answers", "a.txt"], id="score без файла"),
+        pytest.param(["judge", str(AI_VAK), "--answers", "a.txt"], id="--answers без score"),
+    ],
+)
+def test_judge_usage_errors_exit_2(cli: Cli, args: list[str]):
+    """judge без нужных аргументов — код 2"""
+    assert cli(*args).code == 2

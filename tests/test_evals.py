@@ -182,3 +182,8 @@ def test_missing_final_fails_for_edit() -> None:
 def test_golden_antiplagiat_asks_reports() -> None:
     """эталон antiplagiat-asks-reports: агент просит отчёты для калибровки"""
     assert grade(by_id("antiplagiat-asks-reports"), golden("antiplagiat-asks-reports.md")).failures == []
+
+
+def test_golden_domate_asks_heatmap() -> None:
+    """эталон: по одной доле «Думейта» скилл правит каркас абзаца и просит отчёт с тепловой картой"""
+    assert grade(by_id("domate-asks-heatmap"), golden("domate-asks-heatmap.md")).failures == []
