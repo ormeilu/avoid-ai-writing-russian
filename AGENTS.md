@@ -20,7 +20,8 @@
 - `src/aiw_ru/types.py` — результаты для JSON (модели pydantic: поля в snake_case, в JSON — camelCase).
 - `src/aiw_ru/compat.py` — семантика JavaScript, с которой переносился детектор: регулярные выражения, округление, trim.
 - `src/aiw_ru/features.py`, `src/aiw_ru/models.py` — признаки и необязательная модель LightGBM с Hugging Face.
-- `src/aiw_ru/cli.py` — команда `aiw-ru` (вывод через rich).
+- `src/aiw_ru/cli.py` — команда `aiw-ru` (вывод через rich), около 1600 строк: целиком не читай, сначала `grep -n '^def cmd_' src/aiw_ru/cli.py`. Каждая команда — одна функция `cmd_<имя>`, таблица команд в `main()` в конце файла.
+  - Вверху докстринг с краткой сводкой команд и `USAGE` (текст справки, около строки 62); `parse()` разбирает аргументы (около строки 156). Между ними и `cmd_*` лежат классы и функции вывода.
 - `scripts/llmtrace.py`, `scripts/train.py`, `scripts/hub.py` — замер детектора на корпусе LLMTrace, обучение LightGBM и выкладка модели с карточкой на Hugging Face. Подробности в CONTRIBUTING.md, разделы «Замеры на корпусах» и «Модель LightGBM».
 - `scripts/release.py` и соседние — выпуск версий, проверки версий, коммитов и невидимых символов; `evals/` — поведенческие проверки скиллов.
 
