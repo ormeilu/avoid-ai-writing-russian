@@ -36,4 +36,4 @@ claude plugin install avoid-ai-writing-russian@avoid-ai-writing-russian
 - Инструменты ввода иногда превращают `\u200B` в настоящий невидимый символ. После записи таких строк прогони `uv run python scripts/check_invisible.py <файлы>`, хук `invisible-chars` тоже это ловит.
 - Пути в тестах и скриптах собирай от `Path(__file__)`, без склейки строк с `/`: CI гоняет тесты и на Windows.
 - Коммиты на русском, первая строка до 72 знаков без точки, вторая пустая; это проверяет хук `commit-msg`. Хуки не отключай через `--no-verify`, чини причину.
-- Выпуск только через `uv run python scripts/release.py`, версии руками не правь: их семь, плюс версия проекта в `uv.lock`, и `scripts/check_versions.py` следит за совпадением.
+- Выпуск только через `uv run python scripts/release.py`, версии руками не правь: их семь, плюс версия проекта в `uv.lock`, и `scripts/check_versions.py` следит за совпадением. В конце скрипт печатает шаги после выпуска (push, `gh run watch` фоновой командой, обновление `aiw-ru` и плагина в emotrain): выполняй их все.

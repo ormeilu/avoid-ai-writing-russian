@@ -12,6 +12,7 @@ import pytest
 
 from changelog import UNRELEASED, cut, section
 from check_commit_msg import check_commit_message
+from release import next_steps
 from versions import (
     ROOT,
     SITES,
@@ -235,3 +236,13 @@ def test_release_refuses_lower_version() -> None:
     r = run_script("release.py", "0.0.1", "--dry-run")
     assert r.returncode == 1
     assert "не больше текущей" in r.stderr
+
+
+def test_release_prints_post_release_steps() -> None:
+    """после тега скрипт печатает push, слежение за прогоном и обновление плагина"""
+    text = next_steps("2.5.0")
+    assert "git push --follow-tags" in text
+    assert "gh run list --branch v2.5.0" in text and "gh run watch" in text and "--exit-status" in text
+    assert "claude plugin marketplace update avoid-ai-writing-russian" in text
+    assert "claude plugin update avoid-ai-writing-russian@avoid-ai-writing-russian --scope project" in text
+    assert "env -u UV_NO_SYNC uv run --project ../.. aiw-ru" in text
