@@ -4,6 +4,8 @@
 `aiw_ru/data/skills/`), а в рабочей копии репозитория они читаются прямо из `skills/`.
 В тексте SKILL.md вызовы детектора из репозитория (`uv run --project ../.. aiw-ru`)
 заменяются на `aiw-ru`, а ссылки на соседние файлы на команды, которые их выводят.
+Абзацы между `<!-- repo-only:start -->` и `<!-- repo-only:end -->` (как позвать детектор
+из репозитория, если `aiw-ru` не в PATH) в этом виде не нужны и вырезаются.
 """
 
 from __future__ import annotations
@@ -18,6 +20,8 @@ SOURCE = Path(__file__).resolve().parents[2] / "skills"
 MAIN = "avoid-ai-writing-russian"
 REPOSITORY = "https://github.com/ormeilu/avoid-ai-writing-russian"
 
+# Абзац только для работы из репозитория вместе с пустой строкой после него.
+_REPO_ONLY = re.compile(r"<!-- repo-only:start -->\n.*?<!-- repo-only:end -->\n+", re.DOTALL)
 # Вызов детектора из папки скилла в репозитории, с extra ml или без.
 _REPO_COMMAND = re.compile(r"uv run --project \.\./\.\.(?: --extra ml)? aiw-ru")
 # Ссылка на файл скилла: свой (references/…), соседний (../имя/…) или SKILL.md из references (../SKILL.md).
@@ -128,6 +132,7 @@ def _command(skill: str, file: str) -> str:
 
 def rewrite(text: str, name: str) -> str:
     """Текст скилла для агента без репозитория: команды через `aiw-ru`, файлы через `aiw-ru skill`."""
+    text = _REPO_ONLY.sub("", text)
     text = _REPO_COMMAND.sub("aiw-ru", text)
     for old, new in _REPO_NOTES:
         text = text.replace(old, new)

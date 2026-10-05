@@ -651,6 +651,8 @@ def test_skill_text_needs_no_repository(cli: Cli, args: tuple[str, ...]):
     r = cli("skill", *args)
     assert r.code == 0 and r.err == ""
     assert "../" not in r.out and "uv run --project" not in r.out
+    # Подсказка «aiw-ru из PATH или uv» нужна только при работе из репозитория.
+    assert "repo-only" not in r.out and "command -v aiw-ru" not in r.out
     # Справка под-скилла ссылается на его SKILL.md, остальные файлы — на основной скилл.
     owner = "antiplagiat" if args[1:] == ("references/domate.md",) else "avoid-ai-writing-russian"
     assert f"aiw-ru skill {owner}" in r.out
