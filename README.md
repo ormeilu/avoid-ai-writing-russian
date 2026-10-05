@@ -88,7 +88,7 @@ ln -s ~/src/avoid-ai-writing-russian/skills/antiplagiat ~/.claude/skills/antipla
 
 ### Детектор
 
-Скиллам нужен [uv](https://docs.astral.sh/uv/getting-started/installation/): при первом запуске он сам поставит Python 3.12 или новее и зависимости детектора (regex, rich, pydantic). Без uv скилл работает, но проверки будут только модельными, и он об этом скажет.
+Скиллам нужен [uv](https://docs.astral.sh/uv/getting-started/installation/) или `aiw-ru` в PATH: при первом запуске uv сам поставит Python 3.12 или новее и зависимости детектора (regex, rich, pydantic), а установленный `aiw-ru` скилл зовёт напрямую. Без обоих скилл работает, но проверки будут только модельными, и он об этом скажет.
 
 Отдельно от скиллов детектор ставится из PyPI:
 

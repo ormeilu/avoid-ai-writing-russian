@@ -147,6 +147,13 @@ class TestSkill:
             for flag in re.findall(r"--[a-z-]+", m[3]):
                 assert flag in USAGE, f"{m[0]}: {flag}"
 
+    def test_detector_hint_prefers_path(self, skill_dir: str):
+        """скилл велит звать aiw-ru из PATH напрямую, а через uv идти только без него"""
+        _, body = frontmatter(read(SKILLS / skill_dir / "SKILL.md"))
+        hint = re.search(r"<!-- repo-only:start -->\n(.*?)\n<!-- repo-only:end -->", body, re.DOTALL)
+        assert hint, skill_dir
+        assert "command -v aiw-ru" in hint[1] and "uv run --project ../.." in hint[1]
+
     def test_passes_own_detector_without_p0_p1(self, skill_dir: str):
         """проходит собственный детектор без P0 и P1"""
         text = read(SKILLS / skill_dir / "SKILL.md")
