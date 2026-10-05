@@ -62,7 +62,7 @@ uv run prek install --hook-type pre-commit --hook-type commit-msg --hook-type pr
 
 1. Записи копятся в разделе «Не выпущено» в `CHANGELOG.md`.
 2. `uv run python scripts/release.py patch` (или `minor`, `major`, `X.Y.Z`; `--dry-run` покажет план). Скрипт проверит ветку и чистоту дерева, прогонит типы и тесты, перенесёт «Не выпущено» в раздел версии, обновит версию в `pyproject.toml`, манифестах, скиллах и `CITATION.cff`, обновит `uv.lock`, сделает коммит «Выпуск X.Y.Z» и тег `vX.Y.Z`.
-3. `git push --follow-tags`. По тегу GitHub Actions ещё раз прогонит проверки, соберёт пакет, опубликует его на PyPI и создаст выпуск на GitHub с архивом скиллов, контрольными суммами и заметками из CHANGELOG. На PyPI пакет уходит через доверенную публикацию: PyPI проверяет токен OIDC от workflow `release.yml` в окружении `pypi`, паролей и API-токенов в секретах нет.
+3. `git push --follow-tags`. По тегу GitHub Actions ещё раз прогонит проверки, соберёт пакет, опубликует его на PyPI и создаст выпуск на GitHub с архивом скиллов, контрольными суммами и заметками из CHANGELOG. На PyPI пакет уходит через доверенную публикацию: PyPI проверяет токен OIDC от workflow `release.yml` в окружении `pypi`, паролей и API-токенов в секретах нет. Команды для слежения за прогоном и обновления установленных копий (`aiw-ru`, плагин в проекте) `release.py` печатает в конце.
 
 Если изменился вывод команд, пересоберите демо в README до выпуска: `uv run --extra ml scripts/demo.py`. Скрипт запускает `scan`, `validate`, `classify --all` и `antiplagiat` на примерах из `docs/demo/`, пишет запись terminalizer `docs/demo/aiw-demo.yml` и собирает из неё `docs/demo.gif`. Нужны terminalizer, ffmpeg и все четыре модели в кэше; рендер идёт около 10 минут.
 

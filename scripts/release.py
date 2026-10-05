@@ -10,7 +10,8 @@
 GitHub выпуск помечается как pre-release.
 
 Ничего не отправляет: публикация — `git push --follow-tags`, после чего
-GitHub Actions собирает пакет и создаёт выпуск (release.yml).
+GitHub Actions собирает пакет и создаёт выпуск (release.yml). В конце скрипт печатает
+шаги после выпуска (слежение за прогоном, обновление aiw-ru и плагина), см. `next_steps`.
 `--dry-run` показывает план без изменений.
 """
 
@@ -69,6 +70,25 @@ def sh(*cmd: str) -> None:
         fail(f"`{' '.join(cmd)}` завершилась с кодом {code}")
 
 
+def next_steps(version: str) -> str:
+    """Шаги после коммита и тега: отправка, слежение за прогоном, обновление aiw-ru и плагина."""
+    tag = f"v{version}"
+    return f"""Готово. Дальше:
+
+1. Отправить:
+   git push --follow-tags
+2. Следить за выпуском фоновой командой, не опрашивать вручную (прогон запускается по тегу):
+   gh run watch "$(gh run list --branch {tag} --limit 1 --json databaseId --jq '.[0].databaseId')" --exit-status
+3. Когда прогон зелёный, обновить aiw-ru из PyPI (если он стоит как uv tool) и плагин в проекте, где он включён (emotrain):
+   uv tool upgrade aiw-ru
+   claude plugin marketplace update avoid-ai-writing-russian
+   cd ~/Desktop/Work/emotrain && claude plugin update avoid-ai-writing-russian@avoid-ai-writing-russian --scope project
+4. Запуская детектор из кэша плагина (`~/.claude/plugins/cache/avoid-ai-writing-russian/…/skills/<скилл>`), сними UV_NO_SYNC:
+   env -u UV_NO_SYNC uv run --project ../.. aiw-ru …
+   При UV_NO_SYNC=1 в свежем кэше uv создаёт пустое окружение без пакета, и aiw-ru берётся из PATH, то есть может быть старой версии.
+"""
+
+
 def main(args: list[str]) -> int:
     utf8_output()
     dry = "--dry-run" in args
@@ -119,7 +139,7 @@ def main(args: list[str]) -> int:
     sh("git", "add", "-A")
     sh("git", "commit", "-m", f"Выпуск {next_version}")
     sh("git", "tag", "-a", f"v{next_version}", "-m", f"Выпуск {next_version}")
-    print("Готово. Отправить: git push --follow-tags")
+    print(next_steps(next_version))
     return 0
 
 
