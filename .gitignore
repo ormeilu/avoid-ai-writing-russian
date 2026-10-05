@@ -232,3 +232,7 @@ evals/results/
 docs/demo/demo-raw.gif
 
 .DS_Store
+
+# Рабочие копии агентов (git worktree): ruff и ty иначе проверяют и их файлы.
+.worktrees/
+.claude/worktrees/
