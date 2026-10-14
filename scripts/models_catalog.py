@@ -53,20 +53,20 @@ loaded = models.load(models.get(name))
 load_ms = (time.perf_counter() - start) * 1000
 
 
-def median_ms(t, runs):
-    loaded.probability(t)
+def median_ms(sample, runs):
+    loaded.probability(sample)
     times = []
     for _ in range(runs):
-        s = time.perf_counter()
-        loaded.probability(t)
-        times.append(time.perf_counter() - s)
+        run_start = time.perf_counter()
+        loaded.probability(sample)
+        times.append(time.perf_counter() - run_start)
     return statistics.median(times) * 1000
 
 
-out = {"load_ms": load_ms, "short_ms": median_ms(short, 20), "long_ms": median_ms(text, 10)}
+result = {"load_ms": load_ms, "short_ms": median_ms(short, 20), "long_ms": median_ms(text, 10)}
 rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-out["ram_mb"] = rss / 2**20 if sys.platform == "darwin" else rss / 1024
-print(json.dumps(out))
+result["ram_mb"] = rss / 2**20 if sys.platform == "darwin" else rss / 1024
+print(json.dumps(result))
 """
 
 
@@ -96,15 +96,15 @@ def report(model: Model) -> dict[str, Any] | None:
 
 
 def quality(m: dict[str, Any]) -> dict[str, Any]:
-    t = m["test"]
+    test = m["test"]
     return {
-        "roc_auc": round(t["roc_auc"], 4),
-        "accuracy": round(t["accuracy"], 4),
-        "f1_macro": round(t["macro"]["f1"], 4),
-        "human_as_ai": round(1 - t["classes"]["human"]["recall"], 4),
-        "roc_auc_created": round(t["roc_auc_created"], 4),
+        "roc_auc": round(test["roc_auc"], 4),
+        "accuracy": round(test["accuracy"], 4),
+        "f1_macro": round(test["macro"]["f1"], 4),
+        "human_as_ai": round(1 - test["classes"]["human"]["recall"], 4),
+        "roc_auc_created": round(test["roc_auc_created"], 4),
         "valid_roc_auc": round(m["valid"]["roc_auc"], 4),
-        "test_texts": sum(c["support"] for c in t["classes"].values()),
+        "test_texts": sum(class_stats["support"] for class_stats in test["classes"].values()),
     }
 
 
@@ -120,18 +120,30 @@ def hub_files(model: Model) -> dict[str, Any]:
 
     try:
         info = HfApi().model_info(model.repo, files_metadata=True)
-    except (HfHubHTTPError, httpx.HTTPError) as e:
+    except (HfHubHTTPError, httpx.HTTPError) as error:
         # Без сети размер считается по скачанной копии: это те же файлы. Ревизию так не узнать.
         local = models.local_path(model) if models.available(model) else None
         if local is None:
-            print(f"{model.name}: нет данных с Hugging Face ({e}), размер остаётся прежним", file=sys.stderr)
+            print(f"{model.name}: нет данных с Hugging Face ({error}), размер остаётся прежним", file=sys.stderr)
             return {}
-        print(f"{model.name}: нет данных с Hugging Face ({e}), размер по {local}", file=sys.stderr)
-        size = sum(f.stat().st_size for f in local.iterdir() if any(fnmatch(f.name, p) for p in model.files))
+        print(f"{model.name}: нет данных с Hugging Face ({error}), размер по {local}", file=sys.stderr)
+        size = sum(
+            file.stat().st_size
+            for file in local.iterdir()
+            if any(fnmatch(file.name, pattern) for pattern in model.files)
+        )
         return {"download_mb": round(size / 2**20, 1)}
-    files = [s for s in info.siblings or [] if any(fnmatch(s.rfilename, p) for p in model.files)]
-    blobs = {s.rfilename: s.lfs.sha256 if s.lfs else s.blob_id for s in files if s.rfilename not in models.CARD_FILES}
-    size = sum(s.size or 0 for s in files)
+    files = [
+        sibling
+        for sibling in info.siblings or []
+        if any(fnmatch(sibling.rfilename, pattern) for pattern in model.files)
+    ]
+    blobs = {
+        file.rfilename: file.lfs.sha256 if file.lfs else file.blob_id
+        for file in files
+        if file.rfilename not in models.CARD_FILES
+    }
+    size = sum(file.size or 0 for file in files)
     return {"download_mb": round(size / 2**20, 1), "revision": info.sha, "blobs": dict(sorted(blobs.items()))}
 
 
@@ -142,7 +154,7 @@ def bench(model: Model, text_path: Path) -> dict[str, Any]:
     done = subprocess.run(
         [sys.executable, "-c", BENCH, model.name, str(text_path)], capture_output=True, text=True, check=True
     )
-    return {k: round(v, 1) for k, v in json.loads(done.stdout.strip().splitlines()[-1]).items()}
+    return {key: round(value, 1) for key, value in json.loads(done.stdout.strip().splitlines()[-1]).items()}
 
 
 def packages_mb() -> float:
@@ -151,7 +163,7 @@ def packages_mb() -> float:
         env = Path(tmp) / "venv"
         subprocess.run(["uv", "venv", "-q", "-p", "3.12", str(env)], check=True)
         subprocess.run(["uv", "pip", "install", "-q", "--python", str(env), f"{ROOT}[ml]"], check=True, cwd=ROOT)
-        size = sum(p.stat().st_size for p in env.rglob("*") if p.is_file() and not p.is_symlink())
+        size = sum(path.stat().st_size for path in env.rglob("*") if path.is_file() and not path.is_symlink())
     return round(size / 2**20)
 
 
@@ -166,22 +178,22 @@ def write(catalog: dict[str, Any]) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    group = ap.add_mutually_exclusive_group()
+    argument_parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
+    group = argument_parser.add_mutually_exclusive_group()
     group.add_argument("--packages", action="store_true", help="измерить и размер пакетов extra ml")
     group.add_argument("--hub-only", action="store_true", help="только ревизии, хэши и размеры с Hugging Face")
-    args = ap.parse_args(argv)
+    args = argument_parser.parse_args(argv)
     old = json.loads(OUT.read_text(encoding="utf-8")) if OUT.exists() else {}
     if args.hub_only:
         if not old:
             sys.exit(f"{OUT.relative_to(ROOT)} нет: сначала полный замер без --hub-only")
-        for e in old["models"]:
-            hub = hub_files(models.get(e["name"]))
+        for entry in old["models"]:
+            hub = hub_files(models.get(entry["name"]))
             # Ключи на прежних местах, blobs — перед замерами, как в полном каталоге.
-            measured = e.pop("measured", None)
-            e.update(hub)
+            measured = entry.pop("measured", None)
+            entry.update(hub)
             if measured is not None:
-                e["measured"] = measured
+                entry["measured"] = measured
         write(old)
         return
     with tempfile.TemporaryDirectory() as tmp:
@@ -189,11 +201,11 @@ def main(argv: list[str] | None = None) -> None:
         text_path.write_text(long_text(), encoding="utf-8")
         entries = []
         for model in models.MODELS.values():
-            m = report(model)
-            if m is None:
+            metrics = report(model)
+            if metrics is None:
                 print(f"{model.name}: нет отчёта в docs/models/, модель пропущена", file=sys.stderr)
                 continue
-            previous = next((e for e in old.get("models", []) if e["name"] == model.name), {})
+            previous = next((entry for entry in old.get("models", []) if entry["name"] == model.name), {})
             measured = bench(model, text_path)
             entries.append(
                 {
@@ -202,12 +214,14 @@ def main(argv: list[str] | None = None) -> None:
                     "summary": model.summary,
                     "repo": model.repo,
                     "default": model.default,
-                    "base": m["params"].get("base"),
-                    "license": LICENSES.get(lic := str(m["params"].get("base_license") or "mit").lower(), lic),
-                    "weights": (m.get("inference") or {}).get("weights"),
+                    "base": metrics["params"].get("base"),
+                    "license": LICENSES.get(
+                        license_id := str(metrics["params"].get("base_license") or "mit").lower(), license_id
+                    ),
+                    "weights": (metrics.get("inference") or {}).get("weights"),
                     "report": f"docs/models/{model.repo.split('/')[-1]}.md",
-                    "quality": quality(m),
-                    **(hub_files(model) or {k: previous[k] for k in HUB_FIELDS if k in previous}),
+                    "quality": quality(metrics),
+                    **(hub_files(model) or {key: previous[key] for key in HUB_FIELDS if key in previous}),
                     # Без свежего замера остаётся прошлый: модель могла быть не скачана.
                     "measured": measured or previous.get("measured", {}),
                 }

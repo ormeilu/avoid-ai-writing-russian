@@ -140,7 +140,7 @@ LIGHTGBM = Model(
 # Порядок — предпочтение: первая установленная модель даёт вероятность по умолчанию. Модели идут
 # по доле людей, принятых за ИИ на test (3,4 %, 7,2 %, 9,5 %, 16,5 %), а не по ROC AUC: ошибиться
 # в человеке для скилла дороже, чем пропустить ИИ-текст.
-MODELS: dict[str, Model] = {m.name: m for m in (MODERNBERT, TRANSFORMER, MINI_FRIDA, LIGHTGBM)}
+MODELS: dict[str, Model] = {model.name: model for model in (MODERNBERT, TRANSFORMER, MINI_FRIDA, LIGHTGBM)}
 LIGHTGBM_REPO = LIGHTGBM.repo
 
 
@@ -181,8 +181,8 @@ def _lines(text: str) -> int:
 
 
 def _whole(text: str) -> Coverage:
-    n, lines = len(words(text)), _lines(text)
-    return Coverage(len(text), len(text), n, n, lines, lines)
+    word_count, lines = len(words(text)), _lines(text)
+    return Coverage(len(text), len(text), word_count, word_count, lines, lines)
 
 
 # (сделано, всего, секунд прошло): после каждой пачки фрагментов.
@@ -217,7 +217,7 @@ def pinned(model: Model = LIGHTGBM) -> dict[str, Any]:
 
     blobs — имена файлов в кэше Hugging Face: sha256 у файлов в LFS, хэш git у остальных.
     """
-    return next((e for e in catalog()["models"] if e["name"] == model.name), {})
+    return next((entry for entry in catalog()["models"] if entry["name"] == model.name), {})
 
 
 def get(name: str) -> Model:
@@ -332,7 +332,7 @@ class _LightGBM:
         return float(self.booster.predict([features(text, result)])[0])
 
     def probabilities(self, texts: list[str], progress: Progress | None = None) -> list[float]:
-        return [self.probability(t) for t in texts]
+        return [self.probability(text) for text in texts]
 
     def coverage(self, text: str) -> Coverage:
         """Признаки считаются по всему тексту."""
@@ -343,10 +343,10 @@ def _load_lightgbm(model: Model, path: Path) -> _LightGBM:
     spec = _check_features(path)
     try:
         import lightgbm as lgb
-    except OSError as e:
+    except OSError as error:
         # На macOS колёса lightgbm ищут libomp из Homebrew и без неё не загружаются.
         hint = ": поставьте libomp (brew install libomp)" if sys.platform == "darwin" else ""
-        raise ModelError(f"lightgbm не загружается{hint} ({e})") from None
+        raise ModelError(f"lightgbm не загружается{hint} ({error})") from None
     booster = lgb.Booster(model_file=str(path / "model.txt"))
     return _LightGBM(model, float(spec.get("threshold", 0.5)), booster)
 
@@ -391,7 +391,7 @@ class _Transformer:
         Серия пропусков от 64 знаков (LONG_BLANK) до правил сводится к одному пробелу или переводу
         строки. Результат тот же: правила про начало строки пробелов не считают, а последнее
         правило всё равно делает из любых пропусков один пробел."""
-        text = LONG_BLANK.sub(lambda m: "\n" if "\n" in m.group() else " ", text)
+        text = LONG_BLANK.sub(lambda match: "\n" if "\n" in match.group() else " ", text)
         for pattern, replacement in self.rules:
             text = pattern.sub(replacement, text)
         return text.strip()
@@ -413,53 +413,55 @@ class _Transformer:
 
     def counts(self, texts: list[str]) -> list[int]:
         """Токены каждого текста после нормализации, без служебных."""
-        encoded = self.tokenizer.encode_batch([self.normalize(t) for t in texts], add_special_tokens=False)
-        return [len(e.ids) for e in encoded]
+        encoded = self.tokenizer.encode_batch([self.normalize(text) for text in texts], add_special_tokens=False)
+        return [len(encoding.ids) for encoding in encoded]
 
-    def _run(self, ws: list[list[int]]) -> list[float]:
+    def _run(self, framed: list[list[int]]) -> list[float]:
         """Вероятность ИИ по каждому окну; окна уже обрамлены служебными токенами."""
         import numpy as np
 
-        s = self.spec
-        batch = np.full((len(ws), max(len(w) for w in ws)), s["pad_id"], dtype=np.int64)
+        spec = self.spec
+        batch = np.full((len(framed), max(len(window) for window in framed)), spec["pad_id"], dtype=np.int64)
         mask = np.zeros_like(batch)
-        for k, w in enumerate(ws):
-            batch[k, : len(w)] = w
-            mask[k, : len(w)] = 1
-        logits = np.asarray(self.session.run([s["output"]], {"input_ids": batch, "attention_mask": mask})[0])
-        z = np.exp(logits - logits.max(axis=1, keepdims=True))
-        ai = s["labels"].index("ai")
-        return [float(x) for x in z[:, ai] / z.sum(axis=1)]
+        for k, window in enumerate(framed):
+            batch[k, : len(window)] = window
+            mask[k, : len(window)] = 1
+        logits = np.asarray(self.session.run([spec["output"]], {"input_ids": batch, "attention_mask": mask})[0])
+        exp_logits = np.exp(logits - logits.max(axis=1, keepdims=True))
+        ai_index = spec["labels"].index("ai")
+        return [float(probability) for probability in exp_logits[:, ai_index] / exp_logits.sum(axis=1)]
 
     def probability(self, text: str, result: AnalysisResult | None = None) -> float:
         """Вероятность по первому окну текста или среднее по окнам, как записано в inference.json."""
-        s = self.spec
-        prefix, suffix = _frame(s)
-        probs = self._run(windows(self.ids(text[: s["max_chars"]]), self.read_length, prefix, suffix, s["max_windows"]))
+        spec = self.spec
+        prefix, suffix = _frame(spec)
+        probs = self._run(
+            windows(self.ids(text[: spec["max_chars"]]), self.read_length, prefix, suffix, spec["max_windows"])
+        )
         return sum(probs) / len(probs)
 
     def probabilities(self, texts: list[str], progress: Progress | None = None) -> list[float]:
         """Вероятность по первому окну каждого текста, пачками; для фрагментов, которые влезают в окно."""
-        s = self.spec
-        prefix, suffix = _frame(s)
-        started, out = time.perf_counter(), []
+        spec = self.spec
+        prefix, suffix = _frame(spec)
+        started, probs = time.perf_counter(), []
         for k in range(0, len(texts), BATCH):
-            ws = [
-                windows(self.ids(t[: s["max_chars"]]), s["max_length"], prefix, suffix, 1)[0]
-                for t in texts[k : k + BATCH]
+            framed = [
+                windows(self.ids(text[: spec["max_chars"]]), spec["max_length"], prefix, suffix, 1)[0]
+                for text in texts[k : k + BATCH]
             ]
-            out += self._run(ws)
+            probs += self._run(framed)
             if progress is not None:
-                progress(len(out), len(texts), time.perf_counter() - started)
-        return out
+                progress(len(probs), len(texts), time.perf_counter() - started)
+        return probs
 
     def coverage(self, text: str) -> Coverage:
         """Докуда модель читает текст: max_windows окон по read_length, но не дальше max_chars знаков."""
-        s = self.spec
-        prefix, suffix = _frame(s)
-        budget = (self.read_length - len(prefix) - len(suffix)) * s["max_windows"]
+        spec = self.spec
+        prefix, suffix = _frame(spec)
+        budget = (self.read_length - len(prefix) - len(suffix)) * spec["max_windows"]
         total = len(self.ids(text))
-        limit = min(len(text), s["max_chars"])
+        limit = min(len(text), spec["max_chars"])
         if total <= budget and limit == len(text):
             return replace(_whole(text), tokens=total, total_tokens=total, window=self.read_length)
         # Самое длинное начало исходника, которое после нормализации укладывается в окна: так место
@@ -493,21 +495,25 @@ class _Transformer:
 
     def _units(self, text: str, cap: int) -> list[tuple[int, int, int]]:
         """Предложения со своими токенами; предложение длиннее cap делится по словам пополам, пока не влезет."""
-        sents = _sentences(text)
+        text_sentences = _sentences(text)
         units: list[tuple[int, int, int]] = []
-        for sent, n in zip(sents, self.counts([s.text for s in sents]), strict=True):
-            self._split(text, sent.start, sent.end, n, cap, units)
+        for sentence, tokens in zip(
+            text_sentences, self.counts([sentence.text for sentence in text_sentences]), strict=True
+        ):
+            self._split(text, sentence.start, sentence.end, tokens, cap, units)
         return units
 
-    def _split(self, text: str, start: int, end: int, n: int, cap: int, out: list[tuple[int, int, int]]) -> None:
-        spans = [(m.start() + start, m.end() + start) for m in re.finditer(r"\S+", text[start:end])]
-        if n <= cap or len(spans) < 2:
-            out.append((start, end, n))
+    def _split(self, text: str, start: int, end: int, tokens: int, cap: int, units: list[tuple[int, int, int]]) -> None:
+        spans = [(match.start() + start, match.end() + start) for match in re.finditer(r"\S+", text[start:end])]
+        if tokens <= cap or len(spans) < 2:
+            units.append((start, end, tokens))
             return
         mid = len(spans) // 2
         halves = [(spans[0][0], spans[mid - 1][1]), (spans[mid][0], spans[-1][1])]
-        for (a, b), k in zip(halves, self.counts([text[a:b] for a, b in halves]), strict=True):
-            self._split(text, a, b, k, cap, out)
+        for (half_start, half_end), count in zip(
+            halves, self.counts([text[half_start:half_end] for half_start, half_end in halves]), strict=True
+        ):
+            self._split(text, half_start, half_end, count, cap, units)
 
     def spans(self, text: str, overlap: float, unit: float) -> list[tuple[int, int]]:
         """Фрагменты в одно окно по границам предложений; следующий начинается с хвоста предыдущего,
@@ -517,7 +523,7 @@ class _Transformer:
         if not units:
             return [(0, len(text))]
         keep = round(self.width * overlap)
-        out: list[tuple[int, int]] = []
+        unit_spans: list[tuple[int, int]] = []
         i = 0
         while True:
             j, used = i, 0
@@ -525,30 +531,30 @@ class _Transformer:
                 used += units[j][2]
                 j += 1
             if j == len(units):
-                floor = out[-1][0] + 1 if out else 0
+                floor = unit_spans[-1][0] + 1 if unit_spans else 0
                 while i > floor and used + units[i - 1][2] <= self.width:
                     i -= 1
                     used += units[i][2]
-                out.append((i, j))
+                unit_spans.append((i, j))
                 break
-            out.append((i, j))
+            unit_spans.append((i, j))
             k, back = j, 0
             while k - 1 > i and back + units[k - 1][2] <= keep:
                 k -= 1
                 back += units[k][2]
             i = k
-        return [(units[a][0], units[b - 1][1]) for a, b in out]
+        return [(units[first][0], units[after_last - 1][1]) for first, after_last in unit_spans]
 
 
 def _sentences(text: str) -> list[Sentence]:
     """Предложения по кускам между длинными пропусками: sentences() на серии пробелов после точки
     работает за квадрат времени, а серия пропусков предложение всё равно разделяет."""
-    out: list[Sentence] = []
+    found: list[Sentence] = []
     pos = 0
-    for m in LONG_BLANK.finditer(text):
-        out += sentences(text[pos : m.start()], pos)
-        pos = m.end()
-    return out + sentences(text[pos:], pos)
+    for match in LONG_BLANK.finditer(text):
+        found += sentences(text[pos : match.start()], pos)
+        pos = match.end()
+    return found + sentences(text[pos:], pos)
 
 
 def _no_limits(tokenizer: Any) -> None:
@@ -577,7 +583,7 @@ def _load_transformer(model: Model, path: Path) -> _Transformer:
     session = ort.InferenceSession(str(path / spec["file"]), options, providers=["CPUExecutionProvider"])
     tokenizer = Tokenizer.from_file(str(path / spec["tokenizer"]))
     _no_limits(tokenizer)
-    rules = [(re.compile(r["pattern"], re.MULTILINE), r["replacement"]) for r in spec.get("normalize", [])]
+    rules = [(re.compile(rule["pattern"], re.MULTILINE), rule["replacement"]) for rule in spec.get("normalize", [])]
     return _Transformer(model, float(spec.get("threshold", 0.5)), spec, session, tokenizer, rules)
 
 
@@ -639,27 +645,27 @@ UNIT = 0.25
 def _foreign(text: str) -> list[tuple[int, int]]:
     """Абзацы (строки подряд без пустой между ними), где кириллицы меньше RUSSIAN_SHARE букв, а букв
     не меньше FOREIGN_LETTERS; отрезки [начало, конец) в text."""
-    out: list[tuple[int, int]] = []
-    para: tuple[int, int] | None = None
+    foreign: list[tuple[int, int]] = []
+    paragraph: tuple[int, int] | None = None
     pos = 0
 
     def close() -> None:
-        if para is None:
+        if paragraph is None:
             return
-        cyr, lat = letter_share(text[para[0] : para[1]])
-        if cyr + lat >= FOREIGN_LETTERS and cyr / (cyr + lat) < RUSSIAN_SHARE:
-            out.append(para)
+        cyrillic, latin = letter_share(text[paragraph[0] : paragraph[1]])
+        if cyrillic + latin >= FOREIGN_LETTERS and cyrillic / (cyrillic + latin) < RUSSIAN_SHARE:
+            foreign.append(paragraph)
 
     for line in text.split("\n"):
         end = pos + len(line)
         if line.strip():
-            para = (para[0] if para else pos, end)
+            paragraph = (paragraph[0] if paragraph else pos, end)
         else:
             close()
-            para = None
+            paragraph = None
         pos = end + 1
     close()
-    return out
+    return foreign
 
 
 @lru_cache(maxsize=2)
@@ -681,7 +687,7 @@ def visible(text: str) -> str:
 
 def foreign_lines(text: str) -> list[tuple[int, int]]:
     """Строки исходника (с единицы, первая и последняя) абзацев не на русском, которые модели не показывают."""
-    return [(text.count("\n", 0, a) + 1, text.count("\n", 0, b) + 1) for a, b in _clean(text)[1]]
+    return [(text.count("\n", 0, start) + 1, text.count("\n", 0, end) + 1) for start, end in _clean(text)[1]]
 
 
 def russian(share: float | None) -> bool:
@@ -732,12 +738,12 @@ class ChunkScan:
     @property
     def rated(self) -> list[Chunk]:
         """Фрагменты, которые оценила модель."""
-        return [c for c in self.chunks if not c.skipped]
+        return [chunk for chunk in self.chunks if not chunk.skipped]
 
     @property
     def skipped(self) -> int:
         """Фрагментов не на русском: модель их не оценивала."""
-        return sum(c.skipped for c in self.chunks)
+        return sum(chunk.skipped for chunk in self.chunks)
 
 
 def chunk_spans(
@@ -757,30 +763,30 @@ def needs_fragments(loaded: Loaded, coverage: Coverage) -> bool:
 
 def _merged(spans: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
     """Отрезки по возрастанию, слитые там, где они пересекаются или касаются."""
-    out: list[tuple[int, int]] = []
-    for a, b in sorted(spans):
-        if out and a <= out[-1][1]:
-            out[-1] = (out[-1][0], max(out[-1][1], b))
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
         else:
-            out.append((a, b))
-    return out
+            merged.append((start, end))
+    return merged
 
 
 def _outside(spans: list[tuple[int, int]], cover: list[tuple[int, int]]) -> list[tuple[int, int]]:
     """Части отрезков spans (слитых), не закрытые отрезками cover (слитыми)."""
-    out: list[tuple[int, int]] = []
-    for a, b in spans:
-        for c, d in cover:
-            if d <= a or c >= b:
+    uncovered: list[tuple[int, int]] = []
+    for start, end in spans:
+        for cover_start, cover_end in cover:
+            if cover_end <= start or cover_start >= end:
                 continue
-            if c > a:
-                out.append((a, c))
-            a = max(a, d)
-            if a >= b:
+            if cover_start > start:
+                uncovered.append((start, cover_start))
+            start = max(start, cover_end)
+            if start >= end:
                 break
-        if a < b:
-            out.append((a, b))
-    return out
+        if start < end:
+            uncovered.append((start, end))
+    return uncovered
 
 
 def scan_chunks(
@@ -800,23 +806,27 @@ def scan_chunks(
     clean = visible(text)
     spans = chunk_spans(loaded, clean, overlap)
     checked = spans[:limit] if limit else spans
-    pieces = [clean[a:b] for a, b in checked]
+    pieces = [clean[start:end] for start, end in checked]
     in_russian = [is_russian(piece) for piece in pieces]
     started = time.perf_counter()
-    probs = iter(loaded.probabilities([p for p, ru in zip(pieces, in_russian, strict=True) if ru], progress))
+    probs = iter(
+        loaded.probabilities(
+            [piece for piece, piece_is_russian in zip(pieces, in_russian, strict=True) if piece_is_russian], progress
+        )
+    )
     seconds = time.perf_counter() - started
     chunks = [
         Chunk(
-            a,
-            b,
-            clean.count("\n", 0, a) + 1,
-            clean.count("\n", 0, b) + 1,
+            start,
+            end,
+            clean.count("\n", 0, start) + 1,
+            clean.count("\n", 0, end) + 1,
             len(words(piece)),
-            next(probs) if ru else None,
+            next(probs) if piece_is_russian else None,
         )
-        for (a, b), piece, ru in zip(checked, pieces, in_russian, strict=True)
+        for (start, end), piece, piece_is_russian in zip(checked, pieces, in_russian, strict=True)
     ]
-    rated = _merged([(c.start, c.end) for c in chunks if not c.skipped])
-    foreign = _outside(_merged([(c.start, c.end) for c in chunks if c.skipped]), rated)
-    n = len(words(clean)) - sum(len(words(clean[a:b])) for a, b in foreign)
-    return ChunkScan(chunks, len(spans), seconds, overlap, clean, n)
+    rated = _merged([(chunk.start, chunk.end) for chunk in chunks if not chunk.skipped])
+    foreign = _outside(_merged([(chunk.start, chunk.end) for chunk in chunks if chunk.skipped]), rated)
+    word_count = len(words(clean)) - sum(len(words(clean[start:end])) for start, end in foreign)
+    return ChunkScan(chunks, len(spans), seconds, overlap, clean, word_count)

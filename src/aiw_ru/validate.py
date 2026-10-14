@@ -105,52 +105,52 @@ HEADING_SHAPE_RE = jsre("^#{1,6}(?=\\s)", "gm")
 LIMIT = 5
 
 
-def _all(pattern, s: str) -> list[str]:
-    return [m.group() for m in pattern.finditer(s)]
+def _all(pattern, text: str) -> list[str]:
+    return [match.group() for match in pattern.finditer(text)]
 
 
-def _frontmatter(s: str) -> str:
-    m = FRONTMATTER_RE.search(s)
-    return m.group() if m else ""
+def _frontmatter(text: str) -> str:
+    match = FRONTMATTER_RE.search(text)
+    return match.group() if match else ""
 
 
-def _service_texts(s: str) -> list[str]:
+def _service_texts(text: str) -> list[str]:
     """Служебные части статьи (service_ranges) построчно, без пустых строк и пробелов по краям."""
-    out: list[str] = []
-    for a, b in service_ranges(s):
-        out.extend(line for line in (trim(x) for x in s[a:b].split("\n")) if line)
-    return out
+    lines: list[str] = []
+    for start, end in service_ranges(text):
+        lines.extend(line for line in (trim(raw_line) for raw_line in text[start:end].split("\n")) if line)
+    return lines
 
 
-def _strip_code(s: str) -> str:
-    return INLINE_CODE_RE.sub("", FENCE_RE.sub("", s))
+def _strip_code(text: str) -> str:
+    return INLINE_CODE_RE.sub("", FENCE_RE.sub("", text))
 
 
-def _urls(s: str) -> list[str]:
-    return [URL_TAIL_RE.sub("", AI_URL_RE.sub("", u), count=1) for u in _all(URL_RE, _strip_code(s))]
+def _urls(text: str) -> list[str]:
+    return [URL_TAIL_RE.sub("", AI_URL_RE.sub("", url), count=1) for url in _all(URL_RE, _strip_code(text))]
 
 
-def _numbers(s: str) -> list[str]:
-    prose = LOOSE_URL_RE.sub("", _strip_code(s))
-    return [n.replace(",", ".") for n in _all(NUMBER_RE, prose)]
+def _numbers(text: str) -> list[str]:
+    prose = LOOSE_URL_RE.sub("", _strip_code(text))
+    return [number.replace(",", ".") for number in _all(NUMBER_RE, prose)]
 
 
-def _multiset_diff(a: list[str], b: list[str]) -> tuple[list[str], list[str]]:
-    count = Counter(a)
+def _multiset_diff(before: list[str], after: list[str]) -> tuple[list[str], list[str]]:
+    remaining = Counter(before)
     added: list[str] = []
-    for x in b:
-        if count[x] > 0:
-            count[x] -= 1
+    for item in after:
+        if remaining[item] > 0:
+            remaining[item] -= 1
         else:
-            added.append(x)
-    missing = [x for x, c in count.items() for _ in range(c)]
+            added.append(item)
+    missing = [item for item, count in remaining.items() for _ in range(count)]
     return missing, added
 
 
-def _compare_exact(kind: str, before: list[str], after: list[str], out: list[Violation]) -> None:
+def _compare_exact(kind: str, before: list[str], after: list[str], violations: list[Violation]) -> None:
     missing, added = _multiset_diff(before, after)
-    out.extend(Violation(kind=kind, detail=f"пропало или изменено: {m[:120]}") for m in missing[:LIMIT])
-    out.extend(Violation(kind=kind, detail=f"появилось: {a[:120]}") for a in added[:LIMIT])
+    violations.extend(Violation(kind=kind, detail=f"пропало или изменено: {item[:120]}") for item in missing[:LIMIT])
+    violations.extend(Violation(kind=kind, detail=f"появилось: {item[:120]}") for item in added[:LIMIT])
 
 
 # ─── Словари фактов ──────────────────────────────────────────────────────
@@ -195,7 +195,7 @@ NUMERALS: list[Numeral] = [
     Numeral("восемь", "(восемь|восьми|восемью|восьмью)", 8),
     Numeral("девять", _cardinal("девят"), 9),
     Numeral("десять", _cardinal("десят"), 10),
-    *(Numeral(s + "ь", _cardinal(s), 11 + i) for i, s in enumerate(_TEENS + _TEENS2)),
+    *(Numeral(stem + "ь", _cardinal(stem), 11 + i) for i, stem in enumerate(_TEENS + _TEENS2)),
     Numeral("двадцать", _cardinal("двадцат"), 20),
     Numeral("тридцать", _cardinal("тридцат"), 30),
     Numeral("сорок", "(сорок|сорока)", 40),
@@ -208,7 +208,10 @@ NUMERALS: list[Numeral] = [
     Numeral("двести", "(двести|двухсот|двумстам|двумястами|двухстах)", 200),
     Numeral("триста", "(триста|трехсот|тремстам|тремястами|трехстах)", 300),
     Numeral("четыреста", "(четыреста|четырехсот|четыремстам|четырьмястами|четырехстах)", 400),
-    *(Numeral(n, f"({n}|{o}сот|{o}стам|{o}стах)", v) for n, o, v in _HUNDREDS + _HUNDREDS2),
+    *(
+        Numeral(name, f"({name}|{oblique}сот|{oblique}стам|{oblique}стах)", value)
+        for name, oblique, value in _HUNDREDS + _HUNDREDS2
+    ),
     Numeral("тысяча", "тысяч(а|и|е|у|ей|ею|ам|ами|ах)?", 1000),
     Numeral("миллион", "миллион*", 1e6),
     Numeral("миллиард", "миллиард*", 1e9),
@@ -234,7 +237,7 @@ NUMERALS: list[Numeral] = [
     Numeral("восьмой", _ordinal("восьм"), 8),
     Numeral("девятый", _ordinal("девят"), 9),
     Numeral("десятый", _ordinal("десят"), 10),
-    *(Numeral(s + "ый", _ordinal(s), 11 + i) for i, s in enumerate(_TEENS + _TEENS2)),
+    *(Numeral(stem + "ый", _ordinal(stem), 11 + i) for i, stem in enumerate(_TEENS + _TEENS2)),
     Numeral("двадцатый", _ordinal("двадцат"), 20),
     Numeral("тридцатый", _ordinal("тридцат"), 30),
     Numeral("сороковой", _ordinal("сороков"), 40),
@@ -263,14 +266,14 @@ MONTHS: list[tuple[str, str]] = [
 ]
 
 # Число после оговорки-границы: цифра или числительное («около 40», «до десяти»).
-_NUMERAL_BODY = "|".join(n.forms.replace("*", "\\p{L}*") for n in NUMERALS)
+_NUMERAL_BODY = "|".join(numeral.forms.replace("*", "\\p{L}*") for numeral in NUMERALS)
 AHEAD_NUMBER = f"(?={WS}(?:[~≈]?\\d|(?:{_NUMERAL_BODY}|нескольк\\p{{L}}*){WORD_END}))"
 _NUMBER_WORD = f"(?:\\d+(?:[.,]\\d+)*|(?:{_NUMERAL_BODY}){WORD_END})"
 _DASH = "[\\s\\u00A0]*[–—-][\\s\\u00A0]*"
 
 
-def _word(p: str, before: str = "", after: str = "") -> str:
-    return f"{before}{phrase(p)}{after}"
+def _word(spec: str, before: str = "", after: str = "") -> str:
+    return f"{before}{phrase(spec)}{after}"
 
 
 # Семейства оговорок: замена внутри семейства законна («обычно» → «как правило»).
@@ -338,8 +341,8 @@ REMOVABLE = frozenset(
 # Устойчивые обороты со словами-претензиями: претензией не считаются.
 CLAIM_IDIOMS = jsre(
     "|".join(
-        phrase(p)
-        for p in (
+        phrase(idiom)
+        for idiom in (
             "в первую очередь",
             "на первый взгляд",
             "первым делом",
@@ -388,14 +391,14 @@ ALIASES = {"ai": ("ии",), "ии": ("ai",)}
 
 def _combined(entries: list[tuple[str, str]], flags: str = "giu") -> regex.Pattern[str]:
     """Один проход по тексту: у каждой записи своя именованная группа."""
-    return jsre("|".join(f"(?P<g{i}>{src})" for i, (_, src) in enumerate(entries)), flags)
+    return jsre("|".join(f"(?P<g{i}>{source})" for i, (_, source) in enumerate(entries)), flags)
 
 
 # Оговорки ищутся каждая своим выражением: общее выражение из всех семейств в разы медленнее.
-HEDGE_RES = [jsre(src, "giu") for _, src in HEDGES]
-NUMERAL_RE = _combined([(n.key, NO_HYPHEN + phrase(n.forms)) for n in NUMERALS])
-MONTH_RE = _combined([(k, phrase(f)) for k, f in MONTHS])
-CLAIM_RE = _combined([(k, NO_HYPHEN + NOT_NEGATED + phrase(f)) for k, f in CLAIMS])
+HEDGE_RES = [jsre(source, "giu") for _, source in HEDGES]
+NUMERAL_RE = _combined([(numeral.key, NO_HYPHEN + phrase(numeral.forms)) for numeral in NUMERALS])
+MONTH_RE = _combined([(key, phrase(forms)) for key, forms in MONTHS])
+CLAIM_RE = _combined([(key, NO_HYPHEN + NOT_NEGATED + phrase(forms)) for key, forms in CLAIMS])
 LETTERS_RE = jsre("\\p{L}+", "gu")
 PART_RE = jsre("[\\p{L}\\p{N}]+", "gu")
 LATIN_WORD_RE = jsre("\\p{Script=Latin}", "u")
@@ -412,41 +415,47 @@ AFTER_STOP_RE = jsre("[.!?…]+[^\\p{L}\\p{N}\\n]*", "gu")
 LINE_LEAD_RE = jsre("(?:^|\\n)[^\\p{L}\\p{N}\\n]*(?:\\d{1,3}[.)][^\\p{L}\\p{N}\\n]*)?", "gu")
 
 
-def _scan(patterns: list[regex.Pattern[str]], s: str) -> list[tuple[int, int, int]]:
+def _scan(patterns: list[regex.Pattern[str]], text: str) -> list[tuple[int, int, int]]:
     """Совпадения нескольких выражений без пересечений, как у одного выражения с альтернативами:
     левое раньше, при равном начале — выражение из списка раньше. Возвращает (начало, конец, номер).
     """
-    found = sorted((m.start(), k, m.end()) for k, rx in enumerate(patterns) for m in rx.finditer(s))
-    out: list[tuple[int, int, int]] = []
-    for start, k, end in found:
-        if out and start < out[-1][1]:
+    found = sorted(
+        (match.start(), index, match.end())
+        for index, pattern in enumerate(patterns)
+        for match in pattern.finditer(text)
+    )
+    matches: list[tuple[int, int, int]] = []
+    for start, index, end in found:
+        if matches and start < matches[-1][1]:
             continue
-        out.append((start, end, k))
-    return out
+        matches.append((start, end, index))
+    return matches
 
 
-def _sentences(p: Prepared) -> list[Sentence]:
+def _sentences(prepared: Prepared) -> list[Sentence]:
     """Предложения прозы, заголовков и списков, как их делит детектор: по блокам."""
     kinds = ("prose", "heading", "list")
-    return [s for b in blocks(p) if b.kind in kinds for s in sentences(b.text, b.start)]
+    return [
+        sentence for block in blocks(prepared) if block.kind in kinds for sentence in sentences(block.text, block.start)
+    ]
 
 
-def _index(m: regex.Match[str]) -> int:
-    name = m.lastgroup
+def _index(match: regex.Match[str]) -> int:
+    name = match.lastgroup
     if name is None or not name.startswith("g"):  # pragma: no cover — группы всегда именованные
-        name = next(k for k, v in m.groupdict().items() if v is not None)
+        name = next(group for group, value in match.groupdict().items() if value is not None)
     return int(name[1:])
 
 
-def _surface(p: Prepared, start: int, end: int) -> str:
-    """Фрагмент исходного текста (с «ё» и без маскирования) по смещениям в `p.prose`."""
+def _surface(prepared: Prepared, start: int, end: int) -> str:
+    """Фрагмент исходного текста (с «ё» и без маскирования) по смещениям в `prepared.prose`."""
     if start >= end:
         return ""
-    return p.source[p.to_source[start] : p.to_source[end - 1] + 1]
+    return prepared.source[prepared.to_source[start] : prepared.to_source[end - 1] + 1]
 
 
-def _mask(s: str, pattern: regex.Pattern[str]) -> str:
-    return pattern.sub(lambda m: " " * len(m.group()), s)
+def _mask(text: str, pattern: regex.Pattern[str]) -> str:
+    return pattern.sub(lambda match: " " * len(match.group()), text)
 
 
 # ─── Оговорки ────────────────────────────────────────────────────────────
@@ -472,61 +481,61 @@ class _Stack:
 
     @property
     def families(self) -> set[str]:
-        return {_group(h.family) for h in self.hedges}
+        return {_group(hedge.family) for hedge in self.hedges}
 
     @property
     def only_modal(self) -> bool:
-        return all(h.family == "может" for h in self.hedges)
+        return all(hedge.family == "может" for hedge in self.hedges)
 
 
 @dataclass(slots=True)
 class _Doc:
-    p: Prepared
+    prepared: Prepared
     sentence_starts: list[int]
     sentence_ends: list[int]
     sentence_words: list[set[str]]
     stacks: list[_Stack]
 
 
-def _hedge_doc(p: Prepared) -> _Doc:
-    prose = p.prose
-    sents = _sentences(p) or [Sentence(0, len(prose), prose, 0)]
-    starts = [s.start for s in sents]
-    ends = [s.end for s in sents]
-    words = [{w.lower() for w in PART_RE.findall(s.text)} for s in sents]
+def _hedge_doc(prepared: Prepared) -> _Doc:
+    prose = prepared.prose
+    doc_sentences = _sentences(prepared) or [Sentence(0, len(prose), prose, 0)]
+    starts = [sentence.start for sentence in doc_sentences]
+    ends = [sentence.end for sentence in doc_sentences]
+    sentence_words = [{word.lower() for word in PART_RE.findall(sentence.text)} for sentence in doc_sentences]
     token_starts: list[int] = []
     token_ends: list[int] = []
-    for m in PART_RE.finditer(prose):
-        token_starts.append(m.start())
-        token_ends.append(m.end())
+    for match in PART_RE.finditer(prose):
+        token_starts.append(match.start())
+        token_ends.append(match.end())
     hedges: list[_Hedge] = []
-    for start, end, k in _scan(HEDGE_RES, prose):
+    for start, end, family_index in _scan(HEDGE_RES, prose):
         first = bisect_right(token_ends, start)
         last = max(first, bisect_left(token_starts, end) - 1)
         sentence = max(0, bisect_right(starts, start) - 1)
-        hedges.append(_Hedge(start, end, HEDGES[k][0], first, last, sentence))
+        hedges.append(_Hedge(start, end, HEDGES[family_index][0], first, last, sentence))
     stacks: list[_Stack] = []
-    for h in hedges:
-        prev = stacks[-1].hedges[-1] if stacks else None
-        if prev is not None and prev.sentence == h.sentence and h.first - prev.last - 1 <= 3:
-            stacks[-1].hedges.append(h)
+    for hedge in hedges:
+        previous = stacks[-1].hedges[-1] if stacks else None
+        if previous is not None and previous.sentence == hedge.sentence and hedge.first - previous.last - 1 <= 3:
+            stacks[-1].hedges.append(hedge)
         else:
-            stacks.append(_Stack([h]))
-    return _Doc(p, starts, ends, words, stacks)
+            stacks.append(_Stack([hedge]))
+    return _Doc(prepared, starts, ends, sentence_words, stacks)
 
 
 def _exempt(doc: _Doc, stack: _Stack, issues: list[Issue]) -> bool:
     """Стопка внутри находки детектора или в предложении, которое скилл вправе удалить."""
-    p = doc.p
-    for h in stack.hedges:
-        a, b = p.to_source[h.start], p.to_source[h.end]
-        s_start = p.to_source[doc.sentence_starts[h.sentence]]
-        s_end = p.to_source[doc.sentence_ends[h.sentence]]
+    prepared = doc.prepared
+    for hedge in stack.hedges:
+        hedge_start, hedge_end = prepared.to_source[hedge.start], prepared.to_source[hedge.end]
+        sentence_start = prepared.to_source[doc.sentence_starts[hedge.sentence]]
+        sentence_end = prepared.to_source[doc.sentence_ends[hedge.sentence]]
         for issue in issues:
-            i_start, i_end = issue.index, issue.index + len(issue.text)
-            if i_start < b and a < i_end:
+            issue_start, issue_end = issue.index, issue.index + len(issue.text)
+            if issue_start < hedge_end and hedge_start < issue_end:
                 return True
-            if issue.type in REMOVABLE and s_start <= i_start < s_end:
+            if issue.type in REMOVABLE and sentence_start <= issue_start < sentence_end:
                 return True
     return False
 
@@ -540,15 +549,15 @@ def _match(before: list[tuple[set[str], set[str]]], after: list[tuple[str, set[s
     по словам предложения, чтобы сообщение указывало на то место, где оговорка пропала.
     """
 
-    def similarity(a: set[str], b: set[str]) -> float:
-        return len(a & b) / len(a | b) if a or b else 0
+    def similarity(left: set[str], right: set[str]) -> float:
+        return len(left & right) / len(left | right) if left or right else 0
 
     options = [
         sorted(
             (j for j, (family, _) in enumerate(after) if family in families),
-            key=lambda j, w=words: -similarity(w, after[j][1]),
+            key=lambda j, words=sentence_words: -similarity(words, after[j][1]),
         )
-        for families, words in before
+        for families, sentence_words in before
     ]
     owner: dict[int, int] = {}
 
@@ -565,62 +574,72 @@ def _match(before: list[tuple[set[str], set[str]]], after: list[tuple[str, set[s
     return [i for i in range(len(before)) if not augment(i, set())]
 
 
-def _snippet(doc: _Doc, h: _Hedge, width: int = 100) -> str:
-    p = doc.p
-    s_start, s_end = doc.sentence_starts[h.sentence], doc.sentence_ends[h.sentence]
-    lo = max(s_start, min(h.start - width // 2, s_end - width))
-    hi = min(s_end, lo + width)
-    text = " ".join(_surface(p, lo, hi).split())
-    return ("…" if lo > s_start else "") + text + ("…" if hi < s_end else "")
+def _snippet(doc: _Doc, hedge: _Hedge, width: int = 100) -> str:
+    sentence_start, sentence_end = doc.sentence_starts[hedge.sentence], doc.sentence_ends[hedge.sentence]
+    lo = max(sentence_start, min(hedge.start - width // 2, sentence_end - width))
+    hi = min(sentence_end, lo + width)
+    text = " ".join(_surface(doc.prepared, lo, hi).split())
+    return ("…" if lo > sentence_start else "") + text + ("…" if hi < sentence_end else "")
 
 
 def _check_hedges(
-    bp: Prepared, ap: Prepared, issues: list[Issue], violations: list[Violation], warnings: list[Violation]
+    before_prepared: Prepared,
+    after_prepared: Prepared,
+    issues: list[Issue],
+    violations: list[Violation],
+    warnings: list[Violation],
 ) -> None:
-    b, a = _hedge_doc(bp), _hedge_doc(ap)
-    stacks = [s for s in b.stacks if not _exempt(b, s, issues)]
-    before = [(s.families, b.sentence_words[s.hedges[0].sentence]) for s in stacks]
-    after = [(_group(h.family), a.sentence_words[h.sentence]) for s in a.stacks for h in s.hedges]
+    before_doc, after_doc = _hedge_doc(before_prepared), _hedge_doc(after_prepared)
+    stacks = [stack for stack in before_doc.stacks if not _exempt(before_doc, stack, issues)]
+    before = [(stack.families, before_doc.sentence_words[stack.hedges[0].sentence]) for stack in stacks]
+    after = [
+        (_group(hedge.family), after_doc.sentence_words[hedge.sentence])
+        for stack in after_doc.stacks
+        for hedge in stack.hedges
+    ]
     for i in _match(before, after):
         stack = stacks[i]
-        h = stack.hedges[0]
-        detail = f"пропала «{' '.join(_surface(bp, h.start, h.end).split())}»: {_snippet(b, h)}"
+        hedge = stack.hedges[0]
+        detail = (
+            f"пропала «{' '.join(_surface(before_prepared, hedge.start, hedge.end).split())}»: "
+            f"{_snippet(before_doc, hedge)}"
+        )
         (warnings if stack.only_modal else violations).append(Violation(kind="оговорка", detail=detail))
 
 
 # ─── Имена, числа словами, месяцы, утверждения ──────────────────────────
 
 
-def _starts(p: Prepared) -> set[int]:
+def _starts(prepared: Prepared) -> set[int]:
     """Смещения слов, у которых заглавная буква ничего не говорит: начала предложений и строк."""
-    prose = p.prose
-    out: set[int] = set()
-    for s in _sentences(p):
-        m = LETTERS_RE.search(prose, s.start, s.end)
-        if m:
-            out.add(m.start())
+    prose = prepared.prose
+    starts: set[int] = set()
+    for sentence in _sentences(prepared):
+        match = LETTERS_RE.search(prose, sentence.start, sentence.end)
+        if match:
+            starts.add(match.start())
     for pattern in (LINE_LEAD_RE, OPENER_RE, AFTER_STOP_RE):
-        for m in pattern.finditer(prose):
-            out.add(m.end())
-    return out
+        for match in pattern.finditer(prose):
+            starts.add(match.end())
+    return starts
 
 
-def _common_prefix(a: str, b: str) -> int:
-    n = 0
-    for x, y in zip(a, b, strict=False):
-        if x != y:
+def _common_prefix(left: str, right: str) -> int:
+    length = 0
+    for left_char, right_char in zip(left, right, strict=False):
+        if left_char != right_char:
             break
-        n += 1
-    return n
+        length += 1
+    return length
 
 
-def _same_stem(a: str, b: str) -> bool:
+def _same_stem(left: str, right: str) -> bool:
     """Одно слово в разных падежах: общее начало без последних двух букв короткого слова."""
-    short = min(len(a), len(b))
-    cp = _common_prefix(a, b)
+    short = min(len(left), len(right))
+    common = _common_prefix(left, right)
     if short <= 3:
-        return cp == short and max(len(a), len(b)) - short <= 3
-    return cp >= max(3, short - 2)
+        return common == short and max(len(left), len(right)) - short <= 3
+    return common >= max(3, short - 2)
 
 
 class _Vocabulary:
@@ -631,164 +650,188 @@ class _Vocabulary:
     """
 
     def __init__(self, text: str) -> None:
-        self.sequence = [w.lower() for w in LETTERS_RE.findall(text)]
+        self.sequence = [word.lower() for word in LETTERS_RE.findall(text)]
         self.words = set(self.sequence)
         self.buckets: dict[str, list[str]] = {}
-        for w in self.words:
-            forms = [w, w[:-2] + w[-1]] if FLEETING_RE.search(w) else [w]
-            for f in forms:
-                self.buckets.setdefault(f[:2], []).append(f)
+        for word in self.words:
+            forms = [word, word[:-2] + word[-1]] if FLEETING_RE.search(word) else [word]
+            for form in forms:
+                self.buckets.setdefault(form[:2], []).append(form)
 
     def covers(self, word: str) -> bool:
-        if word in self.words or any(a in self.words for a in ALIASES.get(word, ())):
+        if word in self.words or any(alias in self.words for alias in ALIASES.get(word, ())):
             return True
-        return any(_same_stem(word, w) for w in self.buckets.get(word[:2], ()))
+        return any(_same_stem(word, known) for known in self.buckets.get(word[:2], ()))
 
     def acronym(self, letters: str) -> bool:
         """Аббревиатура из первых букв подряд идущих слов: «искусственный интеллект» → «ИИ»."""
-        n = len(letters)
-        if not 2 <= n <= 6:
+        length = len(letters)
+        if not 2 <= length <= 6:
             return False
-        seq = self.sequence
-        return any(all(seq[i + k][0] == letters[k] for k in range(n)) for i in range(len(seq) - n + 1))
+        sequence = self.sequence
+        return any(
+            all(sequence[i + k][0] == letters[k] for k in range(length)) for i in range(len(sequence) - length + 1)
+        )
 
 
-def _check_names(bp: Prepared, ap: Prepared, out: list[Violation]) -> None:
-    vocab = _Vocabulary(bp.text)
-    starts = _starts(ap)
+def _check_names(before_prepared: Prepared, after_prepared: Prepared, violations: list[Violation]) -> None:
+    vocab = _Vocabulary(before_prepared.text)
+    starts = _starts(after_prepared)
     seen: set[str] = set()
     added: list[str] = []
-    for m in LETTERS_RE.finditer(ap.prose):
-        w = m.group()
-        if len(w) < 2:
+    for match in LETTERS_RE.finditer(after_prepared.prose):
+        word = match.group()
+        if len(word) < 2:
             continue
-        low = w.lower()
-        head = UPPER_HEAD_RE.match(w)
-        abbreviation = head is not None
-        latin = bool(LATIN_WORD_RE.search(w))
-        if not (latin or abbreviation or (w[0].isupper() and m.start() not in starts)):
+        lowered = word.lower()
+        upper_head = UPPER_HEAD_RE.match(word)
+        abbreviation = upper_head is not None
+        latin = bool(LATIN_WORD_RE.search(word))
+        if not (latin or abbreviation or (word[0].isupper() and match.start() not in starts)):
             continue
-        if low in POLITE or low in seen:
+        if lowered in POLITE or lowered in seen:
             continue
-        seen.add(low)
-        if vocab.covers(low):
+        seen.add(lowered)
+        if vocab.covers(lowered):
             continue
-        if head is not None and not latin and vocab.acronym(head.group().lower()):
+        if upper_head is not None and not latin and vocab.acronym(upper_head.group().lower()):
             continue
-        added.append(_surface(ap, m.start(), m.end()))
-    out.extend(Violation(kind="имя", detail=f"появилось: {w}") for w in added[:LIMIT])
+        added.append(_surface(after_prepared, match.start(), match.end()))
+    violations.extend(Violation(kind="имя", detail=f"появилось: {name}") for name in added[:LIMIT])
 
 
-def _values(s: str) -> set[float]:
-    out: set[float] = set()
-    for n in _numbers(s):
+def _values(text: str) -> set[float]:
+    values: set[float] = set()
+    for number in _numbers(text):
         try:
-            out.add(float(n))
+            values.add(float(number))
         except ValueError:
             continue
-    return out
+    return values
 
 
 def _check_numerals(
-    bp: Prepared, ap: Prepared, before: str, violations: list[Violation], warnings: list[Violation]
+    before_prepared: Prepared,
+    after_prepared: Prepared,
+    before: str,
+    violations: list[Violation],
+    warnings: list[Violation],
 ) -> None:
-    known = {NUMERALS[_index(m)].key for m in NUMERAL_RE.finditer(bp.text)}
+    known = {NUMERALS[_index(match)].key for match in NUMERAL_RE.finditer(before_prepared.text)}
     values = _values(before)
     reported: set[str] = set()
     hard: list[str] = []
     soft: list[str] = []
-    for m in NUMERAL_RE.finditer(ap.prose):
-        n = NUMERALS[_index(m)]
-        if n.key in known or n.key in reported or (n.value is not None and n.value in values):
+    for match in NUMERAL_RE.finditer(after_prepared.prose):
+        numeral = NUMERALS[_index(match)]
+        if numeral.key in known or numeral.key in reported or (numeral.value is not None and numeral.value in values):
             continue
-        reported.add(n.key)
-        (soft if n.soft else hard).append(_surface(ap, m.start(), m.end()))
-    violations.extend(Violation(kind="число словами", detail=f"появилось: {w}") for w in hard[:LIMIT])
-    warnings.extend(Violation(kind="число словами", detail=f"появилось: {w}") for w in soft[:LIMIT])
+        reported.add(numeral.key)
+        (soft if numeral.soft else hard).append(_surface(after_prepared, match.start(), match.end()))
+    violations.extend(Violation(kind="число словами", detail=f"появилось: {word}") for word in hard[:LIMIT])
+    warnings.extend(Violation(kind="число словами", detail=f"появилось: {word}") for word in soft[:LIMIT])
 
-    months = {MONTHS[_index(m)][0] for m in MONTH_RE.finditer(bp.text)}
+    months = {MONTHS[_index(match)][0] for match in MONTH_RE.finditer(before_prepared.text)}
     added: list[str] = []
-    for m in MONTH_RE.finditer(ap.prose):
-        key = MONTHS[_index(m)][0]
+    for match in MONTH_RE.finditer(after_prepared.prose):
+        key = MONTHS[_index(match)][0]
         if key not in months:
             months.add(key)
-            added.append(_surface(ap, m.start(), m.end()))
-    violations.extend(Violation(kind="месяц", detail=f"появилось: {w}") for w in added[:LIMIT])
+            added.append(_surface(after_prepared, match.start(), match.end()))
+    violations.extend(Violation(kind="месяц", detail=f"появилось: {month}") for month in added[:LIMIT])
 
 
-def _claims(p: Prepared) -> tuple[Counter[str], dict[str, str]]:
-    text = _mask(p.prose, CLAIM_IDIOMS)
+def _claims(prepared: Prepared) -> tuple[Counter[str], dict[str, str]]:
+    text = _mask(prepared.prose, CLAIM_IDIOMS)
     count: Counter[str] = Counter()
     surface: dict[str, str] = {}
-    for m in CLAIM_RE.finditer(text):
-        key = CLAIMS[_index(m)][0]
+    for match in CLAIM_RE.finditer(text):
+        key = CLAIMS[_index(match)][0]
         count[key] += 1
-        surface[key] = _surface(p, m.start(), m.end())
+        surface[key] = _surface(prepared, match.start(), match.end())
     return count, surface
 
 
-def _check_claims(bp: Prepared, ap: Prepared, out: list[Violation]) -> None:
-    b, _ = _claims(bp)
-    a, surface = _claims(ap)
-    for key, n in a.items():
-        if n <= b[key]:
+def _check_claims(before_prepared: Prepared, after_prepared: Prepared, warnings: list[Violation]) -> None:
+    before_counts, _ = _claims(before_prepared)
+    after_counts, surface = _claims(after_prepared)
+    for key, count in after_counts.items():
+        if count <= before_counts[key]:
             continue
         word = surface[key].lower()
-        detail = f"появилось: {word}" if b[key] == 0 else f"стало больше «{word}»: {b[key]} → {n}"
-        out.append(Violation(kind="утверждение", detail=detail))
+        detail = (
+            f"появилось: {word}"
+            if before_counts[key] == 0
+            else f"стало больше «{word}»: {before_counts[key]} → {count}"
+        )
+        warnings.append(Violation(kind="утверждение", detail=detail))
 
 
 def validate(
     before: str, after: str, context: ContextMode = "general", marked: list[str] | None = None
 ) -> ValidationResult:
     """Сохранность правки; с `marked` (куски из отчёта) ещё и абзацы под подсветкой, оставшиеся прежними."""
-    v: list[Violation] = []
-    w: list[Violation] = []
+    violations: list[Violation] = []
+    warnings: list[Violation] = []
     if _frontmatter(before) != _frontmatter(after):
-        v.append(Violation(kind="yaml", detail="YAML-шапка изменена"))
-    _compare_exact("код", _all(FENCE_RE, before), _all(FENCE_RE, after), v)
+        violations.append(Violation(kind="yaml", detail="YAML-шапка изменена"))
+    _compare_exact("код", _all(FENCE_RE, before), _all(FENCE_RE, after), violations)
     _compare_exact(
-        "инлайн-код", _all(INLINE_CODE_RE, FENCE_RE.sub("", before)), _all(INLINE_CODE_RE, FENCE_RE.sub("", after)), v
+        "инлайн-код",
+        _all(INLINE_CODE_RE, FENCE_RE.sub("", before)),
+        _all(INLINE_CODE_RE, FENCE_RE.sub("", after)),
+        violations,
     )
-    b, a = _strip_code(before), _strip_code(after)
-    _compare_exact("формула", _all(FORMULA_RE, b), _all(FORMULA_RE, a), v)
-    _compare_exact("URL", _urls(before), _urls(after), v)
+    before_no_code, after_no_code = _strip_code(before), _strip_code(after)
+    _compare_exact("формула", _all(FORMULA_RE, before_no_code), _all(FORMULA_RE, after_no_code), violations)
+    _compare_exact("URL", _urls(before), _urls(after), violations)
     _compare_exact(
         "ссылка на литературу",
-        [c.replace("\\", "") for c in _all(CITATION_RE, b)],
-        [c.replace("\\", "") for c in _all(CITATION_RE, a)],
-        v,
+        [citation.replace("\\", "") for citation in _all(CITATION_RE, before_no_code)],
+        [citation.replace("\\", "") for citation in _all(CITATION_RE, after_no_code)],
+        violations,
     )
     # Список литературы, ключевые слова, английская аннотация и сведения об авторах — защищённое
     # содержимое, как YAML-шапка; prose их не видит, поэтому сверяются целиком.
-    _compare_exact("служебная часть", _service_texts(before), _service_texts(after), v)
-    _compare_exact("ссылка pandoc", _all(PANDOC_RE, b), _all(PANDOC_RE, a), v)
-    _compare_exact("таблица", _all(TABLE_RE, b), _all(TABLE_RE, a), v)
-    _compare_exact("цитата-блок", _all(BLOCKQUOTE_RE, b), _all(BLOCKQUOTE_RE, a), v)
+    _compare_exact("служебная часть", _service_texts(before), _service_texts(after), violations)
+    _compare_exact("ссылка pandoc", _all(PANDOC_RE, before_no_code), _all(PANDOC_RE, after_no_code), violations)
+    _compare_exact("таблица", _all(TABLE_RE, before_no_code), _all(TABLE_RE, after_no_code), violations)
+    _compare_exact("цитата-блок", _all(BLOCKQUOTE_RE, before_no_code), _all(BLOCKQUOTE_RE, after_no_code), violations)
     _compare_exact(
         "цитата",
-        [QUOTE_MARKS_RE.sub("", q) for q in _all(QUOTE_RE, b)],
-        [QUOTE_MARKS_RE.sub("", q) for q in _all(QUOTE_RE, a)],
-        v,
+        [QUOTE_MARKS_RE.sub("", quote) for quote in _all(QUOTE_RE, before_no_code)],
+        [QUOTE_MARKS_RE.sub("", quote) for quote in _all(QUOTE_RE, after_no_code)],
+        violations,
     )
-    _compare_exact("число", _numbers(before), _numbers(after), v)
-    hb = " ".join(_all(HEADING_SHAPE_RE, b))
-    ha = " ".join(_all(HEADING_SHAPE_RE, a))
-    if hb != ha:
-        v.append(Violation(kind="заголовки", detail=f"структура заголовков изменилась: [{hb}] → [{ha}]"))
+    _compare_exact("число", _numbers(before), _numbers(after), violations)
+    before_headings = " ".join(_all(HEADING_SHAPE_RE, before_no_code))
+    after_headings = " ".join(_all(HEADING_SHAPE_RE, after_no_code))
+    if before_headings != after_headings:
+        violations.append(
+            Violation(
+                kind="заголовки",
+                detail=f"структура заголовков изменилась: [{before_headings}] → [{after_headings}]",
+            )
+        )
 
     analysis = analyze(before, context)
-    bp, ap = prepare(before), prepare(after)
-    _check_hedges(bp, ap, analysis.issues, v, w)
-    _check_names(bp, ap, v)
-    _check_numerals(bp, ap, before, v, w)
-    _check_claims(bp, ap, w)
+    before_prepared, after_prepared = prepare(before), prepare(after)
+    _check_hedges(before_prepared, after_prepared, analysis.issues, violations, warnings)
+    _check_names(before_prepared, after_prepared, violations)
+    _check_numerals(before_prepared, after_prepared, before, violations, warnings)
+    _check_claims(before_prepared, after_prepared, warnings)
 
     issues_before = len(analysis.issues)
     issues_after = len(analyze(after, context).issues)
     if issues_after > issues_before:
-        v.append(Violation(kind="находки", detail=f"находок стало больше: {issues_before} → {issues_after}"))
+        violations.append(Violation(kind="находки", detail=f"находок стало больше: {issues_before} → {issues_after}"))
     for paragraph in unedited_marked(before, after, marked or []):
         preview = trim(paragraph.text[:80])
-        w.append(Violation(kind="красный абзац без правки", detail=f"строка {paragraph.line}: «{preview}…»"))
-    return ValidationResult(ok=not v, violations=v, warnings=w, issues_before=issues_before, issues_after=issues_after)
+        warnings.append(Violation(kind="красный абзац без правки", detail=f"строка {paragraph.line}: «{preview}…»"))
+    return ValidationResult(
+        ok=not violations,
+        violations=violations,
+        warnings=warnings,
+        issues_before=issues_before,
+        issues_after=issues_after,
+    )

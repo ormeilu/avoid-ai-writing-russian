@@ -18,12 +18,15 @@ def main(files: list[str]) -> int:
             stream.reconfigure(encoding="utf-8")
     bad = 0
     for file in files:
-        p = prepare(Path(file).read_bytes().decode("utf-8", errors="replace"))
-        for i in p.invisible:
-            print(f"{file}: невидимый символ U+{ord(i.char):04X} в позиции {i.index}", file=sys.stderr)
+        prepared = prepare(Path(file).read_bytes().decode("utf-8", errors="replace"))
+        for invisible in prepared.invisible:
+            print(f"{file}: невидимый символ U+{ord(invisible.char):04X} в позиции {invisible.index}", file=sys.stderr)
             bad += 1
-        for h in p.homoglyphs:
-            print(f"{file}: латиница внутри русского слова «{h.word}» в позиции {h.index}", file=sys.stderr)
+        for homoglyph in prepared.homoglyphs:
+            print(
+                f"{file}: латиница внутри русского слова «{homoglyph.word}» в позиции {homoglyph.index}",
+                file=sys.stderr,
+            )
             bad += 1
     return 1 if bad else 0
 

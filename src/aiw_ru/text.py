@@ -25,7 +25,7 @@ LATIN_RE = jsre("\\p{Script=Latin}", "u")
 
 # Латинские буквы, неотличимые от кириллических.
 LATIN_TO_CYRILLIC = dict(zip("aeopcxykmthbAEOPCXYKMTHB", "аеорсхукмтнвАЕОРСХУКМТНВ", strict=True))
-CYRILLIC_TO_LATIN = {c: latin for latin, c in LATIN_TO_CYRILLIC.items()}
+CYRILLIC_TO_LATIN = {cyrillic: latin for latin, cyrillic in LATIN_TO_CYRILLIC.items()}
 
 # Латиница без диакритики. «á» в «Кáрмен» — знак ударения, а не подмена,
 # поэтому в сериях она не участвует, как цифры и прочие знаки.
@@ -43,11 +43,11 @@ class _Run:
     end: int
 
 
-def _script_runs(s: str) -> list[_Run]:
+def _script_runs(part: str) -> list[_Run]:
     runs: list[_Run] = []
-    for i, c in enumerate(s):
-        latin = bool(ASCII_LATIN_RE.match(c))
-        if not latin and not CYRILLIC_RE.match(c):
+    for i, char in enumerate(part):
+        latin = bool(ASCII_LATIN_RE.match(char))
+        if not latin and not CYRILLIC_RE.match(char):
             continue
         if runs and runs[-1].latin == latin:
             runs[-1].end = i + 1
@@ -56,19 +56,19 @@ def _script_runs(s: str) -> list[_Run]:
     return runs
 
 
-def _letters(s: str, r: _Run) -> list[str]:
+def _letters(part: str, run: _Run) -> list[str]:
     """Буквы серии без цифр и прочих знаков."""
-    own = ASCII_LATIN_RE if r.latin else CYRILLIC_RE
-    return [c for c in s[r.start : r.end] if own.match(c)]
+    own = ASCII_LATIN_RE if run.latin else CYRILLIC_RE
+    return [char for char in part[run.start : run.end] if own.match(char)]
 
 
-def _lookalike(s: str, r: _Run) -> bool:
+def _lookalike(part: str, run: _Run) -> bool:
     """У каждой буквы серии есть двойник в другом алфавите."""
-    table = LATIN_TO_CYRILLIC if r.latin else CYRILLIC_TO_LATIN
-    return all(c in table for c in _letters(s, r))
+    table = LATIN_TO_CYRILLIC if run.latin else CYRILLIC_TO_LATIN
+    return all(char in table for char in _letters(part, run))
 
 
-def _spoofed(s: str) -> bool:
+def _spoofed(part: str) -> bool:
     """Подмена букв в части слова без дефисов.
 
     Алфавит слова выдаёт буква без двойника: «щ» в русском слове, «n» в английском.
@@ -79,17 +79,17 @@ def _spoofed(s: str) -> bool:
     («вPython»). Подмена — двойники внутри слова, в конце русского слова, латинские
     в начале русского слова и одна-две кириллические в начале английского.
     """
-    runs = _script_runs(s)
+    runs = _script_runs(part)
     if len(runs) < 2:
         return False
     first, second, last = runs[0], runs[1], runs[-1]
 
-    def of(latin: bool) -> list[str]:
-        return [c for r in runs if r.latin == latin for c in _letters(s, r)]
+    def letters_of(latin: bool) -> list[str]:
+        return [char for run in runs if run.latin == latin for char in _letters(part, run)]
 
-    latin_letters, cyrillic_letters = of(True), of(False)
-    latin_anchored = any(c not in LATIN_TO_CYRILLIC for c in latin_letters)
-    cyrillic_anchored = any(c not in CYRILLIC_TO_LATIN for c in cyrillic_letters)
+    latin_letters, cyrillic_letters = letters_of(True), letters_of(False)
+    latin_anchored = any(char not in LATIN_TO_CYRILLIC for char in latin_letters)
+    cyrillic_anchored = any(char not in CYRILLIC_TO_LATIN for char in cyrillic_letters)
 
     def suspect_script(latin: bool) -> bool:
         if latin_anchored != cyrillic_anchored:
@@ -98,27 +98,27 @@ def _spoofed(s: str) -> bool:
             return len(latin_letters) <= len(cyrillic_letters)
         return len(cyrillic_letters) <= len(latin_letters)
 
-    def suspect(r: _Run) -> bool:
-        return suspect_script(r.latin) and _lookalike(s, r)
+    def suspect(run: _Run) -> bool:
+        return suspect_script(run.latin) and _lookalike(part, run)
 
     # Алфавиты чередуются, поэтому внутренняя серия зажата буквами другого алфавита.
     for k in range(1, len(runs) - 1):
-        r = runs[k]
+        run = runs[k]
         # «FхG», «mхn»: одиночная «х» между одиночными буквами — знак умножения.
         times = (
-            bool(TIMES_RE.search("".join(_letters(s, r))))
-            and len(_letters(s, runs[k - 1])) == 1
-            and len(_letters(s, runs[k + 1])) == 1
+            bool(TIMES_RE.search("".join(_letters(part, run))))
+            and len(_letters(part, runs[k - 1])) == 1
+            and len(_letters(part, runs[k + 1])) == 1
         )
-        if not times and suspect(r):
+        if not times and suspect(run):
             return True
     if last.latin and suspect(last):
         return True
     if not suspect(first):
         return False
-    head = "".join(_letters(s, first))
+    head = "".join(_letters(part, first))
     # Латинское сокращение перед русским суффиксом («OKей», «PHPшник»), но не заглавное русское слово.
-    lower_next = second.start < len(s) and bool(LOWER_RE.match(s[second.start]))
+    lower_next = second.start < len(part) and bool(LOWER_RE.match(part[second.start]))
     if first.latin:
         return not (len(head) >= 2 and head == head.upper() and lower_next)
     # Кириллица перед английским словом: подмена, если слово продолжается строчными,
@@ -170,19 +170,19 @@ RTL_RE = jsre("[\\p{Script=Hebrew}\\p{Script=Arabic}\\p{Script=Syriac}\\p{Script
 MONGOLIAN_RE = jsre("\\p{Script=Mongolian}", "u")
 
 
-def _joins_emoji(s: str, i: int) -> bool:
+def _joins_emoji(text: str, i: int) -> bool:
     """U+200D между частями эмодзи (👨 + 💻) — соединитель, а не вставка."""
-    return bool(EMOJI_BEFORE_ZWJ.search(s[max(0, i - 2) : i])) and bool(EMOJI_AFTER_ZWJ.search(s[i + 1 : i + 3]))
+    return bool(EMOJI_BEFORE_ZWJ.search(text[max(0, i - 2) : i])) and bool(EMOJI_AFTER_ZWJ.search(text[i + 1 : i + 3]))
 
 
-def _legit_control(s: str, i: int) -> bool:
+def _legit_control(text: str, i: int) -> bool:
     """Знак направления рядом с ивритом или арабским и разделитель внутри монгольского слова — не вставка."""
-    ch = s[i]
-    if ch in BIDI:
+    char = text[i]
+    if char in BIDI:
         # Сам знак ALM (U+061C) относится к арабскому письму, поэтому смотрим только на соседей.
-        return bool(RTL_RE.search(s[max(0, i - 3) : i] + " " + s[i + 1 : i + 4]))
-    if ch == MVS:
-        return bool(MONGOLIAN_RE.search(s[i - 1 : i])) and bool(MONGOLIAN_RE.search(s[i + 1 : i + 2]))
+        return bool(RTL_RE.search(text[max(0, i - 3) : i] + " " + text[i + 1 : i + 4]))
+    if char == MVS:
+        return bool(MONGOLIAN_RE.search(text[i - 1 : i])) and bool(MONGOLIAN_RE.search(text[i + 1 : i + 2]))
     return False
 
 
@@ -194,7 +194,7 @@ class Invisible:
 
 # Пробелы особой ширины → обычный пробел той же длины: записи списка литературы по ГОСТ
 # («С. 5», «№ 3») набирают и с неразрывными пробелами, а правила служебных частей ждут обычный.
-PLAIN_SPACES = {ord(c): " " for c in TYPOGRAPHIC if c.isspace()}
+PLAIN_SPACES = {ord(char): " " for char in TYPOGRAPHIC if char.isspace()}
 
 
 @dataclass(slots=True)
@@ -242,8 +242,8 @@ def _mask(chars: list[str], start: int, end: int) -> None:
 
 
 def _mask_all(chars: list[str], text: str, pattern: str, flags: str = "g") -> None:
-    for m in jsre(pattern, flags).finditer(text):
-        _mask(chars, m.start(), m.end())
+    for match in jsre(pattern, flags).finditer(text):
+        _mask(chars, match.start(), match.end())
 
 
 FRONTMATTER_RE = jsre("^---\\n[\\s\\S]*?\\n---(?:\\n|$)")
@@ -253,11 +253,11 @@ FENCED_RE = jsre("^(```|~~~)[^\\n]*\\n[\\s\\S]*?^\\1[^\\n]*$", "gm")
 def _mask_code(text: str) -> str:
     """Маскирует YAML-шапку, блоки кода и инлайн-код."""
     chars = list(text)
-    fm = FRONTMATTER_RE.search(text)
-    if fm:
-        _mask(chars, 0, fm.end())
-    for m in FENCED_RE.finditer(text):
-        _mask(chars, m.start(), m.end())
+    frontmatter = FRONTMATTER_RE.search(text)
+    if frontmatter:
+        _mask(chars, 0, frontmatter.end())
+    for match in FENCED_RE.finditer(text):
+        _mask(chars, match.start(), match.end())
     _mask_all(chars, text, "`[^`\\n]+`")
     return "".join(chars)
 
@@ -359,19 +359,19 @@ def _is_record(line: str) -> bool:
 
 def letter_share(s: str) -> tuple[int, int]:
     """Кириллических и латинских букв в строке."""
-    cyr = lat = 0
-    for c in s:
-        if CYRILLIC_RE.match(c):
-            cyr += 1
-        elif LATIN_RE.match(c):
-            lat += 1
-    return cyr, lat
+    cyrillic = latin = 0
+    for char in s:
+        if CYRILLIC_RE.match(char):
+            cyrillic += 1
+        elif LATIN_RE.match(char):
+            latin += 1
+    return cyrillic, latin
 
 
 def cyrillic_share(s: str) -> float | None:
     """Доля кириллицы среди кириллических и латинских букв; None, если букв нет."""
-    cyr, lat = letter_share(s)
-    return cyr / (cyr + lat) if cyr + lat else None
+    cyrillic, latin = letter_share(s)
+    return cyrillic / (cyrillic + latin) if cyrillic + latin else None
 
 
 def service_ranges(s: str) -> list[tuple[int, int]]:
@@ -393,42 +393,42 @@ def _service_in(masked: str) -> list[tuple[int, int]]:
     """service_ranges по тексту, где код и YAML-шапка уже замаскированы."""
     masked = masked.translate(PLAIN_SPACES)
     lines = masked.split("\n")
-    starts = [0]
+    line_starts = [0]
     for line in lines[:-1]:
-        starts.append(starts[-1] + len(line) + 1)
+        line_starts.append(line_starts[-1] + len(line) + 1)
 
-    def end_of(k: int) -> int:
-        return starts[k] + len(lines[k])
+    def end_of(line_index: int) -> int:
+        return line_starts[line_index] + len(lines[line_index])
 
-    def paragraph_end(k: int) -> int:
-        """Последняя строка абзаца, который начинается со строки k."""
-        while k + 1 < len(lines) and trim(lines[k + 1]):
-            k += 1
-        return k
+    def paragraph_end(line_index: int) -> int:
+        """Последняя строка абзаца, который начинается со строки line_index."""
+        while line_index + 1 < len(lines) and trim(lines[line_index + 1]):
+            line_index += 1
+        return line_index
 
-    def english_head(k: int, floor: int) -> int:
-        """Первая строка английского заголовочного блока (название, авторы, организации) над строкой k.
+    def english_head(abstract_line: int, floor: int) -> int:
+        """Первая строка английского заголовочного блока (название, авторы, организации) над строкой abstract_line.
 
         Берутся абзацы с латиницей подряд, не выше строки floor, не длиннее ENGLISH_HEAD_WORDS слов.
         """
-        first = k
-        i = k - 1
+        first = abstract_line
+        cursor = abstract_line - 1
         for _ in range(ENGLISH_HEAD_PARAGRAPHS):
-            while i >= floor and not trim(lines[i]):
-                i -= 1
-            if i < floor:
+            while cursor >= floor and not trim(lines[cursor]):
+                cursor -= 1
+            if cursor < floor:
                 break
-            a = i
-            while a > floor and trim(lines[a - 1]):
-                a -= 1
-            part = "\n".join(lines[a : i + 1])
+            top = cursor
+            while top > floor and trim(lines[top - 1]):
+                top -= 1
+            part = "\n".join(lines[top : cursor + 1])
             share = cyrillic_share(part)
             if share is None or share >= 0.5 or len(words(part)) > ENGLISH_HEAD_WORDS:
                 break
-            if any(MD_HEADING_RE.search(x) for x in lines[a : i + 1]):
+            if any(MD_HEADING_RE.search(paragraph_line) for paragraph_line in lines[top : cursor + 1]):
                 break
-            first = a
-            i = a - 1
+            first = top
+            cursor = top - 1
         return first
 
     def heading_kind(line: str) -> str | None:
@@ -446,14 +446,14 @@ def _service_in(masked: str) -> list[tuple[int, int]]:
             or ABSTRACT_RE.search(line)
         )
 
-    def section(k: int, kind: str) -> int | None:
-        """Последняя строка раздела, который открывает заголовок в строке k; None — раздела нет."""
-        last, records, author_lines = k, 0, 0
-        j = k + 1
-        while j < len(lines):
-            line = lines[j]
+    def section(heading_line: int, kind: str) -> int | None:
+        """Последняя строка раздела, который открывает заголовок в строке heading_line; None — раздела нет."""
+        last, records, author_lines = heading_line, 0, 0
+        cursor = heading_line + 1
+        while cursor < len(lines):
+            line = lines[cursor]
             if not trim(line):
-                j += 1
+                cursor += 1
                 continue
             sub_kind = heading_kind(line)
             if MD_HEADING_RE.search(line) and sub_kind is None:
@@ -469,84 +469,84 @@ def _service_in(masked: str) -> list[tuple[int, int]]:
                 author_lines += 1
             else:
                 break
-            last = j
-            j += 1
-        if last == k or (kind == "bib" and not records and heading_kind(lines[k]) == "bib"):
+            last = cursor
+            cursor += 1
+        if last == heading_line or (kind == "bib" and not records and heading_kind(lines[heading_line]) == "bib"):
             return None
         return last
 
-    out: list[tuple[int, int]] = []
+    ranges: list[tuple[int, int]] = []
     # Первая строка, с которой может начаться следующая служебная часть: за концом предыдущей.
     floor = 0
-    k = 0
-    while k < len(lines):
-        line = lines[k]
+    line_index = 0
+    while line_index < len(lines):
+        line = lines[line_index]
         kind = heading_kind(line)
-        md = bool(MD_HEADING_RE.search(line))
-        if kind == "authors" and not md and k < len(lines) // 2:
+        md_heading = bool(MD_HEADING_RE.search(line))
+        if kind == "authors" and not md_heading and line_index < len(lines) // 2:
             kind = None
-        last = section(k, kind) if kind else None
+        last = section(line_index, kind) if kind else None
         if last is not None:
             # Заголовок Markdown остаётся заголовком, строка-заголовок без решётки входит в часть:
             # иначе из неё получился бы абзац из двух слов.
-            out.append((starts[k + 1 if md else k], end_of(last)))
-            k = floor = last + 1
+            ranges.append((line_starts[line_index + 1 if md_heading else line_index], end_of(last)))
+            line_index = floor = last + 1
             continue
         if FRONT_LINE_RE.search(line):
-            out.append((starts[k], end_of(k)))
-            k = floor = k + 1
+            ranges.append((line_starts[line_index], end_of(line_index)))
+            line_index = floor = line_index + 1
             continue
         if CITE_AS_RE.search(line):
-            j = paragraph_end(k)
-            if end_of(j) - starts[k] <= RECORD_MAX_CHARS:
-                out.append((starts[k], end_of(j)))
-                k = floor = j + 1
+            last_line = paragraph_end(line_index)
+            if end_of(last_line) - line_starts[line_index] <= RECORD_MAX_CHARS:
+                ranges.append((line_starts[line_index], end_of(last_line)))
+                line_index = floor = last_line + 1
                 continue
         if KEYWORDS_RE.search(line) and len(line) <= KEYWORDS_MAX_CHARS and len(BOLD_LABEL_RE.findall(line)) <= 1:
             # Только сама строка: в текстах моделей за «Ключевыми словами» бывает проза без пустой строки,
             # а в одной строке с ними «**Тэги:** … **Совет:** …» — это след генерации, а не реквизит статьи.
-            out.append((starts[k], end_of(k)))
-            k = floor = k + 1
+            ranges.append((line_starts[line_index], end_of(line_index)))
+            line_index = floor = line_index + 1
             continue
-        m = ABSTRACT_RE.search(line)
-        if m:
+        abstract = ABSTRACT_RE.search(line)
+        if abstract:
             # «Abstract» отдельной строкой — аннотация в следующем абзаце.
-            first = k
-            if not m.group(1):
-                first = k + 1
+            first = line_index
+            if not abstract.group(1):
+                first = line_index + 1
                 while first < len(lines) and not trim(lines[first]):
                     first += 1
-            j = paragraph_end(first) if first < len(lines) else k
-            share = cyrillic_share("\n".join(lines[first : j + 1]))
+            last_line = paragraph_end(first) if first < len(lines) else line_index
+            share = cyrillic_share("\n".join(lines[first : last_line + 1]))
             if share is not None and share < 0.5:
-                out.append((starts[english_head(k, floor)], end_of(j)))
-                k = floor = j + 1
+                ranges.append((line_starts[english_head(line_index, floor)], end_of(last_line)))
+                line_index = floor = last_line + 1
                 continue
         if _is_record(line):
-            run = [k]
-            j = k + 1
-            while j < len(lines):
-                if not trim(lines[j]):
-                    j += 1
+            run = [line_index]
+            cursor = line_index + 1
+            while cursor < len(lines):
+                if not trim(lines[cursor]):
+                    cursor += 1
                     continue
-                if not _is_record(lines[j]):
+                if not _is_record(lines[cursor]):
                     break
-                run.append(j)
-                j += 1
+                run.append(cursor)
+                cursor += 1
             if len(run) >= RECORD_RUN:
-                out.append((starts[run[0]], end_of(run[-1])))
-                k = floor = run[-1] + 1
+                ranges.append((line_starts[run[0]], end_of(run[-1])))
+                line_index = floor = run[-1] + 1
                 continue
-        k += 1
+        line_index += 1
     # Раздел из одних пустых строк (заголовок, за ним сразу следующий заголовок) частью не считается.
-    return [(a, b) for a, b in out if trim(masked[a:b])]
+    return [(start, end) for start, end in ranges if trim(masked[start:end])]
 
 
 def blank(s: str, ranges: Sequence[tuple[int, int]]) -> str:
     """Заменяет отрезки пробелами, переводы строк оставляет: смещения и номера строк те же."""
     chars = list(s)
-    for a, b in ranges:
-        _mask(chars, a, b)
+    for start, end in ranges:
+        _mask(chars, start, end)
     return "".join(chars)
 
 
@@ -557,10 +557,10 @@ def model_text(source: str) -> str:
     Инлайн-код и цитаты остаются: без них предложение рвётся посередине.
     """
     ranges = list(service_ranges(source))
-    fm = FRONTMATTER_RE.search(source)
-    if fm:
-        ranges.append((0, fm.end()))
-    ranges += [m.span() for m in FENCED_RE.finditer(source)]
+    frontmatter = FRONTMATTER_RE.search(source)
+    if frontmatter:
+        ranges.append((0, frontmatter.end()))
+    ranges += [match.span() for match in FENCED_RE.finditer(source)]
     return blank(source, ranges)
 
 
@@ -590,9 +590,9 @@ def _mask_protected(no_code: str) -> str:
     return "".join(chars)
 
 
-def _line_starts(s: str) -> list[int]:
+def _line_starts(text: str) -> list[int]:
     starts = [0]
-    starts.extend(i + 1 for i, c in enumerate(s) if c == "\n")
+    starts.extend(index + 1 for index, char in enumerate(text) if char == "\n")
     return starts
 
 
@@ -618,48 +618,48 @@ def prepare(source: str) -> Prepared:
     typographic_found: list[tuple[int, str, int]] = []
     to_source: list[int] = []
     kept: list[str] = []
-    for i, ch in enumerate(source):
-        if ch in STRIPPED:
-            if ch == SOFT_HYPHEN:
-                soft_hyphens.append(i)
+    for index, char in enumerate(source):
+        if char in STRIPPED:
+            if char == SOFT_HYPHEN:
+                soft_hyphens.append(index)
             elif (
-                not (ch == BOM and i == 0)
-                and not (ch == ZWJ and _joins_emoji(source, i))
-                and not _legit_control(source, i)
+                not (char == BOM and index == 0)
+                and not (char == ZWJ and _joins_emoji(source, index))
+                and not _legit_control(source, index)
             ):
-                invisible.append(Invisible(i, ch))
+                invisible.append(Invisible(index, char))
             continue
-        if ch in TYPOGRAPHIC:
-            typographic_found.append((i, ch, len(kept)))
+        if char in TYPOGRAPHIC:
+            typographic_found.append((index, char, len(kept)))
         # Неразрывный дефис и U+2010 с клавиатуры не набрать, их ставят модели; для словарей это обычный дефис.
-        kept.append("-" if ch in HYPHENS else ch)
-        to_source.append(i)
+        kept.append("-" if char in HYPHENS else char)
+        to_source.append(index)
     to_source.append(len(source))
     stripped = "".join(kept)
 
     # Подмена латиницы внутри кириллических слов. Части дефисного слова проверяются
     # по отдельности: в «HTTP-запрос» латинское сокращение стоит при русском слове законно.
     homoglyphs: list[Homoglyph] = []
-    for m in WORD_RE.finditer(stripped):
-        word = m.group()
+    for word_match in WORD_RE.finditer(stripped):
+        word = word_match.group()
         if not CYRILLIC_RE.search(word) or not LATIN_RE.search(word):
             continue
-        start = m.start()
+        start = word_match.start()
         found = False
-        for part in PART_RE.finditer(word):
-            s = part.group()
-            if not CYRILLIC_RE.search(s) or not LATIN_RE.search(s) or not _spoofed(s):
+        for part_match in PART_RE.finditer(word):
+            part = part_match.group()
+            if not CYRILLIC_RE.search(part) or not LATIN_RE.search(part) or not _spoofed(part):
                 continue
             found = True
             # Буквы-двойники приводятся к алфавиту слова, чтобы словари видели настоящее слово.
-            latin = sum(1 for c in s if LATIN_RE.match(c))
-            to_latin = latin > sum(1 for c in s if CYRILLIC_RE.match(c))
+            latin_count = sum(1 for char in part if LATIN_RE.match(char))
+            to_latin = latin_count > sum(1 for char in part if CYRILLIC_RE.match(char))
             table = CYRILLIC_TO_LATIN if to_latin else LATIN_TO_CYRILLIC
-            at = start + part.start()
-            for k in range(len(s)):
-                c = kept[at + k]
-                if c in table:
-                    kept[at + k] = table[c]
+            at = start + part_match.start()
+            for k in range(len(part)):
+                char = kept[at + k]
+                if char in table:
+                    kept[at + k] = table[char]
         if found:
             homoglyphs.append(Homoglyph(to_source[start], word))
     text = "".join(kept).replace("ё", "е").replace("Ё", "Е")
@@ -693,11 +693,17 @@ def words(s: str) -> list[str]:
 
 def plural(n: int, one: str, few: str, many: str) -> str:
     """«1 слово», «2 слова», «5 слов»; от 10 000 разряды через обычный пробел."""
-    d = n % 10
-    dd = n % 100
-    form = one if d == 1 and dd != 11 else few if 2 <= d <= 4 and (dd < 12 or dd > 14) else many
-    num = f"{n:,}".replace(",", " ") if abs(n) >= 10000 else str(n)
-    return f"{num} {form}"
+    last_digit = n % 10
+    last_two = n % 100
+    form = (
+        one
+        if last_digit == 1 and last_two != 11
+        else few
+        if 2 <= last_digit <= 4 and (last_two < 12 or last_two > 14)
+        else many
+    )
+    number = f"{n:,}".replace(",", " ") if abs(n) >= 10000 else str(n)
+    return f"{number} {form}"
 
 
 BlockKind = Literal["prose", "heading", "list", "table", "quote", "code", "service", "empty"]
@@ -721,51 +727,53 @@ HEADING_RE = jsre("^#{1,6}\\s")
 
 def blocks(p: Prepared) -> list[Block]:
     """Разбивает текст на блоки по пустым строкам; заголовок всегда отдельный блок."""
-    out: list[Block] = []
+    found: list[Block] = []
     lines = p.prose.split("\n")
     raw_lines = p.text.split("\n")
-    cur_start: int | None = None
-    cur_lines: list[str] = []
-    cur_raw: list[str] = []
+    current_start: int | None = None
+    current_lines: list[str] = []
+    current_raw: list[str] = []
 
     def flush() -> None:
-        nonlocal cur_start
-        if cur_start is None:
+        nonlocal current_start
+        if current_start is None:
             return
-        start = cur_start
-        text = "\n".join(cur_lines)
-        raw = "\n".join(cur_raw)
+        start = current_start
+        text = "\n".join(current_lines)
+        raw = "\n".join(current_raw)
         kind: BlockKind = "prose"
-        first_raw = cur_raw[0] if cur_raw else ""
+        first_raw = current_raw[0] if current_raw else ""
         if trim(text) == "":
             kind = "code" if FENCE_RE.search(first_raw) or trim(raw) != "" else "empty"
             if TABLE_OR_QUOTE_RE.search(first_raw):
                 kind = "table" if TABLE_RE.search(first_raw) else "quote"
-            elif kind == "code" and any(a <= start < b for a, b in p.service):
+            elif kind == "code" and any(
+                service_start <= start < service_end for service_start, service_end in p.service
+            ):
                 kind = "service"
-        elif all(trim(line) == "" or LIST_ITEM_RE.search(line) for line in cur_lines):
+        elif all(trim(line) == "" or LIST_ITEM_RE.search(line) for line in current_lines):
             kind = "list"
-        out.append(Block(kind, start, start + len(text), text))
-        cur_start = None
-        cur_lines.clear()
-        cur_raw.clear()
+        found.append(Block(kind, start, start + len(text), text))
+        current_start = None
+        current_lines.clear()
+        current_raw.clear()
 
     offset = 0
     for i, line in enumerate(lines):
         raw = raw_lines[i] if i < len(raw_lines) else ""
         if HEADING_RE.search(line):
             flush()
-            out.append(Block("heading", offset, offset + len(line), line))
+            found.append(Block("heading", offset, offset + len(line), line))
         elif trim(line) == "" and trim(raw) == "":
             flush()
         else:
-            if cur_start is None:
-                cur_start = offset
-            cur_lines.append(line)
-            cur_raw.append(raw)
+            if current_start is None:
+                current_start = offset
+            current_lines.append(line)
+            current_raw.append(raw)
         offset += len(line) + 1
     flush()
-    return out
+    return found
 
 
 @dataclass(slots=True)
@@ -798,33 +806,33 @@ SINGLE_UPPER_RE = jsre("^\\p{Lu}$", "u")
 
 def sentences(text: str, base: int = 0) -> list[Sentence]:
     """Разбивает фрагмент на предложения с учётом сокращений и инициалов."""
-    out: list[Sentence] = []
+    found: list[Sentence] = []
     start = 0
-    for m in SENTENCE_END_RE.finditer(text):
-        idx = m.start()
-        if m.group() != "\n":
-            before = text[max(start, idx - 12) : idx]
+    for match in SENTENCE_END_RE.finditer(text):
+        index = match.start()
+        if match.group() != "\n":
+            before = text[max(start, index - 12) : index]
             last = LAST_WORD_RE.search(before)
             last_word = last.group(1).lower() if last else ""
             if last_word.removesuffix(".") in ABBREVIATIONS or SINGLE_UPPER_RE.search(before[-1:]):
                 continue
-        end = m.end()
-        _push_sentence(out, text, start, end, base)
+        end = match.end()
+        _push_sentence(found, text, start, end, base)
         start = end
-    _push_sentence(out, text, start, len(text), base)
-    return out
+    _push_sentence(found, text, start, len(text), base)
+    return found
 
 
-def _push_sentence(out: list[Sentence], text: str, start: int, end: int, base: int) -> None:
+def _push_sentence(found: list[Sentence], text: str, start: int, end: int, base: int) -> None:
     raw = text[start:end]
     trimmed_start = start + (len(raw) - len(trim_start(raw)))
-    t = trim(raw)
-    if not t:
+    trimmed = trim(raw)
+    if not trimmed:
         return
-    n = len(words(t))
-    if n == 0:
+    word_count = len(words(trimmed))
+    if word_count == 0:
         return
-    out.append(Sentence(base + trimmed_start, base + trimmed_start + len(t), t, n))
+    found.append(Sentence(base + trimmed_start, base + trimmed_start + len(trimmed), trimmed, word_count))
 
 
 def mean(xs: Sequence[float]) -> float:
@@ -835,39 +843,39 @@ def cv(xs: Sequence[float]) -> float:
     """Коэффициент вариации (σ/μ)."""
     if len(xs) < 2:
         return 0
-    m = mean(xs)
-    if m == 0:
+    average = mean(xs)
+    if average == 0:
         return 0
-    v = total((x - m) ** 2 for x in xs) / (len(xs) - 1)
-    return math.sqrt(v) / m
+    variance = total((x - average) ** 2 for x in xs) / (len(xs) - 1)
+    return math.sqrt(variance) / average
 
 
 def mattr(tokens: list[str], window: int = 100) -> float:
     """Скользящий TTR (MATTR) по окну: устойчив к длине текста."""
     if not tokens:
         return 0
-    lower = [t.lower() for t in tokens]
-    if len(lower) <= window:
-        return len(set(lower)) / len(lower)
+    lowered = [token.lower() for token in tokens]
+    if len(lowered) <= window:
+        return len(set(lowered)) / len(lowered)
     counts: dict[str, int] = {}
     distinct = 0
-    for t in lower[:window]:
-        c = counts.get(t, 0)
-        if c == 0:
+    for token in lowered[:window]:
+        count = counts.get(token, 0)
+        if count == 0:
             distinct += 1
-        counts[t] = c + 1
-    acc = distinct / window
+        counts[token] = count + 1
+    ttr_sum = distinct / window
     steps = 1
-    for i in range(window, len(lower)):
-        add, drop = lower[i], lower[i - window]
-        cd = counts.get(drop, 0) - 1
-        counts[drop] = cd
-        if cd == 0:
+    for i in range(window, len(lowered)):
+        entering, leaving = lowered[i], lowered[i - window]
+        leaving_count = counts.get(leaving, 0) - 1
+        counts[leaving] = leaving_count
+        if leaving_count == 0:
             distinct -= 1
-        ca = counts.get(add, 0)
-        if ca == 0:
+        entering_count = counts.get(entering, 0)
+        if entering_count == 0:
             distinct += 1
-        counts[add] = ca + 1
-        acc += distinct / window
+        counts[entering] = entering_count + 1
+        ttr_sum += distinct / window
         steps += 1
-    return acc / steps
+    return ttr_sum / steps

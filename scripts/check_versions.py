@@ -10,10 +10,10 @@ from versions import LOCK, FoundVersion, lock_version, read_versions, utf8_outpu
 def main() -> int:
     utf8_output()
     found = [*read_versions(), FoundVersion(LOCK, lock_version())]
-    if len({f.version for f in found}) != 1 or any(not f.version for f in found):
+    if len({entry.version for entry in found}) != 1 or any(not entry.version for entry in found):
         print("Версии расходятся:", file=sys.stderr)
-        for f in found:
-            print(f"  {f.file}: {f.version or 'не найдена'}", file=sys.stderr)
+        for entry in found:
+            print(f"  {entry.file}: {entry.version or 'не найдена'}", file=sys.stderr)
         print(
             "Исправьте вручную (uv.lock обновляет `uv lock`) или выпустите версию через "
             "`uv run python scripts/release.py`.",

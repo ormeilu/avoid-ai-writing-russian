@@ -44,8 +44,8 @@ def main(argv: list[str]) -> int:
         print("использование: check_commit_msg.py ФАЙЛ_СООБЩЕНИЯ", file=sys.stderr)
         return 2
     errors = check_commit_message(Path(argv[0]).read_bytes().decode("utf-8", errors="replace"))
-    for e in errors:
-        print(f"commit-msg: {e}", file=sys.stderr)
+    for error in errors:
+        print(f"commit-msg: {error}", file=sys.stderr)
     return 1 if errors else 0
 
 

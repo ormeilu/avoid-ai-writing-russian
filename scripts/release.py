@@ -45,22 +45,22 @@ def fail(msg: str) -> NoReturn:
 
 def bump(v: str, kind: str) -> str:
     """patch, minor, major от выпущенной части версии; иначе kind и есть новая версия."""
-    ma, mi, pa = (int(x) for x in re.findall(r"\d+", v)[:3])
+    major, minor, patch = (int(part) for part in re.findall(r"\d+", v)[:3])
     if kind == "major":
-        return f"{ma + 1}.0.0"
+        return f"{major + 1}.0.0"
     if kind == "minor":
-        return f"{ma}.{mi + 1}.0"
+        return f"{major}.{minor + 1}.0"
     if kind == "patch":
-        return f"{ma}.{mi}.{pa + 1}"
+        return f"{major}.{minor}.{patch + 1}"
     return kind
 
 
 def output(*cmd: str) -> str:
     """Вывод команды; при ошибке выпуск прерывается."""
-    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", check=False)
-    if r.returncode != 0:
-        fail(f"`{' '.join(cmd)}` завершилась с кодом {r.returncode}: {r.stderr.strip()}")
-    return r.stdout
+    result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", check=False)
+    if result.returncode != 0:
+        fail(f"`{' '.join(cmd)}` завершилась с кодом {result.returncode}: {result.stderr.strip()}")
+    return result.stdout
 
 
 def sh(*cmd: str) -> None:
@@ -92,11 +92,11 @@ def next_steps(version: str) -> str:
 def main(args: list[str]) -> int:
     utf8_output()
     dry = "--dry-run" in args
-    arg = next((a for a in args if not a.startswith("--")), None)
+    arg = next((candidate for candidate in args if not candidate.startswith("--")), None)
 
     found = read_versions()
     current = found[0].version or fail("не удалось прочитать текущую версию")
-    if len({f.version for f in found}) != 1:
+    if len({entry.version for entry in found}) != 1:
         fail("версии расходятся, сначала `uv run python scripts/check_versions.py`")
 
     if not arg:
@@ -119,8 +119,8 @@ def main(args: list[str]) -> int:
     changelog_path = ROOT / "CHANGELOG.md"
     try:
         changelog = cut(read_text(changelog_path), next_version, date)
-    except ValueError as e:
-        fail(str(e))
+    except ValueError as error:
+        fail(str(error))
 
     print(f"Выпуск {current} → {next_version} ({date})")
     if dry:

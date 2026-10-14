@@ -41,12 +41,12 @@ _SPACES_RE = jsre("\\s+")
 
 def phrase(p: str) -> str:
     # `*` после буквы — любое окончание; `\*` остаётся буквальной звёздочкой.
-    body = "[\\s\\u00A0]+".join(_STAR_RE.sub(lambda _: "\\p{L}*", tok) for tok in _SPACES_RE.split(trim(p)))
+    body = "[\\s\\u00A0]+".join(_STAR_RE.sub(lambda _: "\\p{L}*", token) for token in _SPACES_RE.split(trim(p)))
     return f"{WORD_START}(?:{body}){WORD_END}"
 
 
 def rx(*phrases: str) -> regex.Pattern[str]:
-    return jsre("|".join(phrase(p) for p in phrases), "giu")
+    return jsre("|".join(phrase(spec) for spec in phrases), "giu")
 
 
 def entry(
@@ -60,8 +60,8 @@ def entry(
     skip: tuple[ContextMode, ...] = (),
     density: dict[str, float] | None = None,
 ) -> LexEntry:
-    ps = phrases if isinstance(phrases, list) else [phrases]
-    return LexEntry(id_, type_, severity, rx(*ps), hint, style_only, skip, density or {})
+    phrase_list = phrases if isinstance(phrases, list) else [phrases]
+    return LexEntry(id_, type_, severity, rx(*phrase_list), hint, style_only, skip, density or {})
 
 
 TECH: tuple[ContextMode, ...] = ("technical",)
@@ -368,7 +368,7 @@ _TIER2_WORDS: list[tuple[str, str | list[str]]] = [
     ("нюанс", "нюанс*"),
 ]
 TIER2: list[LexEntry] = [
-    entry("tier2", "P2", id_, p, "перефразировать проще или дать конкретику") for id_, p in _TIER2_WORDS
+    entry("tier2", "P2", id_, spec, "перефразировать проще или дать конкретику") for id_, spec in _TIER2_WORDS
 ]
 
 # ─── Уровень 3: только по плотности (≥3 % слов суммарно) ─────────────────
@@ -388,8 +388,8 @@ _TIER3_WORDS = [
     "основн*",
 ]
 TIER3: list[LexEntry] = [
-    entry("tier3", "P2", f"tier3-{i}", p, "заменить часть случаев числом, сравнением, примером")
-    for i, p in enumerate(_TIER3_WORDS)
+    entry("tier3", "P2", f"tier3-{i}", spec, "заменить часть случаев числом, сравнением, примером")
+    for i, spec in enumerate(_TIER3_WORDS)
 ]
 
 # ─── Фразовые штампы уровня 3 ───────────────────────────────────────────
@@ -405,7 +405,9 @@ _PHRASE3_WORDS = [
     ("лучшие-практики", "лучш* практик*"),
     ("на-новый-уровень", "на (новый|качественно новый) уровень"),
 ]
-PHRASE3: list[LexEntry] = [entry("phrase3", "P2", id_, p, "назвать конкретику или убрать") for id_, p in _PHRASE3_WORDS]
+PHRASE3: list[LexEntry] = [
+    entry("phrase3", "P2", id_, spec, "назвать конкретику или убрать") for id_, spec in _PHRASE3_WORDS
+]
 
 # ─── Кальки с английского ───────────────────────────────────────────────
 # Соседи слова «челлендж», по которым он значит «соревнование». Слова окна ищутся в том же
@@ -512,9 +514,11 @@ _CHAT: tuple[ContextMode, ...] = ("chat",)
 _CASUAL: tuple[ContextMode, ...] = ("chat", "social")
 
 
-def _unless_near(words: str, window: int = 60) -> str:
-    """Не срабатывать, если в том же предложении в пределах `window` знаков есть одно из слов."""
-    return f"(?<!{WORD_START}(?:{words}){_SENTENCE}{{0,{window}}})(?!{_SENTENCE}{{0,{window}}}{WORD_START}(?:{words}))"
+def _unless_near(nearby: str, window: int = 60) -> str:
+    """Не срабатывать, если в том же предложении в пределах `window` знаков есть одно из слов `nearby`."""
+    return (
+        f"(?<!{WORD_START}(?:{nearby}){_SENTENCE}{{0,{window}}})(?!{_SENTENCE}{{0,{window}}}{WORD_START}(?:{nearby}))"
+    )
 
 
 def _jargon(id_: str, phrases: str | list[str], hint: str, skip: tuple[ContextMode, ...] = _CHAT) -> LexEntry:

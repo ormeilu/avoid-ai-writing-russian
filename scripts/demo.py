@@ -114,17 +114,17 @@ def run(command: str) -> str:
     """Вывод команды в том виде, в каком его покажет терминал: с цветом и переводами строк \\r\\n."""
     name, *args = command.split()
     if name == "cat":
-        out = (DEMO / args[0]).read_text(encoding="utf-8")
+        output = (DEMO / args[0]).read_text(encoding="utf-8")
     else:
-        env = {k: v for k, v in os.environ.items() if k != "NO_COLOR"}
+        env = {key: value for key, value in os.environ.items() if key != "NO_COLOR"}
         env |= {"FORCE_COLOR": "1", "COLUMNS": str(COLUMNS), "HF_HUB_OFFLINE": "1"}
         done = subprocess.run(
             [sys.executable, "-m", "aiw_ru", *args], cwd=DEMO, env=env, capture_output=True, text=True, check=False
         )
         if done.stderr.strip():
             raise SystemExit(f"{command}: {done.stderr.strip()}")
-        out = done.stdout
-    lines = [line.rstrip() for line in out.rstrip("\n").split("\n")]
+        output = done.stdout
+    lines = [line.rstrip() for line in output.rstrip("\n").split("\n")]
     return "\r\n".join(lines) + "\r\n"
 
 
@@ -132,9 +132,9 @@ def typed(command: str, rng: random.Random, first: int) -> list[tuple[int, str]]
     """Набор команды по буквам: имя программы жёлтым, аргументы обычным цветом; first — пауза перед первой."""
     name = command.split()[0]
     records = []
-    for i, ch in enumerate(command):
+    for i, char in enumerate(command):
         delay = first if i == 0 else rng.randint(38, 76)
-        records.append((delay, f"\x1b[1;33m{ch}\x1b[0m" if i < len(name) else ch))
+        records.append((delay, f"\x1b[1;33m{char}\x1b[0m" if i < len(name) else char))
     return records
 
 
@@ -145,15 +145,15 @@ def recording() -> tuple[list[tuple[int, str]], int]:
     # сколько в задержке первой: так финальный экран с приглашением держится, пока gif не начнётся заново.
     records: list[tuple[int, str]] = [(SCENE_END, "\r"), (300, PROMPT)]
     rows = 0
-    for n, scene in enumerate(SCENES):
-        if n:
+    for scene_index, scene in enumerate(SCENES):
+        if scene_index:
             records.append((SCENE_END, CLEAR + PROMPT))
         height = 1
         for k, command in enumerate(scene):
-            out = run(command)
-            height += 1 + out.count("\r\n")
+            output = run(command)
+            height += 1 + output.count("\r\n")
             records += typed(command, rng, READ if k else FIRST_KEY)
-            records += [(ENTER, "\r\n"), (OUTPUT, out), (PROMPT_AFTER, PROMPT)]
+            records += [(ENTER, "\r\n"), (OUTPUT, output), (PROMPT_AFTER, PROMPT)]
         rows = max(rows, height)
     return records, rows
 
@@ -185,7 +185,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Демо для README: запись terminalizer и gif")
     parser.add_argument("--no-render", action="store_true", help="только запись terminalizer, без gif")
     opts = parser.parse_args()
-    if missing := [m.name for m in models.MODELS.values() if not models.status(m).path]:
+    if missing := [model.name for model in models.MODELS.values() if not models.status(model).path]:
         raise SystemExit(f"нет моделей {', '.join(missing)}: aiw-ru models install {' '.join(missing)}")
     records, rows = recording()
     write(records, rows)
