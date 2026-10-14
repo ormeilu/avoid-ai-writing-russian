@@ -1,12 +1,13 @@
 """Проверка сохранности правки."""
 
 import json
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import pytest
 
 from aiw_ru import ValidationResult, Violation, validate
-from aiw_ru.antiplagiat import marked_from_heatmap
+from aiw_ru.antiplagiat import AfterParagraphs, _best_similarity, marked_from_heatmap
 
 BEFORE = (
     "---\n"
@@ -409,6 +410,19 @@ def test_validate_with_report_flags_unedited_red_paragraphs():
     unedited = [warning for warning in result.warnings if warning.kind == "красный абзац без правки"]
     assert [warning.detail.split(":")[0] for warning in unedited] == ["строка 1", "строка 3"]
     assert result.ok
+
+
+def test_best_similarity_skips_candidates_by_length_without_changing_result():
+    """кандидаты, длина которых не даёт дойти до порога, не сравниваются, а результат тот же"""
+    paragraph = RED_EDITED
+    near = RED_EDITED.replace("постоянного", "постоянного,")
+    candidates = AfterParagraphs([PLAIN, "Коротко.", near, RED_KEPT * 3, paragraph[:-1]])
+
+    best = _best_similarity(paragraph, candidates)
+    reference = max(SequenceMatcher(None, paragraph, text, autojunk=False).ratio() for text in candidates.texts)
+
+    assert best == reference
+    assert candidates.within_reach(paragraph) == [paragraph[:-1], near]
 
 
 def test_validate_without_report_has_no_red_paragraph_warnings():

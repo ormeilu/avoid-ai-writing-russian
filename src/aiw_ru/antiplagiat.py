@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Literal
@@ -421,12 +422,35 @@ def _normalized_paragraph(paragraph: str) -> str:
     return " ".join(plain.split())
 
 
-def _best_similarity(paragraph: str, candidates: list[str], exact: set[str]) -> float:
-    """Наибольшее совпадение абзаца с абзацами итога; дешёвые оценки отсекают явно непохожие."""
-    if paragraph in exact:
+class AfterParagraphs:
+    """Абзацы итога для сравнения: точные совпадения и отбор кандидатов по длине.
+
+    Совпадение двух строк не больше 2·min(длин)/(сумма длин). Поэтому до SequenceMatcher
+    доходят только абзацы, чья длина позволяет набрать UNEDITED_SIMILARITY, и проверка
+    не сравнивает каждый абзац исходника с каждым абзацем итога.
+    """
+
+    def __init__(self, texts: list[str]) -> None:
+        self.texts = texts
+        self.exact = set(texts)
+        self._by_length = sorted(texts, key=len)
+        self._lengths = [len(text) for text in self._by_length]
+
+    def within_reach(self, paragraph: str) -> list[str]:
+        """Абзацы итога, с которыми paragraph может совпасть на пороге, по возрастанию длины."""
+        length = len(paragraph)
+        # 2·min(a, b)/(a + b) ≥ t, если b от a·t/(2 − t) до a·(2 − t)/t; по знаку запаса с каждой стороны на округление.
+        shortest = math.ceil(length * UNEDITED_SIMILARITY / (2 - UNEDITED_SIMILARITY)) - 1
+        longest = math.floor(length * (2 - UNEDITED_SIMILARITY) / UNEDITED_SIMILARITY) + 1
+        return self._by_length[bisect_left(self._lengths, shortest) : bisect_right(self._lengths, longest)]
+
+
+def _best_similarity(paragraph: str, candidates: AfterParagraphs) -> float:
+    """Наибольшее совпадение абзаца с абзацами итога, которые могут дойти до порога."""
+    if paragraph in candidates.exact:
         return 1.0
     best = 0.0
-    for candidate in candidates:
+    for candidate in candidates.within_reach(paragraph):
         matcher = SequenceMatcher(None, paragraph, candidate, autojunk=False)
         if matcher.real_quick_ratio() >= UNEDITED_SIMILARITY and matcher.quick_ratio() >= UNEDITED_SIMILARITY:
             best = max(best, matcher.ratio())
@@ -442,13 +466,13 @@ def unedited_marked(before: str, after: str, marked: list[str]) -> list[Unedited
     """
     marked_ranges = marked_spans(before, marked)
     tokens = _tokens(before)
-    after_paragraphs = [_normalized_paragraph(match.group()) for match in PARAGRAPH_RE.finditer(after)]
-    after_exact = set(after_paragraphs)
+    token_starts = [token[0] for token in tokens]
+    after_paragraphs = AfterParagraphs([_normalized_paragraph(match.group()) for match in PARAGRAPH_RE.finditer(after)])
     line_starts = [0, *(index + 1 for index, char in enumerate(before) if char == "\n")]
     unedited: list[UneditedParagraph] = []
     for paragraph in PARAGRAPH_RE.finditer(before):
         start, end = paragraph.start(), paragraph.end()
-        paragraph_tokens = [token for token in tokens if start <= token[0] < end]
+        paragraph_tokens = tokens[bisect_left(token_starts, start) : bisect_left(token_starts, end)]
         if len(paragraph_tokens) < UNEDITED_MIN_WORDS or paragraph.group().lstrip().startswith(NOT_PROSE_PREFIXES):
             continue
         covered = sum(
@@ -460,7 +484,7 @@ def unedited_marked(before: str, after: str, marked: list[str]) -> list[Unedited
         if covered / len(paragraph_tokens) < 0.5 and not holds_piece:
             continue
         text = _normalized_paragraph(paragraph.group())
-        similarity = _best_similarity(text, after_paragraphs, after_exact)
+        similarity = _best_similarity(text, after_paragraphs)
         if similarity >= UNEDITED_SIMILARITY:
             line = line_col(line_starts, start)[0]
             unedited.append(UneditedParagraph(start=start, line=line, text=text, similarity=similarity))

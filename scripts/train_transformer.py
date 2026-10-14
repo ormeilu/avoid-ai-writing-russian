@@ -741,7 +741,7 @@ def cmd_fit(args: argparse.Namespace, pilot: bool) -> None:
             "base": cfg.base,
             "base_revision": base_revision(cfg.base),
             "base_license": LICENSES.get(cfg.base, ""),
-            "parameters": sum(probs.numel() for probs in model.parameters()),
+            "parameters": sum(parameter.numel() for parameter in model.parameters()),
             "max_length": cfg.max_length,
             "normalize": not cfg.raw,
             "normalize_rules": normalize_key(),
@@ -1583,7 +1583,7 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
         "shortcuts": shortcut_probe(args.data, "valid", limit),
         "curve": run["curve"],
         "pilot": pilot_rows(args.out_root),
-        "inference": {k: variant_name for k, variant_name in spec.items() if k != "normalize"},
+        "inference": {k: setting for k, setting in spec.items() if k != "normalize"},
         "lightgbm": lightgbm_block(),
     }
     (run_dir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -2036,12 +2036,12 @@ def _cuts_md(metrics: dict, level: str) -> str:
         ["Модель-генератор", "Текстов в test", "Recall", "Recall LightGBM"],
         [
             [
-                f"`{prompt_type['model']}`",
-                count(prompt_type["n"]),
-                num(prompt_type["recall"]),
-                _auc(lg_m.get(prompt_type["model"], {}).get("recall")),
+                f"`{generator['model']}`",
+                count(generator["n"]),
+                num(generator["recall"]),
+                _auc(lg_m.get(generator["model"], {}).get("recall")),
             ]
-            for prompt_type in metrics["generators"]
+            for generator in metrics["generators"]
         ],
     )
     return f"""{level} По жанрам
@@ -2103,14 +2103,14 @@ def _latency_md(rows_: list[dict]) -> str:
         head,
         [
             [
-                row,
+                runtime,
                 *(
-                    _ms(latency_ms.get((row, token_count, thread_count)))
+                    _ms(latency_ms.get((runtime, token_count, thread_count)))
                     for token_count in tokens
                     for thread_count in threads
                 ),
             ]
-            for row in runtimes
+            for runtime in runtimes
         ],
     )
 
