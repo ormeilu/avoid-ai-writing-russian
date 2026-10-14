@@ -2,7 +2,7 @@
 
     aiw-ru scan [файл…] [--context РЕЖИМ] [--json | --jsonl] [--min P0|P1|P2]
     aiw-ru antiplagiat [файл] [--system СИСТЕМА] [--config ПУТЬ] [--json | --jsonl]
-    aiw-ru validate ИСХОДНЫЙ ИСПРАВЛЕННЫЙ [--context РЕЖИМ] [--json]
+    aiw-ru validate ИСХОДНЫЙ ИСПРАВЛЕННЫЙ [--context РЕЖИМ] [--marked ФАЙЛ] [--json]
     aiw-ru calibrate --doc ФАЙЛ (--marked ФАЙЛ | --share ДОЛЯ) [--doc … ] [--system СИСТЕМА] [--config ПУТЬ]
     aiw-ru judge [файл] | judge score ФАЙЛ --answers ФАЙЛ [--answers …] [--marked ФАЙЛ] [--json]
     aiw-ru classify [файл…] [--json | --jsonl]
@@ -56,7 +56,7 @@ from aiw_ru.compat import js_round, jsre, num_str, to_fixed, trim
 from aiw_ru.detect import TYPE_LABELS, analyze
 from aiw_ru.judge import judge_fragments, judge_prompt, judge_score
 from aiw_ru.text import cyrillic_share, model_text, plural, words
-from aiw_ru.types import CONTEXT_MODES, PROFILE_TO_MODE, AnalysisResult, ContextMode, Record, Severity
+from aiw_ru.types import CONTEXT_MODES, PROFILE_TO_MODE, AnalysisResult, ContextMode, Light, Record, Severity
 from aiw_ru.validate import validate
 
 USAGE = """aiw-ru — приметы ИИ-стиля в русском тексте
@@ -66,7 +66,8 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
   antiplagiat [файл]           оценка по фрагментам в духе модуля ИИ-детекции «Антиплагиата»
                                или «Думейта» (--system domate)
   validate ИСХОДНЫЙ НОВЫЙ      проверить, что правка не повредила код, числа, цитаты, ссылки,
-                               не сняла оговорки и не добавила имён, чисел и дат
+                               не сняла оговорки и не добавила имён, чисел и дат; с --marked
+                               ещё и назвать абзацы под красной подсветкой отчёта без правки
   calibrate --doc Ф --marked Ф подстроить модель antiplagiat под ваши отчёты: документ и файл
                                с фрагментами, которые отчёт подсветил как ИИ (текст через пустую
                                строку или тепловая карта в JSON: из неё берутся красные фрагменты)
@@ -147,7 +148,7 @@ class Args:
     max_fragments: int | None = None
     # antiplagiat, calibrate: система проверки, под которую калибруется оценка.
     system: System = "antiplagiat"
-    # judge score: файлы с ответами судьи (по одному на прогон) и разметка отчёта.
+    # judge score: файлы с ответами судьи (по одному на прогон); judge score и validate: разметка отчёта.
     answers: list[str] = field(default_factory=list)
     judge_marked: str | None = None
     help: bool = False
@@ -222,7 +223,7 @@ def parse(argv: list[str]) -> Args:
         elif x == "--answers":
             a.answers.append(need(i, x))
             i += 1
-        elif x == "--marked" and a.cmd == "judge":
+        elif x == "--marked" and a.cmd in ("judge", "validate"):
             a.judge_marked = need(i, x)
             i += 1
         elif x == "--doc":
@@ -318,6 +319,13 @@ def make_console() -> Console:
 console = make_console()
 
 SEV_STYLE: dict[str, str] = {"P0": "red", "P1": "yellow", "P2": "dim"}
+LIGHT_NAMES: dict[str, str] = {"green": "зелёный", "yellow": "жёлтый", "red": "красный"}
+
+
+def light_fact(light: Light) -> tuple[str, Text]:
+    """Строка светофора: цвет и что делать."""
+    return ("Светофор", Text.styled(f"{LIGHT_NAMES[light.level]}: {light.hint}", light.level))
+
 
 # Заголовок и линейка под ним, без рамок: как прежний вывод в терминал.
 RULE_BOX = box.Box("    \n    \n ─  \n    \n    \n    \n    \n    \n")
@@ -888,6 +896,7 @@ def cmd_scan(a: Args) -> int:
         facts(
             [
                 ("Оценка", Text.styled(f"{r.score}/100, {r.label}", score_style(r.score))),
+                light_fact(r.light),
                 (
                     "Текст",
                     (
@@ -989,6 +998,7 @@ def cmd_antiplagiat(a: Args) -> int:
     facts(
         [
             ("Доля ИИ-текста", Text.styled(f"{ru(share)} %", share_style)),
+            light_fact(report.light),
             ("Фрагменты", f"{len(report.fragments)}, похожи на ИИ: {ai} (порог {ru(report.threshold)})"),
             (
                 "Модель",
@@ -1041,7 +1051,8 @@ def cmd_antiplagiat(a: Args) -> int:
 def cmd_validate(a: Args) -> int:
     if len(a.files) != 2:
         raise UsageError("validate ждёт два файла: исходный и исправленный")
-    r = validate(read(a.files[0]), read(a.files[1]), a.context or "general")
+    marked = split_marked(read(a.judge_marked)) if a.judge_marked else None
+    r = validate(read(a.files[0]), read(a.files[1]), a.context or "general", marked)
     if a.json:
         sys.stdout.write(dump(r) + "\n")
     else:

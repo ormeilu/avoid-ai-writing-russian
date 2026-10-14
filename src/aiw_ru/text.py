@@ -137,6 +137,33 @@ SOFT_HYPHEN = chr(0x00AD)
 BOM = chr(0xFEFF)
 ZWJ = chr(0x200D)
 HYPHENS = frozenset(map(chr, [0x2010, 0x2011]))
+# Редкие типографские символы: пробелы особой ширины, неразрывные пробелы и дефисы, знак минуса.
+# Их ставят типографы, вёрстка и некоторые модели (o3 и GPT-5 — U+202F), с клавиатуры их не набрать.
+# Это жёлтый сигнал светофора: «ИИ или типография?» решает пользователь. Формы — для plural.
+TYPOGRAPHIC: dict[str, tuple[str, str, str]] = {
+    chr(0x00A0): ("неразрывный пробел", "неразрывных пробела", "неразрывных пробелов"),
+    chr(0x202F): ("узкий неразрывный пробел", "узких неразрывных пробела", "узких неразрывных пробелов"),
+    chr(0x2002): ("полукруглая шпация", "полукруглые шпации", "полукруглых шпаций"),
+    chr(0x2003): ("круглая шпация", "круглые шпации", "круглых шпаций"),
+    chr(0x2004): ("шпация в треть круглой", "шпации в треть круглой", "шпаций в треть круглой"),
+    chr(0x2005): ("шпация в четверть круглой", "шпации в четверть круглой", "шпаций в четверть круглой"),
+    chr(0x2006): ("шпация в шестую круглой", "шпации в шестую круглой", "шпаций в шестую круглой"),
+    chr(0x2007): ("цифровой пробел", "цифровых пробела", "цифровых пробелов"),
+    chr(0x2008): ("пунктуационный пробел", "пунктуационных пробела", "пунктуационных пробелов"),
+    chr(0x2009): ("тонкая шпация", "тонкие шпации", "тонких шпаций"),
+    chr(0x200A): ("волосяная шпация", "волосяные шпации", "волосяных шпаций"),
+    chr(0x205F): ("математический пробел", "математических пробела", "математических пробелов"),
+    chr(0x2010): ("типографский дефис", "типографских дефиса", "типографских дефисов"),
+    chr(0x2011): ("неразрывный дефис", "неразрывных дефиса", "неразрывных дефисов"),
+    chr(0x2012): ("цифровое тире", "цифровых тире", "цифровых тире"),
+    chr(0x2015): ("горизонтальная черта", "горизонтальные черты", "горизонтальных черт"),
+    chr(0x2212): ("знак минуса", "знака минуса", "знаков минуса"),
+    # Стрелки в прозе: в ответах чат-ботов часты, у людей почти не встречаются.
+    chr(0x2192): ("стрелка вправо", "стрелки вправо", "стрелок вправо"),
+    chr(0x2190): ("стрелка влево", "стрелки влево", "стрелок влево"),
+    chr(0x2194): ("двусторонняя стрелка", "двусторонние стрелки", "двусторонних стрелок"),
+    chr(0x21D2): ("двойная стрелка", "двойные стрелки", "двойных стрелок"),
+}
 EMOJI_BEFORE_ZWJ = jsre("(?:\\p{Extended_Pictographic}|\\p{Emoji_Modifier}|\\uFE0F)$", "u")
 EMOJI_AFTER_ZWJ = jsre("^\\p{Extended_Pictographic}", "u")
 RTL_RE = jsre("[\\p{Script=Hebrew}\\p{Script=Arabic}\\p{Script=Syriac}\\p{Script=Thaana}\\p{Script=Nko}]", "u")
@@ -165,6 +192,17 @@ class Invisible:
     char: str
 
 
+# Пробелы особой ширины → обычный пробел той же длины: записи списка литературы по ГОСТ
+# («С. 5», «№ 3») набирают и с неразрывными пробелами, а правила служебных частей ждут обычный.
+PLAIN_SPACES = {ord(c): " " for c in TYPOGRAPHIC if c.isspace()}
+
+
+@dataclass(slots=True)
+class Typographic:
+    index: int
+    char: str
+
+
 @dataclass(slots=True)
 class Homoglyph:
     index: int
@@ -188,6 +226,9 @@ class Prepared:
     invisible: list[Invisible]
     # Позиции мягких переносов (U+00AD) в исходнике: их ставят Word и копирование из PDF.
     soft_hyphens: list[int]
+    # Редкие типографские символы (TYPOGRAPHIC) в прозе, с позициями в исходнике. В коде, цитатах
+    # и служебных частях статьи они не считаются: там это чужая вёрстка или формат записи.
+    typographic: list[Typographic]
     homoglyphs: list[Homoglyph]
     line_starts: list[int]
     # Служебные части статьи в `text` (service_ranges): в `prose` замаскированы.
@@ -350,6 +391,7 @@ def service_ranges(s: str) -> list[tuple[int, int]]:
 
 def _service_in(masked: str) -> list[tuple[int, int]]:
     """service_ranges по тексту, где код и YAML-шапка уже замаскированы."""
+    masked = masked.translate(PLAIN_SPACES)
     lines = masked.split("\n")
     starts = [0]
     for line in lines[:-1]:
@@ -572,6 +614,8 @@ PART_RE = jsre("[\\p{L}\\p{N}]+", "gu")
 def prepare(source: str) -> Prepared:
     invisible: list[Invisible] = []
     soft_hyphens: list[int] = []
+    # Найденные символы: позиция в исходнике, символ, позиция в нормализованном тексте.
+    typographic_found: list[tuple[int, str, int]] = []
     to_source: list[int] = []
     kept: list[str] = []
     for i, ch in enumerate(source):
@@ -585,6 +629,8 @@ def prepare(source: str) -> Prepared:
             ):
                 invisible.append(Invisible(i, ch))
             continue
+        if ch in TYPOGRAPHIC:
+            typographic_found.append((i, ch, len(kept)))
         # Неразрывный дефис и U+2010 с клавиатуры не набрать, их ставят модели; для словарей это обычный дефис.
         kept.append("-" if ch in HYPHENS else ch)
         to_source.append(i)
@@ -620,6 +666,12 @@ def prepare(source: str) -> Prepared:
     no_code = _mask_code(text)
     service = _service_in(no_code)
     prose = blank(_mask_protected(no_code), service)
+    # Маскировка заменяет знаки пробелами, поэтому символ на месте значит, что он в прозе.
+    typographic = [
+        Typographic(source_index, char)
+        for source_index, char, text_index in typographic_found
+        if prose[text_index] == ("-" if char in HYPHENS else char)
+    ]
     return Prepared(
         source=source,
         text=text,
@@ -628,6 +680,7 @@ def prepare(source: str) -> Prepared:
         to_source=to_source,
         invisible=invisible,
         soft_hyphens=soft_hyphens,
+        typographic=typographic,
         homoglyphs=homoglyphs,
         line_starts=_line_starts(source),
         service=service,

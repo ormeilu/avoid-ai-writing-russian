@@ -23,6 +23,8 @@ PROFILE_TO_MODE: dict[str, ContextMode] = {
 
 Severity = Literal["P0", "P1", "P2"]
 
+LightLevel = Literal["green", "yellow", "red"]
+
 
 class Record(BaseModel):
     """Данные, которые уходят в JSON: в Python поля в snake_case, в JSON — в camelCase."""
@@ -63,6 +65,17 @@ class Stats(Record):
     context_mode: ContextMode
 
 
+class Light(Record):
+    """Светофор символов и следов чата: что делать с документом до правки стиля."""
+
+    # green — всё чисто; yellow — редкие типографские символы, решает пользователь;
+    # red — следы чата или маскировка, почти наверняка ИИ.
+    level: LightLevel
+    hint: str
+    # Типы находок, которые зажгли цвет: сначала красные, потом жёлтые.
+    types: list[str]
+
+
 class AnalysisResult(Record):
     # 0–100, чем выше, тем больше примет ИИ-стиля.
     score: int
@@ -70,4 +83,5 @@ class AnalysisResult(Record):
     issues: list[Issue]
     # Невидимые символы и подмена букв: документ выглядит подозрительным.
     suspicious: bool
+    light: Light
     stats: Stats

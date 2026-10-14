@@ -382,6 +382,17 @@ def test_service_records_without_heading():
     assert _service("\n".join(records[:2])) == []
 
 
+def test_service_records_with_nonbreaking_spaces():
+    """записи по ГОСТ с неразрывными пробелами («С. 12», «№ 4») — тоже список литературы"""
+    nb = chr(0xA0)
+    records = [
+        f"1. Иванов И.{nb}И. Оценка // Транспорт. — 2023. — №{nb}4. — С.{nb}12–19.",
+        f"2. Smith J. Drowsiness // Sensors. — 2023. — Vol.{nb}23. — P.{nb}8386.",
+        f"3. Петров П.{nb}П. Сон. — М.{nb}: Наука, 2019. — 240{nb}с.",
+    ]
+    assert len(_service("Текст.\n\n" + "\n".join(records) + "\n\nДальше проза.")) == 1
+
+
 def test_service_ignores_prose_lookalikes():
     """проза со ссылками и годами и нумерованный список в теле — не литература"""
     assert (

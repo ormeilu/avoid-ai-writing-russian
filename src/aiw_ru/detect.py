@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 from dataclasses import dataclass, field
 
 import regex
@@ -26,8 +27,22 @@ from aiw_ru.lexicon import (
     TIER3,
     LexEntry,
 )
-from aiw_ru.text import Block, Prepared, Sentence, blocks, cv, line_col, mattr, mean, plural, prepare, sentences, words
-from aiw_ru.types import AnalysisResult, ContextMode, Issue, Severity, Stats
+from aiw_ru.text import (
+    TYPOGRAPHIC,
+    Block,
+    Prepared,
+    Sentence,
+    blocks,
+    cv,
+    line_col,
+    mattr,
+    mean,
+    plural,
+    prepare,
+    sentences,
+    words,
+)
+from aiw_ru.types import AnalysisResult, ContextMode, Issue, Light, LightLevel, Severity, Stats
 
 WEIGHTS: dict[str, float] = {
     # Невидимые символы, подмена букв и мягкие переносы — гигиена документа, а не ИИ-стиль:
@@ -36,6 +51,9 @@ WEIGHTS: dict[str, float] = {
     "invisible-chars": 0,
     "homoglyph": 0,
     "soft-hyphen": 0,
+    # Редкие типографские символы — вопрос к пользователю («ИИ или типография?»), а не довод:
+    # их ставят и модели, и типографы, и вёрстка сайтов. В оценку не идут, светофор — жёлтый.
+    "typography-chars": 0,
     "chat-markup": 10,
     "ai-url": 8,
     "placeholder": 8,
@@ -108,6 +126,7 @@ TYPE_LABELS: dict[str, str] = {
     "invisible-chars": "Невидимые символы",
     "homoglyph": "Подмена букв",
     "soft-hyphen": "Мягкие переносы",
+    "typography-chars": "Редкие типографские символы",
     "chat-markup": "Разметка цитирования из чата",
     "ai-url": "Параметр ИИ-инструмента в ссылке",
     "placeholder": "Незаполненная заглушка",
@@ -429,6 +448,26 @@ def _detect_fingerprints(ctx: _Ctx) -> None:
                 line=line,
                 column=column,
                 hint="удалить перед сдачей; обычно их оставляют Word и копирование из PDF",
+            )
+        )
+    first_index: dict[str, int] = {}
+    counts: Counter[str] = Counter()
+    for found in p.typographic:
+        first_index.setdefault(found.char, found.index)
+        counts[found.char] += 1
+    for char, index in sorted(first_index.items(), key=lambda item: item[1]):
+        code = f"U+{ord(char):04X}"
+        line, column = line_col(p.line_starts, index)
+        ctx.issues.append(
+            Issue(
+                type="typography-chars",
+                rule=code,
+                severity="P2",
+                text=f"{plural(counts[char], *TYPOGRAPHIC[char])} ({code})",
+                index=index,
+                line=line,
+                column=column,
+                hint="ИИ или типография? Спроси пользователя: заменить обычными знаками или оставить",
             )
         )
     for h in p.homoglyphs:
@@ -1052,6 +1091,7 @@ def analyze_internal(source: str, context: ContextMode = "general") -> tuple[Ana
         label=label_for(score),
         issues=issues,
         suspicious=bool(p.invisible) or bool(p.homoglyphs),
+        light=light_for(issues),
         stats=Stats(
             words=word_count,
             sentences=sum(len(ss) for ss in prose_sentences),
@@ -1064,6 +1104,28 @@ def analyze_internal(source: str, context: ContextMode = "general") -> tuple[Ana
         ),
     )
     return result, Internals(p, bs, prose_sentences)
+
+
+# Светофор символов. Красный — следы чата (разметка ссылок, параметры ИИ-инструментов в ссылках)
+# и маскировка (невидимые символы, подмена букв): удалять без вопросов. Жёлтый — редкие
+# типографские символы и мягкие переносы: их ставят и модели, и вёрстка, решает пользователь.
+LIGHT_TYPES: dict[LightLevel, tuple[str, ...]] = {
+    "red": ("chat-markup", "ai-url", "invisible-chars", "homoglyph"),
+    "yellow": ("typography-chars", "soft-hyphen"),
+}
+LIGHT_HINTS: dict[LightLevel, str] = {
+    "green": "всё чисто",
+    "yellow": "ИИ или типография? Уточни у пользователя, убрать или оставить",
+    "red": "почти наверняка ИИ или маскировка: удалить",
+}
+
+
+def light_for(issues: list[Issue]) -> Light:
+    """Цвет по самым серьёзным находкам: красный сильнее жёлтого, без них — зелёный."""
+    present = {issue.type for issue in issues}
+    found = {level: [kind for kind in kinds if kind in present] for level, kinds in LIGHT_TYPES.items()}
+    level: LightLevel = "red" if found["red"] else "yellow" if found["yellow"] else "green"
+    return Light(level=level, hint=LIGHT_HINTS[level], types=found["red"] + found["yellow"])
 
 
 def analyze(source: str, context: ContextMode = "general") -> AnalysisResult:

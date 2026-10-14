@@ -12,6 +12,9 @@ ZW = chr(0x200B)
 SHY = chr(0x00AD)
 BOM = chr(0xFEFF)
 ZWJ = chr(0x200D)
+NBSP = chr(0x00A0)
+NNBSP = chr(0x202F)
+NBHY = chr(0x2011)
 
 
 def types(text: str, context: ContextMode = "general") -> list[str]:
@@ -226,6 +229,82 @@ def test_nonbreaking_hyphen_does_not_hide_word():
     """неразрывный дефис не прячет слово от словаря"""
     r = analyze(f"Это по{chr(0x2011)}настоящему важный шаг для команды.")
     assert "tier1" in [i.type for i in r.issues]
+
+
+def test_typographic_chars_are_yellow_question():
+    """неразрывные пробелы — жёлтая находка «ИИ или типография?»: в оценку не идут, документ не подозрительный"""
+    r = analyze(f"Задержка выросла до 25{NBSP}мс, а в пике до 40{NNBSP}мс.")
+    hits = {i.rule: i for i in r.issues if i.type == "typography-chars"}
+    assert set(hits) == {"U+00A0", "U+202F"}
+    assert hits["U+00A0"].severity == "P2"
+    assert hits["U+00A0"].text == "1 неразрывный пробел (U+00A0)"
+    assert hits["U+202F"].text == "1 узкий неразрывный пробел (U+202F)"
+    assert "ИИ или типография?" in hits["U+00A0"].hint
+    assert r.suspicious is False
+    assert r.score == analyze("Задержка выросла до 25 мс, а в пике до 40 мс.").score
+    assert r.light.level == "yellow"
+    assert r.light.hint == "ИИ или типография? Уточни у пользователя, убрать или оставить"
+    assert r.light.types == ["typography-chars"]
+
+
+def test_typographic_chars_counted_from_first_position():
+    """одна находка на символ: число вхождений и место первого"""
+    r = analyze(f"Строка.\nВ{NBSP}городе и{NBSP}в{NBSP}области.")
+    hit = next(i for i in r.issues if i.type == "typography-chars")
+    assert hit.text == "3 неразрывных пробела (U+00A0)"
+    assert (hit.line, hit.column) == (2, 2)
+
+
+def test_typographic_chars_only_in_prose():
+    """в коде, цитате и списке литературы символы чужие: их не считаем"""
+    code = f"Пример:\n\n```\nx{NBSP}=\u21921\n```\n\nИ `a\u2192b` в строке."
+    assert "typography-chars" not in types(code)
+    assert "typography-chars" not in types(f"Он сказал: «Задержка 25{NBSP}мс».")
+    bib = (
+        "Текст статьи без лишних символов.\n\n## Список литературы\n\n"
+        f"1. Иванов И. И. Методы. — М.{NBSP}: Наука, 2020. — 120{NBSP}с.\n"
+        f"2. Петров П. П. Модели // Вестник. — 2021. — №{NBSP}3. — С.{NBSP}5–9.\n"
+        f"3. Сидоров С. С. Данные // Труды. — 2022. — Т.{NBSP}4. — С.{NBSP}1–8.\n"
+    )
+    assert "typography-chars" not in types(bib, "academic")
+    assert "typography-chars" in types(f"Переход A \u2192 B занимает 25{NBSP}мс.")
+
+
+def test_nonbreaking_hyphen_is_yellow_and_word_still_found():
+    """неразрывный дефис — тоже жёлтая находка, а слово со словарём по-прежнему ищется"""
+    r = analyze(f"Это по{NBHY}настоящему важный шаг для команды.")
+    assert "tier1" in [i.type for i in r.issues]
+    assert [i.rule for i in r.issues if i.type == "typography-chars"] == ["U+2011"]
+    assert r.light.level == "yellow"
+
+
+def test_soft_hyphen_is_yellow():
+    """мягкий перенос: светофор жёлтый, документ не подозрительный"""
+    r = analyze(f"Длинное сло{SHY}во в тексте.")
+    assert r.light.level == "yellow"
+    assert r.light.types == ["soft-hyphen"]
+
+
+def test_light_green_when_clean():
+    """чистый текст: светофор зелёный, «всё чисто»"""
+    r = analyze("Обычный текст без лишних символов.")
+    assert (r.light.level, r.light.hint, r.light.types) == ("green", "всё чисто", [])
+
+
+def test_light_red_for_chat_traces_and_masking():
+    """следы чата и маскировка — красный, и красный сильнее жёлтого"""
+    open_, sep, close = (chr(c) for c in (0xE200, 0xE202, 0xE201))
+    for text in (
+        f"Рост составил 12 %.{open_}cite{sep}turn0search3{close}",
+        "Подробнее: https://example.com/page?utm_source=chatgpt.com",
+        f"Обыч{ZW}ный текст.",
+    ):
+        r = analyze(text)
+        assert r.light.level == "red", text
+        assert r.light.hint == "почти наверняка ИИ или маскировка: удалить"
+    r = analyze(f"Задержка 25{NBSP}мс.{open_}cite{sep}turn0search3{close}")
+    assert r.light.level == "red"
+    assert r.light.types == ["chat-markup", "typography-chars"]
 
 
 def test_chatgpt_citation_chars_and_bare_markers():
