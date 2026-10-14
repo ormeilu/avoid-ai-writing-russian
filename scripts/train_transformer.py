@@ -1628,7 +1628,8 @@ def _by(rows: list[dict] | None, key: str) -> dict[str, dict]:
 
 def _nw(n: int, one: str, few: str, many: str) -> str:
     """Число формулой и слово в нужной форме: $2$ текста, $5$ текстов."""
-    return f"{count(n)} {plural(n, one, few, many).split(' ', 1)[1]}"
+    # Форма зависит только от двух последних цифр, а число меньше 100 plural не делит на разряды.
+    return f"{count(n)} {plural(n % 100, one, few, many).split(' ', 1)[1]}"
 
 
 def _tokens_gen(n: int) -> str:

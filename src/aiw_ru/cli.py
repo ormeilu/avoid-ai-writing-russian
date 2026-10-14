@@ -544,8 +544,8 @@ OUTDATED = (
 
 
 def grouped(n: int) -> str:
-    """Число с разрядами через неразрывный пробел от 10 000, как в plural."""
-    return f"{n:,}".replace(",", "\u00a0") if abs(n) >= 10000 else str(n)
+    """Число с разрядами через обычный пробел от 10 000, как в plural."""
+    return f"{n:,}".replace(",", " ") if abs(n) >= 10000 else str(n)
 
 
 def coverage_json(c: models.Coverage) -> dict[str, Any]:
