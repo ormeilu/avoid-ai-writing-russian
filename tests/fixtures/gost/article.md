@@ -59,7 +59,7 @@
 
 **5.** Королёв, А. М. О пороге PERCLOS при ночной работе локомотивных бригад / А. М. Королёв // Вестник научно-исследовательского института железнодорожного транспорта. — 2021. — Т. 80, № 3. — С. 187–195.
 
-**6.** Kessler, H. Eye aspect ratio under cabin illumination changes / H. Kessler, L. Moreau // Sensors. — 2023. — Vol. 23, № 20. — P. 8386. — DOI: [10.0000/example.2023.8386](https://doi.org/10.0000/example.2023.8386).
+**6.** Kessler, H. Eye aspect ratio under cabin illumination changes / H. Kessler, L. Moreau // Sensors. — 2021. — Vol. 21, № 7. — P. 2417. — DOI: [10.0000/example.2021.2417](https://doi.org/10.0000/example.2021.2417).
 
 **7.** Tan, W. Lightweight face landmark detectors for on-board inference / W. Tan, G. Rossi, J. Novak // Pattern Recognition Letters. — 2022. — Vol. 160. — P. 45–52.
 

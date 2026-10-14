@@ -54,6 +54,15 @@ hooks = [
     priority = 5,
   },
   {
+    id = "private-texts",
+    name = "нет фрагментов собственных работ автора",
+    # Работы лежат вне репозитория, в ~/.config/aiw-ru/private или в AIW_RU_PRIVATE; без них хук молчит.
+    entry = "uv run python scripts/check_private.py",
+    language = "system",
+    types_or = ["python", "markdown", "json", "yaml", "text"],
+    priority = 5,
+  },
+  {
     id = "ruff-check",
     name = "Ruff: линтер",
     entry = "uv run --group dev ruff check --fix",
