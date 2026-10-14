@@ -639,11 +639,11 @@ def words(s: str) -> list[str]:
 
 
 def plural(n: int, one: str, few: str, many: str) -> str:
-    """«1 слово», «2 слова», «5 слов»; от 10 000 разряды через неразрывный пробел."""
+    """«1 слово», «2 слова», «5 слов»; от 10 000 разряды через обычный пробел."""
     d = n % 10
     dd = n % 100
     form = one if d == 1 and dd != 11 else few if 2 <= d <= 4 and (dd < 12 or dd > 14) else many
-    num = f"{n:,}".replace(",", "\u00a0") if abs(n) >= 10000 else str(n)
+    num = f"{n:,}".replace(",", " ") if abs(n) >= 10000 else str(n)
     return f"{num} {form}"
 
 

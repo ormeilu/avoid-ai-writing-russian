@@ -243,6 +243,16 @@ def test_main_answer_format_four_checks():
         assert item in MAIN
 
 
+def test_skills_insert_only_ordinary_spaces():
+    """скилл не велит ставить неразрывные пробелы, и в его примерах их нет: агент копирует примеры как есть"""
+    assert "неразрывный пробел между числом" not in MAIN
+    assert "U+00A0" in MAIN
+    for p in SKILLS.rglob("*.md"):
+        text = read(p)
+        for code in (0x00A0, 0x202F):
+            assert chr(code) not in text, f"{p.name}: U+{code:04X}"
+
+
 def test_model_probability_is_only_a_signal():
     """вероятность модели — тоже сигнал: агент сомневается в ней и не правит текст ради цифры"""
     assert "**Вероятность модели — тоже сигнал, а не приговор.**" in MAIN
