@@ -241,6 +241,32 @@ def test_scan_clean_text_and_plural_agreement(cli: Cli):
     assert "Примет не найдено." in r.out
 
 
+def test_scan_shows_light(cli: Cli):
+    """scan показывает светофор символов строкой и в JSON"""
+    assert re.search(r"Светофор +зелёный: всё чисто", cli("scan", stdin="Одно слово.").out)
+    nbsp = chr(0x00A0)
+    r = cli("scan", stdin=f"Задержка 25{nbsp}мс.")
+    assert "жёлтый: ИИ или типография? Уточни у пользователя, убрать или оставить" in r.out
+    light = json.loads(cli("scan", "--json", stdin=f"Задержка 25{nbsp}мс.").out)["light"]
+    assert light == {
+        "level": "yellow",
+        "hint": "ИИ или типография? Уточни у пользователя, убрать или оставить",
+        "types": ["typography-chars"],
+    }
+
+
+def test_validate_marked_lists_unedited_red_paragraphs(cli: Cli, tmp_path: Path):
+    """validate --marked называет красные абзацы отчёта, оставшиеся без правки"""
+    red = "Предлагаемый метод основан на анализе изображения лица, глаз и позы оператора, что позволяет выявлять предаварийное состояние заранее."
+    doc = tmp_path / "doc.md"
+    doc.write_text(red + "\n\nВторой абзац остаётся обычным.\n", encoding="utf-8")
+    heat = tmp_path / "heat.json"
+    heat.write_text(json.dumps({"fragments": [{"level": 3, "text": red}]}, ensure_ascii=False), encoding="utf-8")
+    r = cli("validate", str(doc), str(doc), "--marked", str(heat))
+    assert r.code == 0
+    assert "красный абзац без правки" in r.out
+
+
 def test_scan_many_files_json_array(cli: Cli):
     """scan нескольких файлов в JSON — массив"""
     data = json.loads(cli("scan", "--json", AI_BLOG, HUMAN_BLOG).out)

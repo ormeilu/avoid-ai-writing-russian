@@ -1,10 +1,12 @@
 """Проверка сохранности правки."""
 
+import json
 from pathlib import Path
 
 import pytest
 
 from aiw_ru import ValidationResult, Violation, validate
+from aiw_ru.antiplagiat import marked_from_heatmap
 
 BEFORE = (
     "---\n"
@@ -366,3 +368,53 @@ def test_escaped_citations_from_pandoc():
     assert validate(ARTICLE, ARTICLE.replace("\\[1, 2\\]", "[1, 2]", 1)).ok
     lost = validate(ARTICLE, ARTICLE.replace(" \\[1, 2\\]", "", 1))
     assert "ссылка на литературу" in {v.kind for v in lost.violations}
+
+
+# ─── абзацы под красной подсветкой отчёта ───────────────────────────────
+
+NBSP = chr(0xA0)
+RED_KEPT = (
+    "Предлагаемый метод основан на анализе изображения лица, глаз и позы оператора, что позволяет "
+    "выявлять предаварийное состояние заранее, до ошибки управления."
+)
+RED_NBSP = (
+    "Утомление стало предметом естествознания в последней трети XIX века, а психотехника занялась "
+    "отбором водителей городского транспорта в начале XX века."
+)
+RED_EDITED = (
+    "Кибернетика и инженерная психология включили человека в систему управления как звено, "
+    "бдительность которого имеет предел и требует постоянного контроля."
+)
+RED_REWRITTEN = (
+    "Кибернетика и инженерная психология сделали человека звеном системы управления. "
+    "Его бдительность имеет предел, и её нужно постоянно контролировать."
+)
+PLAIN = "Обычный абзац без подсветки остаётся как есть и предупреждений не даёт, сколько бы раз его ни проверяли."
+
+
+def paragraphs(*texts: str) -> str:
+    return "\n\n".join(texts)
+
+
+HEAT_MAP = json.dumps({"fragments": [{"level": 3, "text": text} for text in (RED_KEPT, RED_NBSP, RED_EDITED)]})
+
+
+def test_validate_with_report_flags_unedited_red_paragraphs():
+    """красный абзац без правки — предупреждение; снятые неразрывные пробелы правкой не считаются"""
+    before = paragraphs(RED_KEPT, RED_NBSP.replace(" в ", f" в{NBSP}"), RED_EDITED, PLAIN)
+    after = paragraphs(RED_KEPT, RED_NBSP, RED_REWRITTEN, PLAIN)
+
+    result = validate(before, after, "academic", marked=marked_from_heatmap(HEAT_MAP))
+
+    unedited = [warning for warning in result.warnings if warning.kind == "красный абзац без правки"]
+    assert [warning.detail.split(":")[0] for warning in unedited] == ["строка 1", "строка 3"]
+    assert result.ok
+
+
+def test_validate_without_report_has_no_red_paragraph_warnings():
+    """без --marked таких предупреждений нет"""
+    text = paragraphs(RED_KEPT, PLAIN)
+
+    result = validate(text, text, "academic")
+
+    assert not [warning for warning in result.warnings if warning.kind == "красный абзац без правки"]

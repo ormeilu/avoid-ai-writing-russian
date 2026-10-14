@@ -460,6 +460,7 @@ CATALOG_EXAMPLES: list[tuple[str, str, ContextMode]] = [
     ("Вот вариант поста:\n\nМы запустили сервис.", "chat-wrapper", "general"),
     ("Исследование подчёркивает важность сна. Недосып может привести к ошибкам.", "model-idiolect", "general"),
     ("Мы долго думали, как описать результаты эксперимента, и в итоге решили,", "truncated", "general"),
+    ("Задержка выросла до 25\u202fмс.", "typography-chars", "general"),
 ]
 
 CATALOG_LEGIT: list[tuple[str, str, ContextMode]] = [

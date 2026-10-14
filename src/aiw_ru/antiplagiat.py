@@ -17,14 +17,15 @@ import json
 import math
 import re
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Literal
 
 from pydantic import Field
 
 from aiw_ru.compat import fixed, jsre, total, trim
 from aiw_ru.detect import WEIGHTS, Internals, analyze_internal
-from aiw_ru.text import cv, line_col, mattr, mean, sentences, words
-from aiw_ru.types import ContextMode, Issue, Record
+from aiw_ru.text import PLAIN_SPACES, cv, line_col, mattr, mean, sentences, words
+from aiw_ru.types import ContextMode, Issue, Light, Record
 
 FEATURE_NAMES: tuple[str, ...] = (
     "плотность примет",
@@ -74,6 +75,8 @@ class AntiplagiatReport(Record):
     fragments: list[Fragment]
     suspicious: bool
     suspicious_reasons: list[str]
+    # Светофор символов и следов чата, как у scan.
+    light: Light
     model: Literal["default", "calibrated"]
     threshold: float
     # Система, под которую калибровалась модель (`--system`).
@@ -212,6 +215,7 @@ def antiplagiat(
         fragments=fragments,
         suspicious=bool(reasons),
         suspicious_reasons=reasons,
+        light=result.light,
         model="calibrated" if model else "default",
         threshold=m.threshold,
         system=system,
@@ -323,13 +327,21 @@ def marked_spans(source: str, marked: list[str]) -> list[tuple[int, int]]:
         seq = [w for _, _, w in _tokens(m)]
         if len(seq) < MIN_MARKED_WORDS:
             continue
-        a = _find(words_, seq, 0)
-        if a is None:
+        first_start = _find(words_, seq, 0)
+        if first_start is None:
             continue
-        b = _find(words_, seq, a, last=True)
-        if b is None or b - a + 1 > len(seq) * 1.5 + 20:
-            b = min(a + len(seq), len(toks)) - 1
-        spans.append((toks[a][0], toks[b][1]))
+        # Начало куска встречается и раньше, чем сам кусок: заголовок раздела стоит ещё в оглавлении.
+        # Берём первое вхождение начала, после которого близко находится и конец.
+        start_word: int | None = first_start
+        end_word: int | None = None
+        while start_word is not None:
+            end_word = _find(words_, seq, start_word, last=True)
+            if end_word is not None and end_word - start_word + 1 <= len(seq) * 1.5 + 20:
+                break
+            start_word = _find(words_, seq, start_word + 1)
+        if start_word is None or end_word is None:
+            start_word, end_word = first_start, min(first_start + len(seq), len(toks)) - 1
+        spans.append((toks[start_word][0], toks[end_word][1]))
     return spans
 
 
@@ -373,6 +385,82 @@ def marked_fragments(source: str, marked: list[str], context: ContextMode = "aca
             )
         )
     return out
+
+
+# Абзац под подсветкой считается неправленым, если ближайший абзац итога совпадает с ним хотя бы
+# на столько после замены особых пробелов и дефисов обычными. На реферате с «Думейтом» абзацы, которые
+# потеряли только неразрывные пробелы, остались на прежнем уровне, а правка с сохранением 90 % букв
+# вывела из красного 13 абзацев из 16.
+UNEDITED_SIMILARITY = 0.98
+# Короче этого абзац не проверяется: заголовки и подписи часто нельзя менять. Заголовки, HTML, рисунки и
+# таблицы тоже пропускаются: это не проза.
+UNEDITED_MIN_WORDS = 15
+PARAGRAPH_RE = jsre("[^\\n](?:[^\\n]|\\n(?![ \\t]*\\n))*", "g")
+
+
+NOT_PROSE_PREFIXES = ("#", "<", "![", "|")
+
+
+@dataclass(slots=True)
+class UneditedParagraph:
+    """Абзац исходника под подсветкой отчёта, который в итоге остался прежним."""
+
+    start: int
+    line: int
+    text: str
+    similarity: float
+
+
+def _normalized_paragraph(paragraph: str) -> str:
+    """Абзац для сравнения: особые пробелы и дефисы обычными, пробелы схлопнуты."""
+    plain = paragraph.translate(PLAIN_SPACES).replace(chr(0x2010), "-").replace(chr(0x2011), "-")
+    return " ".join(plain.split())
+
+
+def _best_similarity(paragraph: str, candidates: list[str], exact: set[str]) -> float:
+    """Наибольшее совпадение абзаца с абзацами итога; дешёвые оценки отсекают явно непохожие."""
+    if paragraph in exact:
+        return 1.0
+    best = 0.0
+    for candidate in candidates:
+        matcher = SequenceMatcher(None, paragraph, candidate, autojunk=False)
+        if matcher.real_quick_ratio() >= UNEDITED_SIMILARITY and matcher.quick_ratio() >= UNEDITED_SIMILARITY:
+            best = max(best, matcher.ratio())
+    return best
+
+
+def unedited_marked(before: str, after: str, marked: list[str]) -> list[UneditedParagraph]:
+    """Абзацы исходника под подсветкой отчёта, которые в итоге остались прежними.
+
+    Абзац под подсветкой — тот, где куски из отчёта покрывают больше половины слов или лежат
+    целиком. Прежним он считается, если ближайший абзац итога совпадает с ним на
+    UNEDITED_SIMILARITY: снятые неразрывные пробелы и замена дефисов правкой не считаются.
+    """
+    marked_ranges = marked_spans(before, marked)
+    tokens = _tokens(before)
+    after_paragraphs = [_normalized_paragraph(match.group()) for match in PARAGRAPH_RE.finditer(after)]
+    after_exact = set(after_paragraphs)
+    line_starts = [0, *(index + 1 for index, char in enumerate(before) if char == "\n")]
+    unedited: list[UneditedParagraph] = []
+    for paragraph in PARAGRAPH_RE.finditer(before):
+        start, end = paragraph.start(), paragraph.end()
+        paragraph_tokens = [token for token in tokens if start <= token[0] < end]
+        if len(paragraph_tokens) < UNEDITED_MIN_WORDS or paragraph.group().lstrip().startswith(NOT_PROSE_PREFIXES):
+            continue
+        covered = sum(
+            1
+            for token in paragraph_tokens
+            if any(range_start <= token[0] < range_end for range_start, range_end in marked_ranges)
+        )
+        holds_piece = any(start <= range_start and range_end <= end for range_start, range_end in marked_ranges)
+        if covered / len(paragraph_tokens) < 0.5 and not holds_piece:
+            continue
+        text = _normalized_paragraph(paragraph.group())
+        similarity = _best_similarity(text, after_paragraphs, after_exact)
+        if similarity >= UNEDITED_SIMILARITY:
+            line = line_col(line_starts, start)[0]
+            unedited.append(UneditedParagraph(start=start, line=line, text=text, similarity=similarity))
+    return unedited
 
 
 def label_fragments(source: str, marked: list[str]) -> list[Sample]:

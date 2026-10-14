@@ -62,6 +62,7 @@ from dataclasses import dataclass, field
 import regex
 from pydantic import Field
 
+from aiw_ru.antiplagiat import unedited_marked
 from aiw_ru.compat import jsre, trim
 from aiw_ru.detect import AI_URL_RE, analyze
 from aiw_ru.lexicon import phrase
@@ -737,7 +738,10 @@ def _check_claims(bp: Prepared, ap: Prepared, out: list[Violation]) -> None:
         out.append(Violation(kind="утверждение", detail=detail))
 
 
-def validate(before: str, after: str, context: ContextMode = "general") -> ValidationResult:
+def validate(
+    before: str, after: str, context: ContextMode = "general", marked: list[str] | None = None
+) -> ValidationResult:
+    """Сохранность правки; с `marked` (куски из отчёта) ещё и абзацы под подсветкой, оставшиеся прежними."""
     v: list[Violation] = []
     w: list[Violation] = []
     if _frontmatter(before) != _frontmatter(after):
@@ -784,4 +788,7 @@ def validate(before: str, after: str, context: ContextMode = "general") -> Valid
     issues_after = len(analyze(after, context).issues)
     if issues_after > issues_before:
         v.append(Violation(kind="находки", detail=f"находок стало больше: {issues_before} → {issues_after}"))
+    for paragraph in unedited_marked(before, after, marked or []):
+        preview = trim(paragraph.text[:80])
+        w.append(Violation(kind="красный абзац без правки", detail=f"строка {paragraph.line}: «{preview}…»"))
     return ValidationResult(ok=not v, violations=v, warnings=w, issues_before=issues_before, issues_after=issues_after)
