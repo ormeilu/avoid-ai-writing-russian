@@ -61,8 +61,8 @@ def root() -> Path:
 
 def _description(skill_md: str) -> str:
     """Поле description из шапки SKILL.md, в том числе многострочное (`>-`)."""
-    m = _FRONTMATTER.match(skill_md)
-    lines = m[1].split("\n") if m else []
+    frontmatter = _FRONTMATTER.match(skill_md)
+    lines = frontmatter[1].split("\n") if frontmatter else []
     for i, line in enumerate(lines):
         if not line.startswith("description:"):
             continue
@@ -70,29 +70,29 @@ def _description(skill_md: str) -> str:
         if value not in (">-", ">", "|", "|-"):
             return value.strip("\"'")
         block = []
-        for cont in lines[i + 1 :]:
-            if cont and not cont.startswith(" "):
+        for continuation in lines[i + 1 :]:
+            if continuation and not continuation.startswith(" "):
                 break
-            block.append(cont.strip())
-        return " ".join(x for x in block if x)
+            block.append(continuation.strip())
+        return " ".join(part for part in block if part)
     return ""
 
 
 def first_sentence(text: str) -> str:
     """Первое предложение описания: для списка скиллов в терминале."""
-    m = re.match(r"(.+?[.!?])\s+(?=[A-ZА-ЯЁ«])", text)
-    return m[1] if m else text
+    match = re.match(r"(.+?[.!?])\s+(?=[A-ZА-ЯЁ«])", text)
+    return match[1] if match else text
 
 
 def _files(folder: Path) -> tuple[str, ...]:
     """Файлы скилла без SKILL.md и скрытых. Скрытость проверяется внутри папки скилла:
     сам пакет может лежать под скрытой папкой, например в кэше uv (~/.cache/uv)."""
-    found = (p.relative_to(folder) for p in folder.rglob("*") if p.is_file())
+    found = (path.relative_to(folder) for path in folder.rglob("*") if path.is_file())
     return tuple(
         sorted(
-            rel.as_posix()
-            for rel in found
-            if rel.name != "SKILL.md" and not any(part.startswith(".") for part in rel.parts)
+            relative.as_posix()
+            for relative in found
+            if relative.name != "SKILL.md" and not any(part.startswith(".") for part in relative.parts)
         )
     )
 
@@ -101,11 +101,11 @@ def all_skills() -> list[Skill]:
     """Скиллы по порядку: основной первым."""
     base = root()
     found = [
-        Skill(p.name, _description((p / "SKILL.md").read_text(encoding="utf-8")), _files(p))
-        for p in sorted(base.iterdir())
-        if (p / "SKILL.md").is_file()
+        Skill(folder.name, _description((folder / "SKILL.md").read_text(encoding="utf-8")), _files(folder))
+        for folder in sorted(base.iterdir())
+        if (folder / "SKILL.md").is_file()
     ]
-    return sorted(found, key=lambda s: s.name != MAIN)
+    return sorted(found, key=lambda skill: skill.name != MAIN)
 
 
 @cache
@@ -121,8 +121,8 @@ def catalog() -> dict[str, str]:
         return {}
     found: dict[str, str] = {}
     for path in sorted(folder.glob("*.md")):
-        for m in _HEADING.finditer(path.read_text(encoding="utf-8")):
-            found.setdefault(m[1], f"references/{path.name}")
+        for heading in _HEADING.finditer(path.read_text(encoding="utf-8")):
+            found.setdefault(heading[1], f"references/{path.name}")
     return found
 
 
@@ -137,10 +137,10 @@ def rewrite(text: str, name: str) -> str:
     for old, new in _REPO_NOTES:
         text = text.replace(old, new)
 
-    def link(m: re.Match[str]) -> str:
-        command = _command(m[2] or name, m[3])
+    def link(match: re.Match[str]) -> str:
+        command = _command(match[2] or name, match[3])
         # Подпись-путь («../x/SKILL.md») заменяется командой целиком.
-        return command if "/" in m[1] or m[1].endswith(".md") else f"{m[1]} ({command})"
+        return command if "/" in match[1] or match[1].endswith(".md") else f"{match[1]} ({command})"
 
     text = _FILE_LINK.sub(link, text)
     return _PARENT_SKILL.sub(f"SKILL.md ({_command(name, 'SKILL.md')})", text)
@@ -154,13 +154,15 @@ def for_cli(text: str, name: str) -> str:
         "нужен только при запуске из репозитория, здесь его пропускай. Остальные файлы скилла выводит "
         f"`aiw-ru skill {name} <файл>`.\n\n"
     )
-    m = _FRONTMATTER.match(text)
-    return text[: m.end()] + "\n" + note + text[m.end() :].lstrip("\n") if m else note + text
+    frontmatter = _FRONTMATTER.match(text)
+    return (
+        text[: frontmatter.end()] + "\n" + note + text[frontmatter.end() :].lstrip("\n") if frontmatter else note + text
+    )
 
 
 def read(name: str, file: str | None = None) -> str:
     """SKILL.md или другой файл скилла в виде для `aiw-ru`."""
-    skills = {s.name: s for s in all_skills()}
+    skills = {skill.name: skill for skill in all_skills()}
     if name not in skills:
         raise SkillError(f"нет скилла {name}; есть: {', '.join(skills)}")
     folder = root() / name

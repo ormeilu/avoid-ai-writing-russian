@@ -55,14 +55,14 @@ PUNCTUATION: dict[str, str] = {
 WORD_RE = re.compile(r"[^\W_]+(?:[-’'][^\W_]+)*")
 
 FEATURE_NAMES: tuple[str, ...] = (
-    *(f"rule:{r}" for r in RULES),
+    *(f"rule:{rule}" for rule in RULES),
     "sentence-mean",
     "sentence-cv",
     "mattr",
     "word-length",
     "long-words",
     *PUNCTUATION,
-    *(f"word:{w}" for w in FUNCTION_WORDS),
+    *(f"word:{word}" for word in FUNCTION_WORDS),
 )
 
 
@@ -104,18 +104,18 @@ def features(text: str, result: AnalysisResult | None = None) -> list[float]:
     `result` — ответ детектора на этот же текст в режиме CONTEXT; без него детектор
     запускается здесь.
     """
-    r = result if result is not None else analyze(text, CONTEXT)
-    found = {i.type for i in r.issues}
-    words = WORD_RE.findall(text)
-    n = max(len(words), 1)
-    counts = Counter(w.lower().replace("ё", "е") for w in words)
+    analysis = result if result is not None else analyze(text, CONTEXT)
+    found = {issue.type for issue in analysis.issues}
+    text_words = WORD_RE.findall(text)
+    word_count = max(len(text_words), 1)
+    counts = Counter(word.lower().replace("ё", "е") for word in text_words)
     return [
         *(1.0 if rule in found else 0.0 for rule in RULES),
-        float(r.stats.mean_sentence_length),
-        float(r.stats.sentence_length_cv),
-        float(r.stats.mattr),
-        sum(map(len, words)) / n,
-        100 * sum(len(w) >= 10 for w in words) / n,
-        *(100 * text.count(ch) / n for ch in PUNCTUATION.values()),
-        *(100 * counts[w] / n for w in FUNCTION_WORDS),
+        float(analysis.stats.mean_sentence_length),
+        float(analysis.stats.sentence_length_cv),
+        float(analysis.stats.mattr),
+        sum(map(len, text_words)) / word_count,
+        100 * sum(len(word) >= 10 for word in text_words) / word_count,
+        *(100 * text.count(char) / word_count for char in PUNCTUATION.values()),
+        *(100 * counts[word] / word_count for word in FUNCTION_WORDS),
     ]

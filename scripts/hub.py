@@ -84,14 +84,14 @@ def hub_math(text: str) -> str:
     """
     parts = _CODE.split(text)
     return "".join(
-        part if i % 2 else _INLINE_MATH.sub(lambda f: f"\\\\({f[1]}\\\\)", part) for i, part in enumerate(parts)
+        part if i % 2 else _INLINE_MATH.sub(lambda match: f"\\\\({match[1]}\\\\)", part) for i, part in enumerate(parts)
     )
 
 
 def md_table(head: list[str], rows: list[list[str]]) -> str:
     align = ["---"] + ["--:"] * (len(head) - 1)
     lines = [head, align, *rows]
-    return "\n".join("| " + " | ".join(r) + " |" for r in lines)
+    return "\n".join("| " + " | ".join(row) + " |" for row in lines)
 
 
 def _result(split: str, metric: str, value: float, name: str, **extra: Any) -> EvalResult:
@@ -111,143 +111,166 @@ def _result(split: str, metric: str, value: float, name: str, **extra: Any) -> E
 
 
 def eval_results(m: dict) -> list[EvalResult]:
-    t, v = m["test"], m["valid"]
-    out = [
-        _result("test", "accuracy", t["accuracy"], "Accuracy"),
-        _result("test", "roc_auc", t["roc_auc"], "ROC AUC"),
-        _result("test", "f1", t["macro"]["f1"], "Macro F1", metric_args={"average": "macro"}),
+    test, valid = m["test"], m["valid"]
+    results = [
+        _result("test", "accuracy", test["accuracy"], "Accuracy"),
+        _result("test", "roc_auc", test["roc_auc"], "ROC AUC"),
+        _result("test", "f1", test["macro"]["f1"], "Macro F1", metric_args={"average": "macro"}),
     ]
     for cls, label in (("ai", "AI"), ("human", "human")):
-        c = t["classes"][cls]
+        class_metrics = test["classes"][cls]
         for key in ("precision", "recall", "f1"):
-            out.append(_result("test", key, c[key], f"{key.capitalize()} ({label})", metric_args={"pos_label": cls}))
-    out.append(
+            results.append(
+                _result(
+                    "test", key, class_metrics[key], f"{key.capitalize()} ({label})", metric_args={"pos_label": cls}
+                )
+            )
+    results.append(
         _result(
             "test",
             "roc_auc",
-            t["roc_auc_created"],
+            test["roc_auc_created"],
             "ROC AUC (human vs generated from scratch)",
         )
     )
-    out += [
-        _result("validation", "accuracy", v["accuracy"], "Accuracy"),
-        _result("validation", "roc_auc", v["roc_auc"], "ROC AUC"),
+    results += [
+        _result("validation", "accuracy", valid["accuracy"], "Accuracy"),
+        _result("validation", "roc_auc", valid["roc_auc"], "ROC AUC"),
     ]
     # Hub сводит результаты одной задачи, набора и части в один блок, поэтому жанр — в имени метрики.
-    for g in m["genres"]:
-        out.append(_result("test", "accuracy", g["accuracy"], f"Accuracy ({g['genre']})"))
-        if g["roc_auc"] is not None:
-            out.append(_result("test", "roc_auc", g["roc_auc"], f"ROC AUC ({g['genre']})"))
-    return out
+    for genre in m["genres"]:
+        results.append(_result("test", "accuracy", genre["accuracy"], f"Accuracy ({genre['genre']})"))
+        if genre["roc_auc"] is not None:
+            results.append(_result("test", "roc_auc", genre["roc_auc"], f"ROC AUC ({genre['genre']})"))
+    return results
 
 
-def _classes_table(r: dict) -> str:
+def _classes_table(classes: dict) -> str:
     rows = [
         [
             label,
-            num(r["classes"][k]["precision"]),
-            num(r["classes"][k]["recall"]),
-            num(r["classes"][k]["f1"]),
-            count(r["classes"][k]["support"]),
+            num(classes["classes"][key]["precision"]),
+            num(classes["classes"][key]["recall"]),
+            num(classes["classes"][key]["f1"]),
+            count(classes["classes"][key]["support"]),
         ]
-        for k, label in (("human", "люди"), ("ai", "ИИ"))
+        for key, label in (("human", "люди"), ("ai", "ИИ"))
     ]
-    n = sum(r["classes"][k]["support"] for k in ("human", "ai"))
-    rows.append(["accuracy", "", "", num(r["accuracy"]), count(n)])
+    total = sum(classes["classes"][key]["support"] for key in ("human", "ai"))
+    rows.append(["accuracy", "", "", num(classes["accuracy"]), count(total)])
     rows.append(
-        ["среднее по классам", num(r["macro"]["precision"]), num(r["macro"]["recall"]), num(r["macro"]["f1"]), count(n)]
+        [
+            "среднее по классам",
+            num(classes["macro"]["precision"]),
+            num(classes["macro"]["recall"]),
+            num(classes["macro"]["f1"]),
+            count(total),
+        ]
     )
     return md_table(["Класс", "Precision", "Recall", "F1", "Текстов"], rows)
 
 
-def _trees(p: dict) -> str:
-    if p["best_iteration"] < p["rounds"]:
-        return f"{count(p['best_iteration'])}: ранняя остановка по logloss на valid, предел {count(p['rounds'])}"
-    return f"{count(p['rounds'])}: предел, logloss на valid ещё снижался"
+def _trees(params: dict) -> str:
+    if params["best_iteration"] < params["rounds"]:
+        return (
+            f"{count(params['best_iteration'])}: ранняя остановка по logloss на valid, предел {count(params['rounds'])}"
+        )
+    return f"{count(params['rounds'])}: предел, logloss на valid ещё снижался"
 
 
 def _auc(x: float | None) -> str:
     return num(x) if x is not None else "—"
 
 
-def _bucket(b: str) -> str:
+def _bucket(bucket: str) -> str:
     """«50–149» → $50\\text{–}149$ одной формулой, «400 и больше» → $400$ и больше."""
-    return re.sub(r"(\d+)(?:–(\d+))?", lambda d: f"${d[1]}\\text{{–}}{d[2]}$" if d[2] else f"${d[1]}$", b)
+    return re.sub(
+        r"(\d+)(?:–(\d+))?", lambda match: f"${match[1]}\\text{{–}}{match[2]}$" if match[2] else f"${match[1]}$", bucket
+    )
 
 
 def _features_table(features: list[dict]) -> str:
     return md_table(
         ["Признак", "Что значит", "Люди", "ИИ", "Доля прироста"],
         [
-            [f"`{f['name']}`", f["description"], num(f["mean_human"], 2), num(f["mean_ai"], 2), pct(f["gain_share"])]
-            for f in features
+            [
+                f"`{feature['name']}`",
+                feature["description"],
+                num(feature["mean_human"], 2),
+                num(feature["mean_ai"], 2),
+                pct(feature["gain_share"]),
+            ]
+            for feature in features
         ],
     )
 
 
-def _params_table(m: dict) -> str:
-    p = m["params"]
+def _params_table(metrics: dict) -> str:
+    params = metrics["params"]
     return md_table(
         ["Параметр", "Значение"],
         [
-            ["Деревьев", _trees(p)],
-            ["Листьев в дереве", count(p["num_leaves"])],
-            ["Скорость обучения", num(p["learning_rate"], 2)],
-            ["`min_data_in_leaf`", count(p["min_data_in_leaf"])],
+            ["Деревьев", _trees(params)],
+            ["Листьев в дереве", count(params["num_leaves"])],
+            ["Скорость обучения", num(params["learning_rate"], 2)],
+            ["`min_data_in_leaf`", count(params["min_data_in_leaf"])],
             [
                 "`feature_fraction`, `bagging_fraction`",
-                f"{num(p['feature_fraction'], 1)}, {num(p['bagging_fraction'], 1)}",
+                f"{num(params['feature_fraction'], 1)}, {num(params['bagging_fraction'], 1)}",
             ],
-            ["L2-регуляризация", num(p["lambda_l2"], 1)],
-            ["`seed`", f"{count(p['seed'])}, `deterministic={p.get('deterministic', False)}`"],
-            ["Время обучения", f"${p['train_seconds']:.0f}$ с, {p['cpu']}"],
-            ["Размер `model.txt`", f"${p['size_kb'] / 1024:.1f}$ МБ"],
-            ["Обучено", f"{m['created']}, коммит `{m['git_commit']}`"],
+            ["L2-регуляризация", num(params["lambda_l2"], 1)],
+            ["`seed`", f"{count(params['seed'])}, `deterministic={params.get('deterministic', False)}`"],
+            ["Время обучения", f"${params['train_seconds']:.0f}$ с, {params['cpu']}"],
+            ["Размер `model.txt`", f"${params['size_kb'] / 1024:.1f}$ МБ"],
+            ["Обучено", f"{metrics['created']}, коммит `{metrics['git_commit']}`"],
         ],
     )
 
 
-def _results(m: dict, level: str = "##") -> str:
+def _results(metrics: dict, level: str = "##") -> str:
     """Результаты на test: классы, ROC AUC, жанры, длина, тип задания, генераторы."""
-    t, d = m["test"], m["detector"]
-    fpr = 1 - t["classes"]["human"]["recall"]
+    test, detector = metrics["test"], metrics["detector"]
+    fpr = 1 - test["classes"]["human"]["recall"]
     genres = md_table(
         ["Жанр", "Людей", "ИИ", "Accuracy", "ROC AUC модели", "ROC AUC детектора"],
         [
             [
-                f"`{g['genre']}`",
-                count(g["human"]),
-                count(g["ai"]),
-                num(g["accuracy"]),
-                _auc(g["roc_auc"]),
-                _auc(g["detector_roc_auc"]),
+                f"`{genre['genre']}`",
+                count(genre["human"]),
+                count(genre["ai"]),
+                num(genre["accuracy"]),
+                _auc(genre["roc_auc"]),
+                _auc(genre["detector_roc_auc"]),
             ]
-            for g in m["genres"]
+            for genre in metrics["genres"]
         ],
     )
     lengths = md_table(
         ["Слов в тексте", "Текстов", "Accuracy", "ROC AUC"],
-        [[_bucket(b["bucket"]), count(b["n"]), num(b["accuracy"]), _auc(b["roc_auc"])] for b in m["lengths"]],
+        [
+            [_bucket(bucket["bucket"]), count(bucket["n"]), num(bucket["accuracy"]), _auc(bucket["roc_auc"])]
+            for bucket in metrics["lengths"]
+        ],
     )
     prompts = md_table(
         ["Задание генератору", "ИИ-текстов", "Recall"],
-        [[f"`{x['prompt_type']}`", count(x["n"]), num(x["recall"])] for x in m["prompt_types"]],
+        [[f"`{row['prompt_type']}`", count(row["n"]), num(row["recall"])] for row in metrics["prompt_types"]],
     )
     generators = md_table(
         ["Модель-генератор", "Текстов в test", "Recall"],
-        [[f"`{x['model']}`", count(x["n"]), num(x["recall"])] for x in m["generators"]],
+        [[f"`{row['model']}`", count(row["n"]), num(row["recall"])] for row in metrics["generators"]],
     )
     return f"""{level} Результаты на test
 
 Текст считается написанным ИИ, если вероятность не меньше {num(0.5, 1)}.
 
-{_classes_table(t)}
+{_classes_table(test)}
 
-ROC AUC модели {num(t["roc_auc"])}, у оценки правил детектора aiw-ru (от $0$ до
-$100$) {num(d["roc_auc"])}. Если оставить только тексты, которые модель написала с
-нуля, без правки человеческого текста, то {num(t["roc_auc_created"])} у модели и
-{num(d["roc_auc_created"])} у детектора. На valid accuracy {num(m["valid"]["accuracy"])},
-ROC AUC {num(m["valid"]["roc_auc"])}.
+ROC AUC модели {num(test["roc_auc"])}, у оценки правил детектора aiw-ru (от $0$ до
+$100$) {num(detector["roc_auc"])}. Если оставить только тексты, которые модель написала с
+нуля, без правки человеческого текста, то {num(test["roc_auc_created"])} у модели и
+{num(detector["roc_auc_created"])} у детектора. На valid accuracy {num(metrics["valid"]["accuracy"])},
+ROC AUC {num(metrics["valid"]["roc_auc"])}.
 
 За ИИ модель принимает {pct(fpr)} человеческих текстов.
 
@@ -292,8 +315,8 @@ LLMTRACE_BIBTEX = """```bibtex
 ```"""
 
 
-def _limitations(m: dict) -> str:
-    fpr = 1 - m["test"]["classes"]["human"]["recall"]
+def _limitations(metrics: dict) -> str:
+    fpr = 1 - metrics["test"]["classes"]["human"]["recall"]
     return f"""- Корпус один. На научных статьях, дипломах и диссертациях модель не
   проверялась, а жанры за пределами таблицы по жанрам она не видела.
 - Вероятность — не доказательство авторства. Не используйте модель для
@@ -305,8 +328,8 @@ def _limitations(m: dict) -> str:
 
 
 def body(m: dict, repo: str) -> str:
-    ds, t = m["dataset"], m["test"]
-    n = m["params"]["features"]
+    dataset, test = m["dataset"], m["test"]
+    feature_count = m["params"]["features"]
     return f"""# Детектор ИИ-текста для русского языка
 
 `{repo.split("/")[-1]}` оценивает вероятность, что русский текст написала
@@ -314,12 +337,12 @@ def body(m: dict, repo: str) -> str:
 моделей из корпуса LLMTrace. Помогает проверить текст на ИИ: статью, новость,
 отзыв, пост, ответ на вопрос.
 
-Это LightGBM поверх {count(n)} признаков детектора [aiw-ru]({GITHUB}): штампы и
+Это LightGBM поверх {count(feature_count)} признаков детектора [aiw-ru]({GITHUB}): штампы и
 канцелярит ИИ-текста («является», «играет ключевую роль», «в рамках»), длина и
 ритм предложений, разнообразие словаря, пунктуация, частоты служебных слов.
 Работает на CPU без GPU и трансформеров, файл модели около
 ${m["params"]["size_kb"] / 1024:.0f}$ МБ. На отложенной части корпуса ROC AUC
-{num(t["roc_auc"])}, accuracy {num(t["accuracy"])}.
+{num(test["roc_auc"])}, accuracy {num(test["accuracy"])}.
 
 Модель необязательная: детектор и скиллы aiw-ru работают без неё, а ставится
 она, только если пользователь попросит.
@@ -330,17 +353,17 @@ A Russian AI-generated text detector. It estimates the probability that a
 Russian text was written by a person or by an LLM such as {GENERATORS}
 and others, which makes it usable as an AI text detector, a ChatGPT detector or an
 "AI slop" filter for Russian. The model is a CPU-only LightGBM classifier over
-{count(n)} interpretable stylometric and lexical features from [aiw-ru]({GITHUB}),
-trained on the Russian part of the LLMTrace corpus. Test ROC AUC {num(t["roc_auc"])},
-accuracy {num(t["accuracy"])}. The rest of the card is in Russian; usage is
+{count(feature_count)} interpretable stylometric and lexical features from [aiw-ru]({GITHUB}),
+trained on the Russian part of the LLMTrace corpus. Test ROC AUC {num(test["roc_auc"])},
+accuracy {num(test["accuracy"])}. The rest of the card is in Russian; usage is
 below.
 
 ## Данные
 
 Русская часть [LLMTrace classification](https://huggingface.co/datasets/{DATASET})
-([статья](https://arxiv.org/abs/2509.21269)). Модель обучена на {count(ds["train"])} текстах
-из train, число деревьев подобрано по потере на {count(ds["valid"])} текстах из valid,
-итоговые цифры посчитаны на {count(ds["test"])} текстах из test, которые модель при
+([статья](https://arxiv.org/abs/2509.21269)). Модель обучена на {count(dataset["train"])} текстах
+из train, число деревьев подобрано по потере на {count(dataset["valid"])} текстах из valid,
+итоговые цифры посчитаны на {count(dataset["test"])} текстах из test, которые модель при
 обучении не видела. Подробный отчёт об обучении с командами для воспроизведения:
 [{REPORT_PATH}]({GITHUB}/blob/master/{REPORT_PATH}).
 
@@ -383,7 +406,7 @@ print(booster.predict([features(text)])[0])  # вероятность, что т
 
 {_features_table(m["features"][:15])}
 
-Все {count(n)} признаков описаны в отчёте об обучении.
+Все {count(feature_count)} признаков описаны в отчёте об обучении.
 
 ## Обучение
 
@@ -405,7 +428,7 @@ print(booster.predict([features(text)])[0])  # вероятность, что т
 
 def report(m: dict, repo: str) -> str:
     """Отчёт об обучении для репозитория: что сделано, на чём, как повторить."""
-    ds, p, env = m["dataset"], m["params"], m.get("environment", {})
+    dataset, params, env = m["dataset"], m["params"], m.get("environment", {})
     dirty = m["git_commit"].endswith("+правки")
     commit = m["git_commit"].removesuffix("+правки")
     checkout = (
@@ -414,7 +437,7 @@ def report(m: dict, repo: str) -> str:
         if dirty
         else f"Модель обучена на коммите `{commit}`."
     )
-    envs = md_table(["Компонент", "Версия"], [[k, v] for k, v in env.items()])
+    envs = md_table(["Компонент", "Версия"], [[name, version] for name, version in env.items()])
     return f"""# Отчёт об обучении: {repo.split("/")[-1]}
 
 Файл пишет `scripts/train.py` после каждого полного обучения, руками его не
@@ -435,11 +458,11 @@ def report(m: dict, repo: str) -> str:
 
 ## Данные
 
-Русская часть [LLMTrace classification](https://huggingface.co/datasets/{ds["repo"]})
+Русская часть [LLMTrace classification](https://huggingface.co/datasets/{dataset["repo"]})
 (Apache 2.0, [статья](https://arxiv.org/abs/2509.21269)), ревизия набора
-`{ds.get("revision", "не записана")}`. Части корпуса используются как есть: train
-({count(ds["train"])} текстов) для обучения, valid ({count(ds["valid"])}) для ранней остановки,
-test ({count(ds["test"])}) только для итоговых цифр. Метка «ИИ» — любой текст с участием
+`{dataset.get("revision", "не записана")}`. Части корпуса используются как есть: train
+({count(dataset["train"])} текстов) для обучения, valid ({count(dataset["valid"])}) для ранней остановки,
+test ({count(dataset["test"])}) только для итоговых цифр. Метка «ИИ» — любой текст с участием
 модели: написанный с нуля (`create`) и человеческий текст, который модель
 правила, сокращала или дописывала (`update`, `delete`, `expand`).
 
@@ -457,8 +480,8 @@ test ({count(ds["test"])}) только для итоговых цифр. Мет
 
 {_params_table(m)}
 
-Остальное: `objective=binary`, `bagging_freq={p.get("bagging_freq", 1)}`, ранняя остановка через
-$100$ раундов без улучшения logloss на valid, `force_row_wise={p.get("force_row_wise", False)}`.
+Остальное: `objective=binary`, `bagging_freq={params.get("bagging_freq", 1)}`, ранняя остановка через
+$100$ раундов без улучшения logloss на valid, `force_row_wise={params.get("force_row_wise", False)}`.
 
 {envs}
 
@@ -491,7 +514,7 @@ uv run --group train scripts/llmtrace.py fetch --set classification --split test
 ```
 
 ```bash
-uv run --group train scripts/train.py --rounds {p["rounds"]} --leaves {p["num_leaves"]} --rate {p["learning_rate"]} --no-push
+uv run --group train scripts/train.py --rounds {params["rounds"]} --leaves {params["num_leaves"]} --rate {params["learning_rate"]} --no-push
 ```
 
 `fetch` скачивает ревизию набора, закреплённую в `scripts/llmtrace.py`. Признаки
@@ -544,8 +567,8 @@ def push(folder: Path, repo: str, message: str) -> bool:
     api = HfApi()
     try:
         api.whoami()
-    except (LocalTokenNotFoundError, HfHubHTTPError) as e:
-        print(f"Hugging Face: не выложено, нужен `hf auth login` ({e})", file=sys.stderr)
+    except (LocalTokenNotFoundError, HfHubHTTPError) as error:
+        print(f"Hugging Face: не выложено, нужен `hf auth login` ({error})", file=sys.stderr)
         return False
     try:
         api.create_repo(repo, repo_type="model", exist_ok=True)
@@ -555,8 +578,8 @@ def push(folder: Path, repo: str, message: str) -> bool:
         )
         api.update_collection_metadata(collection.slug, description=COLLECTION_DESCRIPTION)
         api.add_collection_item(collection.slug, repo, "model", exists_ok=True)
-    except HfHubHTTPError as e:
-        print(f"Hugging Face: не выложено ({e})", file=sys.stderr)
+    except HfHubHTTPError as error:
+        print(f"Hugging Face: не выложено ({error})", file=sys.stderr)
         return False
     print(f"Hugging Face: {info.commit_url}", file=sys.stderr)
     return True
@@ -564,19 +587,19 @@ def push(folder: Path, repo: str, message: str) -> bool:
 
 def main(argv: list[str] | None = None) -> None:
     """Пересобирает карточку из metrics.json и выкладывает папку модели без переобучения."""
-    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    ap.add_argument("folder", type=Path, help="папка модели: model.txt, features.json, metrics.json")
-    ap.add_argument("--repo", default=REPO)
-    ap.add_argument("--no-push", action="store_true", help="только пересобрать карточку и отчёт")
-    args = ap.parse_args(argv)
-    m = json.loads((args.folder / "metrics.json").read_text(encoding="utf-8"))
-    card(m, args.repo).save(args.folder / "README.md")
+    argument_parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
+    argument_parser.add_argument("folder", type=Path, help="папка модели: model.txt, features.json, metrics.json")
+    argument_parser.add_argument("--repo", default=REPO)
+    argument_parser.add_argument("--no-push", action="store_true", help="только пересобрать карточку и отчёт")
+    args = argument_parser.parse_args(argv)
+    metrics = json.loads((args.folder / "metrics.json").read_text(encoding="utf-8"))
+    card(metrics, args.repo).save(args.folder / "README.md")
     print(f"Карточка: {args.folder / 'README.md'}")
-    if not m["dataset"].get("limit"):
-        print(f"Отчёт: {write_report(m, args.repo).relative_to(ROOT)}")
+    if not metrics["dataset"].get("limit"):
+        print(f"Отчёт: {write_report(metrics, args.repo).relative_to(ROOT)}")
     if not args.no_push:
-        t = m["test"]
-        message = f"Обучение {m['created']}: accuracy {t['accuracy']:.3f}, ROC AUC {t['roc_auc']:.3f}"
+        test = metrics["test"]
+        message = f"Обучение {metrics['created']}: accuracy {test['accuracy']:.3f}, ROC AUC {test['roc_auc']:.3f}"
         sys.exit(0 if push(args.folder, args.repo, message) else 1)
 
 

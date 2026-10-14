@@ -58,11 +58,11 @@ class Part:
 
 
 def _features_chunk(texts: list[str]) -> list[tuple[list[float], int, int]]:
-    out = []
+    rows = []
     for text in texts:
-        r = analyze(text, CONTEXT)
-        out.append((features(text, r), r.score, r.stats.words))
-    return out
+        result = analyze(text, CONTEXT)
+        rows.append((features(text, result), result.score, result.stats.words))
+    return rows
 
 
 def part(args: argparse.Namespace, split: str) -> Part:
@@ -71,24 +71,24 @@ def part(args: argparse.Namespace, split: str) -> Part:
     stem = f"features-{split}{f'-{args.limit}' if args.limit else ''}"
     cache = args.data / f"{stem}-{key}.npz"
     if cache.exists():
-        z = np.load(cache)
-        return Part(*(z[f] for f in Part.__dataclass_fields__))
+        archive = np.load(cache)
+        return Part(*(archive[field] for field in Part.__dataclass_fields__))
     rows = [json.loads(line) for line in load(args.data, "classification", split, args.limit)]
     print(f"Признаки {split}: {len(rows)} текстов в {args.jobs} процессах…", file=sys.stderr)
-    got = list(run_parallel(_features_chunk, [r["text"] for r in rows], args.jobs))
-    p = Part(
-        x=np.array([f for f, _, _ in got], dtype=np.float32),
-        y=np.array([1 if r["label"] == "ai" else 0 for r in rows], dtype=np.int8),
-        score=np.array([s for _, s, _ in got], dtype=np.float32),
-        words=np.array([w for _, _, w in got], dtype=np.int32),
-        genre=np.array([r["data_type"] for r in rows]),
-        prompt=np.array([r["prompt_type"] or "" for r in rows]),
-        generator=np.array([r["model"] if r["label"] == "ai" else "" for r in rows]),
+    computed = list(run_parallel(_features_chunk, [row["text"] for row in rows], args.jobs))
+    computed_part = Part(
+        x=np.array([vector for vector, _, _ in computed], dtype=np.float32),
+        y=np.array([1 if row["label"] == "ai" else 0 for row in rows], dtype=np.int8),
+        score=np.array([score for _, score, _ in computed], dtype=np.float32),
+        words=np.array([word_count for _, _, word_count in computed], dtype=np.int32),
+        genre=np.array([row["data_type"] for row in rows]),
+        prompt=np.array([row["prompt_type"] or "" for row in rows]),
+        generator=np.array([row["model"] if row["label"] == "ai" else "" for row in rows]),
     )
     for old in args.data.glob(f"{stem}-*.npz"):
         old.unlink()
-    np.savez_compressed(cache, **{f: getattr(p, f) for f in Part.__dataclass_fields__})
-    return p
+    np.savez_compressed(cache, **{field: getattr(computed_part, field) for field in Part.__dataclass_fields__})
+    return computed_part
 
 
 def auc(y: np.ndarray, s: np.ndarray) -> float | None:
@@ -101,14 +101,19 @@ def fmt_auc(x: float | None) -> str:
 
 def classes(y: np.ndarray, predicted: np.ndarray) -> dict:
     """Числа classification_report из sklearn: по классам, accuracy и macro avg."""
-    p, r, f, n = precision_recall_fscore_support(y, predicted, labels=[0, 1], zero_division=0)
+    precision, recall, f1, support = precision_recall_fscore_support(y, predicted, labels=[0, 1], zero_division=0)
     return {
         "accuracy": float((y == predicted).mean()),
         "classes": {
-            name: {"precision": float(p[k]), "recall": float(r[k]), "f1": float(f[k]), "support": int(n[k])}
+            name: {
+                "precision": float(precision[k]),
+                "recall": float(recall[k]),
+                "f1": float(f1[k]),
+                "support": int(support[k]),
+            }
             for k, name in enumerate(["human", "ai"])
         },
-        "macro": {"precision": float(p.mean()), "recall": float(r.mean()), "f1": float(f.mean())},
+        "macro": {"precision": float(precision.mean()), "recall": float(recall.mean()), "f1": float(f1.mean())},
     }
 
 
@@ -117,16 +122,16 @@ def report(title: str, c: dict) -> None:
     rows = [
         [
             label,
-            num(c["classes"][k]["precision"]),
-            num(c["classes"][k]["recall"]),
-            num(c["classes"][k]["f1"]),
-            str(c["classes"][k]["support"]),
+            num(c["classes"][key]["precision"]),
+            num(c["classes"][key]["recall"]),
+            num(c["classes"][key]["f1"]),
+            str(c["classes"][key]["support"]),
         ]
-        for k, label in (("human", "люди"), ("ai", "ИИ"))
+        for key, label in (("human", "люди"), ("ai", "ИИ"))
     ]
-    n = str(sum(v["support"] for v in c["classes"].values()))
-    rows.append(["accuracy", "", "", num(c["accuracy"]), n])
-    rows.append(["macro avg", num(c["macro"]["precision"]), num(c["macro"]["recall"]), num(c["macro"]["f1"]), n])
+    total = str(sum(class_stats["support"] for class_stats in c["classes"].values()))
+    rows.append(["accuracy", "", "", num(c["accuracy"]), total])
+    rows.append(["macro avg", num(c["macro"]["precision"]), num(c["macro"]["recall"]), num(c["macro"]["f1"]), total])
     table(title, ["", "precision", "recall", "f1", "текстов"], rows)
 
 
@@ -158,58 +163,63 @@ def breakdowns(test: Part, p: np.ndarray) -> dict:
     """Разрезы test: жанры, длина текста, тип задания и модель-генератор."""
     hit = test.y == (p >= 0.5)
     genres = []
-    for g in sorted(set(test.genre.tolist())):
-        m = test.genre == g
+    for genre in sorted(set(test.genre.tolist())):
+        mask = test.genre == genre
         genres.append(
             {
-                "genre": g,
-                "human": int((test.y[m] == 0).sum()),
-                "ai": int(test.y[m].sum()),
-                "accuracy": float(hit[m].mean()),
-                "roc_auc": auc(test.y[m], p[m]),
-                "detector_roc_auc": auc(test.y[m], test.score[m]),
+                "genre": genre,
+                "human": int((test.y[mask] == 0).sum()),
+                "ai": int(test.y[mask].sum()),
+                "accuracy": float(hit[mask].mean()),
+                "roc_auc": auc(test.y[mask], p[mask]),
+                "detector_roc_auc": auc(test.y[mask], test.score[mask]),
             }
         )
     lengths = []
     for lo, hi in LENGTHS:
-        m = (test.words >= lo) & (test.words < hi if hi else True)
-        if m.any():
+        mask = (test.words >= lo) & (test.words < hi if hi else True)
+        if mask.any():
             bucket = f"{lo}–{hi - 1}" if hi else f"{lo} и больше"
             lengths.append(
-                {"bucket": bucket, "n": int(m.sum()), "accuracy": float(hit[m].mean()), "roc_auc": auc(test.y[m], p[m])}
+                {
+                    "bucket": bucket,
+                    "n": int(mask.sum()),
+                    "accuracy": float(hit[mask].mean()),
+                    "roc_auc": auc(test.y[mask], p[mask]),
+                }
             )
     ai = test.y == 1
     prompts = [
         {
-            "prompt_type": t,
-            "n": int((ai & (test.prompt == t)).sum()),
-            "recall": float(hit[ai & (test.prompt == t)].mean()),
+            "prompt_type": prompt_type,
+            "n": int((ai & (test.prompt == prompt_type)).sum()),
+            "recall": float(hit[ai & (test.prompt == prompt_type)].mean()),
         }
-        for t in sorted(set(test.prompt[ai].tolist()))
+        for prompt_type in sorted(set(test.prompt[ai].tolist()))
     ]
     counts = Counter(test.generator[ai].tolist())
     generators = [
-        {"model": g, "n": n, "recall": float(hit[ai & (test.generator == g)].mean())}
-        for g, n in counts.most_common(TOP_GENERATORS)
+        {"model": generator, "n": count, "recall": float(hit[ai & (test.generator == generator)].mean())}
+        for generator, count in counts.most_common(TOP_GENERATORS)
     ]
     return {"genres": genres, "lengths": lengths, "prompt_types": prompts, "generators": generators}
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    ap.add_argument("--data", type=Path, default=data_dir())
-    ap.add_argument("--limit", type=int, default=0, help="взять N текстов из каждой части")
-    ap.add_argument("--jobs", type=int, default=0, help="процессов детектора (по умолчанию по числу ядер)")
-    ap.add_argument("--rounds", type=int, default=3000, help="предел числа деревьев")
-    ap.add_argument("--leaves", type=int, default=31)
-    ap.add_argument("--rate", type=float, default=0.05)
-    ap.add_argument("--out", type=Path, help="папка модели (по умолчанию lightgbm/ рядом с данными)")
-    ap.add_argument("--repo", default=REPO, help="репозиторий модели на Hugging Face")
-    ap.add_argument("--no-push", action="store_true", help="не выкладывать на Hugging Face")
-    args = ap.parse_args(argv)
+    argument_parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
+    argument_parser.add_argument("--data", type=Path, default=data_dir())
+    argument_parser.add_argument("--limit", type=int, default=0, help="взять N текстов из каждой части")
+    argument_parser.add_argument("--jobs", type=int, default=0, help="процессов детектора (по умолчанию по числу ядер)")
+    argument_parser.add_argument("--rounds", type=int, default=3000, help="предел числа деревьев")
+    argument_parser.add_argument("--leaves", type=int, default=31)
+    argument_parser.add_argument("--rate", type=float, default=0.05)
+    argument_parser.add_argument("--out", type=Path, help="папка модели (по умолчанию lightgbm/ рядом с данными)")
+    argument_parser.add_argument("--repo", default=REPO, help="репозиторий модели на Hugging Face")
+    argument_parser.add_argument("--no-push", action="store_true", help="не выкладывать на Hugging Face")
+    args = argument_parser.parse_args(argv)
     args.jobs = args.jobs or os.cpu_count() or 4
 
-    test, valid, train = (part(args, s) for s in ("test", "valid", "train"))
+    test, valid, train = (part(args, split) for split in ("test", "valid", "train"))
     params = {
         "objective": "binary",
         "metric": ["binary_logloss", "auc"],
@@ -229,15 +239,15 @@ def main(argv: list[str] | None = None) -> None:
     started = time.perf_counter()
     booster = lgb.train(
         params,
-        lgb.Dataset(train.x, train.y, feature_name=[n.replace(":", "_") for n in FEATURE_NAMES]),
+        lgb.Dataset(train.x, train.y, feature_name=[name.replace(":", "_") for name in FEATURE_NAMES]),
         num_boost_round=args.rounds,
         valid_sets=[lgb.Dataset(valid.x, valid.y)],
         callbacks=[lgb.early_stopping(100, first_metric_only=True, verbose=False), lgb.log_evaluation(250)],
     )
     elapsed = time.perf_counter() - started
-    out: Path = args.out or args.data / "lightgbm"
-    out.mkdir(parents=True, exist_ok=True)
-    model_file = out / "model.txt"
+    out_dir: Path = args.out or args.data / "lightgbm"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    model_file = out_dir / "model.txt"
     booster.save_model(model_file, num_iteration=booster.best_iteration)
     print(
         f"LightGBM: {booster.best_iteration} деревьев по {args.leaves} листьев, обучение {elapsed:.0f} с, "
@@ -245,45 +255,54 @@ def main(argv: list[str] | None = None) -> None:
         f"Train {len(train.y)}, valid {len(valid.y)}, test {len(test.y)} текстов, {len(FEATURE_NAMES)} признаков."
     )
 
-    p = np.asarray(booster.predict(test.x, num_iteration=booster.best_iteration), dtype=np.float64)
-    pv = np.asarray(booster.predict(valid.x, num_iteration=booster.best_iteration), dtype=np.float64)
+    test_probs = np.asarray(booster.predict(test.x, num_iteration=booster.best_iteration), dtype=np.float64)
+    valid_probs = np.asarray(booster.predict(valid.x, num_iteration=booster.best_iteration), dtype=np.float64)
     created = (test.y == 0) | (test.prompt == "create")
     table(
         "ROC AUC: оценка детектора против вероятности модели",
         ["Выборка", "Людей", "ИИ", "Детектор", "Модель"],
         [
-            [name, str(int((y == 0).sum())), str(int(y.sum())), fmt_auc(auc(y, s)), fmt_auc(auc(y, q))]
-            for name, y, s, q in [
-                ("test: люди против сгенерированных с нуля", test.y[created], test.score[created], p[created]),
-                ("test: люди против всего ИИ", test.y, test.score, p),
-                ("valid: люди против всего ИИ", valid.y, valid.score, pv),
+            [
+                name,
+                str(int((labels == 0).sum())),
+                str(int(labels.sum())),
+                fmt_auc(auc(labels, scores)),
+                fmt_auc(auc(labels, probs)),
+            ]
+            for name, labels, scores, probs in [
+                ("test: люди против сгенерированных с нуля", test.y[created], test.score[created], test_probs[created]),
+                ("test: люди против всего ИИ", test.y, test.score, test_probs),
+                ("valid: люди против всего ИИ", valid.y, valid.score, valid_probs),
             ]
         ],
     )
-    model_test = classes(test.y, (p >= 0.5).astype(np.int8))
+    model_test = classes(test.y, (test_probs >= 0.5).astype(np.int8))
     detector_test = classes(test.y, (test.score >= 40).astype(np.int8))
     report("Модель на test, порог вероятности 0,5", model_test)
     report("Детектор на test, порог оценки 40 («много примет»)", detector_test)
-    cuts = breakdowns(test, p)
+    cuts = breakdowns(test, test_probs)
     table(
         "Test по жанрам",
         ["Жанр", "Людей", "ИИ", "AUC детектора", "AUC модели", "Accuracy модели"],
         [
             [
-                g["genre"],
-                str(g["human"]),
-                str(g["ai"]),
-                fmt_auc(g["detector_roc_auc"]),
-                fmt_auc(g["roc_auc"]),
-                num(g["accuracy"]),
+                genre["genre"],
+                str(genre["human"]),
+                str(genre["ai"]),
+                fmt_auc(genre["detector_roc_auc"]),
+                fmt_auc(genre["roc_auc"]),
+                num(genre["accuracy"]),
             ]
-            for g in cuts["genres"]
+            for genre in cuts["genres"]
         ],
     )
     table(
         "Test по длине текста",
         ["Слов", "Текстов", "Accuracy", "AUC модели"],
-        [[b["bucket"], str(b["n"]), num(b["accuracy"]), fmt_auc(b["roc_auc"])] for b in cuts["lengths"]],
+        [
+            [bucket["bucket"], str(bucket["n"]), num(bucket["accuracy"]), fmt_auc(bucket["roc_auc"])]
+            for bucket in cuts["lengths"]
+        ],
     )
     gain = booster.feature_importance("gain", iteration=booster.best_iteration)
     total = gain.sum() or 1.0
@@ -301,7 +320,10 @@ def main(argv: list[str] | None = None) -> None:
     table(
         "Признаки с наибольшим вкладом",
         ["Признак", "Доля прироста", "Люди", "ИИ"],
-        [[f["name"], pct(f["gain_share"]), num(f["mean_human"], 2), num(f["mean_ai"], 2)] for f in ranked[:15]],
+        [
+            [feature["name"], pct(feature["gain_share"]), num(feature["mean_human"], 2), num(feature["mean_ai"], 2)]
+            for feature in ranked[:15]
+        ],
     )
 
     metrics = {
@@ -320,7 +342,7 @@ def main(argv: list[str] | None = None) -> None:
             "test": len(test.y),
         },
         "params": {
-            **{k: v for k, v in params.items() if k not in ("metric", "verbose")},
+            **{key: value for key, value in params.items() if key not in ("metric", "verbose")},
             "rounds": args.rounds,
             "best_iteration": booster.best_iteration,
             "features": len(FEATURE_NAMES),
@@ -328,8 +350,12 @@ def main(argv: list[str] | None = None) -> None:
             "size_kb": model_file.stat().st_size / 1024,
             "cpu": f"{platform.machine()}, {os.cpu_count()} ядер",
         },
-        "test": {**model_test, "roc_auc": auc(test.y, p), "roc_auc_created": auc(test.y[created], p[created])},
-        "valid": {"accuracy": float((valid.y == (pv >= 0.5)).mean()), "roc_auc": auc(valid.y, pv)},
+        "test": {
+            **model_test,
+            "roc_auc": auc(test.y, test_probs),
+            "roc_auc_created": auc(test.y[created], test_probs[created]),
+        },
+        "valid": {"accuracy": float((valid.y == (valid_probs >= 0.5)).mean()), "roc_auc": auc(valid.y, valid_probs)},
         "detector": {
             **detector_test,
             "threshold": 40,
@@ -339,11 +365,11 @@ def main(argv: list[str] | None = None) -> None:
         **cuts,
         "features": ranked,
     }
-    (out / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (out_dir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     spec = {"version": FEATURES_VERSION, "context": CONTEXT, "threshold": 0.5, "names": list(FEATURE_NAMES)}
-    (out / "features.json").write_text(json.dumps(spec, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    card(metrics, args.repo).save(out / "README.md")
-    print(f"\nМодель, признаки, метрики и карточка: {out}")
+    (out_dir / "features.json").write_text(json.dumps(spec, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    card(metrics, args.repo).save(out_dir / "README.md")
+    print(f"\nМодель, признаки, метрики и карточка: {out_dir}")
     if not args.limit:
         path = write_report(metrics, args.repo)
         print(f"Отчёт об обучении в репозитории: {path.relative_to(ROOT)}")
@@ -352,7 +378,7 @@ def main(argv: list[str] | None = None) -> None:
         print("На Hugging Face не выкладывается: " + ("обучение на выборке" if args.limit else "--no-push"))
         return
     push(
-        out,
+        out_dir,
         args.repo,
         f"Обучение {metrics['created']}: accuracy {num(model_test['accuracy'])}, "
         f"ROC AUC {fmt_auc(metrics['test']['roc_auc'])}",

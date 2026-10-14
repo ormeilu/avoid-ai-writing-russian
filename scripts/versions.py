@@ -59,18 +59,18 @@ JSON_VERSION = re.compile(r'("version":\s*")[^"]+(")')
 def _json_version(file: str) -> VersionSite:
     return VersionSite(
         file,
-        read=lambda t: _str(json.loads(t).get("version")),
-        write=lambda t, v: JSON_VERSION.sub(lambda m: f"{m[1]}{v}{m[2]}", t, count=1),
+        read=lambda text: _str(json.loads(text).get("version")),
+        write=lambda text, version: JSON_VERSION.sub(lambda match: f"{match[1]}{version}{match[2]}", text, count=1),
     )
 
 
-def _marketplace_read(t: str) -> str | None:
-    d = json.loads(t)
-    v = _str((d.get("metadata") or {}).get("version"))
-    plugins = d.get("plugins")
+def _marketplace_read(text: str) -> str | None:
+    data = json.loads(text)
+    version = _str((data.get("metadata") or {}).get("version"))
+    plugins = data.get("plugins")
     if not isinstance(plugins, list):
         return None
-    return v if all(p.get("version") == v for p in plugins) else None
+    return version if all(plugin.get("version") == version for plugin in plugins) else None
 
 
 CFF_READ = re.compile(r"^version:\s*(\S+)\s*$", re.MULTILINE)
@@ -78,14 +78,14 @@ FRONTMATTER_READ = re.compile(r"^---\n[\s\S]*?^version:\s*(\S+)\s*$", re.MULTILI
 YAML_WRITE = re.compile(r"^(version:\s*)\S+(\s*)$", re.MULTILINE)
 
 
-def _yaml_write(t: str, v: str) -> str:
-    return YAML_WRITE.sub(lambda m: f"{m[1]}{v}{m[2]}", t, count=1)
+def _yaml_write(text: str, version: str) -> str:
+    return YAML_WRITE.sub(lambda match: f"{match[1]}{version}{match[2]}", text, count=1)
 
 
 def _yaml_version(file: str, pattern: re.Pattern[str]) -> VersionSite:
-    def read(t: str) -> str | None:
-        m = pattern.search(t)
-        return m[1] if m else None
+    def read(text: str) -> str | None:
+        match = pattern.search(text)
+        return match[1] if match else None
 
     return VersionSite(file, read=read, write=_yaml_write)
 
@@ -95,16 +95,16 @@ PROJECT_TABLE = re.compile(r"^\[project\][ \t]*$(.*?)(?=^\[|\Z)", re.MULTILINE |
 PROJECT_VERSION = re.compile(r'^(version[ \t]*=[ \t]*")[^"]+(")', re.MULTILINE)
 
 
-def _pyproject_read(t: str) -> str | None:
-    return _str(tomllib.loads(t).get("project", {}).get("version"))
+def _pyproject_read(text: str) -> str | None:
+    return _str(tomllib.loads(text).get("project", {}).get("version"))
 
 
-def _pyproject_write(t: str, v: str) -> str:
-    m = PROJECT_TABLE.search(t)
-    if not m:
-        return t
-    body = PROJECT_VERSION.sub(lambda x: f"{x[1]}{v}{x[2]}", m[1], count=1)
-    return t[: m.start(1)] + body + t[m.end(1) :]
+def _pyproject_write(text: str, version: str) -> str:
+    table = PROJECT_TABLE.search(text)
+    if not table:
+        return text
+    body = PROJECT_VERSION.sub(lambda match: f"{match[1]}{version}{match[2]}", table[1], count=1)
+    return text[: table.start(1)] + body + text[table.end(1) :]
 
 
 SITES: list[VersionSite] = [
@@ -114,7 +114,7 @@ SITES: list[VersionSite] = [
     VersionSite(
         ".claude-plugin/marketplace.json",
         read=_marketplace_read,
-        write=lambda t, v: JSON_VERSION.sub(lambda m: f"{m[1]}{v}{m[2]}", t),
+        write=lambda text, version: JSON_VERSION.sub(lambda match: f"{match[1]}{version}{match[2]}", text),
     ),
     _yaml_version("skills/avoid-ai-writing-russian/SKILL.md", FRONTMATTER_READ),
     _yaml_version("skills/antiplagiat/SKILL.md", FRONTMATTER_READ),
@@ -123,13 +123,13 @@ SITES: list[VersionSite] = [
 
 
 def read_versions(root: Path = ROOT) -> list[FoundVersion]:
-    return [FoundVersion(s.file, s.read(read_text(root / s.file))) for s in SITES]
+    return [FoundVersion(site.file, site.read(read_text(root / site.file))) for site in SITES]
 
 
 def write_versions(version: str, root: Path = ROOT) -> None:
-    for s in SITES:
-        path = root / s.file
-        write_text(path, s.write(read_text(path), version))
+    for site in SITES:
+        path = root / site.file
+        write_text(path, site.write(read_text(path), version))
 
 
 def lock_version(root: Path = ROOT) -> str | None:
@@ -137,10 +137,10 @@ def lock_version(root: Path = ROOT) -> str | None:
     path = root / LOCK
     if not path.exists():
         return None
-    for p in tomllib.loads(read_text(path)).get("package", []):
-        source = p.get("source") or {}
+    for package in tomllib.loads(read_text(path)).get("package", []):
+        source = package.get("source") or {}
         if "." in (source.get("editable"), source.get("virtual")):
-            return _str(p.get("version"))
+            return _str(package.get("version"))
     return None
 
 
@@ -150,18 +150,18 @@ VERSION = re.compile(r"\A(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:(a|b|rc)(0|[
 _PRE_RANK = {"a": 0, "b": 1, "rc": 2, None: 3}
 
 
-def _key(v: str) -> tuple[int, int, int, int, int]:
-    m = VERSION.match(v)
-    if not m:
-        raise ValueError(f"не версия PEP 440 вида X.Y.Z или X.Y.ZrcN: {v}")
-    return int(m[1]), int(m[2]), int(m[3]), _PRE_RANK[m[4]], int(m[5] or 0)
+def _key(version: str) -> tuple[int, int, int, int, int]:
+    match = VERSION.match(version)
+    if not match:
+        raise ValueError(f"не версия PEP 440 вида X.Y.Z или X.Y.ZrcN: {version}")
+    return int(match[1]), int(match[2]), int(match[3]), _PRE_RANK[match[4]], int(match[5] or 0)
 
 
 def is_prerelease(v: str) -> bool:
-    m = VERSION.match(v)
-    return bool(m and m[4])
+    match = VERSION.match(v)
+    return bool(match and match[4])
 
 
 def compare_versions(a: str, b: str) -> int:
-    ka, kb = _key(a), _key(b)
-    return (ka > kb) - (ka < kb)
+    key_a, key_b = _key(a), _key(b)
+    return (key_a > key_b) - (key_a < key_b)

@@ -93,17 +93,17 @@ def eval_path(split: str, n: int, seed: int, model: str, overlap: float) -> Path
 def pools(rows: Iterable[dict[str, Any]]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
     """Человеческие и ИИ-тексты прозы по жанрам; ИИ-продолжения человеческих текстов отброшены."""
     rows = list(rows)
-    heads = {r["text"].strip()[:PREFIX] for r in rows if r["label"] == "human"}
+    heads = {row["text"].strip()[:PREFIX] for row in rows if row["label"] == "human"}
     human: dict[str, list[str]] = defaultdict(list)
     ai: dict[str, list[str]] = defaultdict(list)
-    for r in rows:
-        text = r["text"].strip()
-        if r["data_type"] not in PROSE or len(text) < MIN_TEXT:
+    for row in rows:
+        text = row["text"].strip()
+        if row["data_type"] not in PROSE or len(text) < MIN_TEXT:
             continue
-        if r["label"] == "human":
-            human[r["data_type"]].append(text)
+        if row["label"] == "human":
+            human[row["data_type"]].append(text)
         elif text[:PREFIX] not in heads:
-            ai[r["data_type"]].append(text)
+            ai[row["data_type"]].append(text)
     return human, ai
 
 
@@ -121,15 +121,15 @@ def compose(parts: list[Pair]) -> tuple[str, list[list[int]]]:
 
 def fill(draw: Callable[[], str | None], chars: float, is_ai: bool) -> list[Pair]:
     """Тексты из пула, пока их не наберётся chars знаков; хотя бы один, если пул не пуст."""
-    out: list[Pair] = []
+    parts: list[Pair] = []
     size = 0
-    while size < chars or not out:
+    while size < chars or not parts:
         part = draw()
         if part is None:
             break
-        out.append((part, is_ai))
+        parts.append((part, is_ai))
         size += len(part) + 2
-    return out
+    return parts
 
 
 def plan(
@@ -142,18 +142,18 @@ def plan(
         return fill(ai, target, True) or None
     if kind == "scattered":
         blocks = [fill(ai, 1, True) for _ in range(rng.choice((2, 3)))]
-        rest = fill(human, target - sum(len(t) for b in blocks for t, _ in b), False)
+        rest = fill(human, target - sum(len(text) for block in blocks for text, _ in block), False)
         if not all(blocks) or len(rest) < len(blocks) + 1:
             return None
         slots = sorted(rng.sample(range(1, len(rest)), len(blocks)))
-        out: list[Pair] = []
+        parts: list[Pair] = []
         prev = 0
         for slot, block in zip(slots, blocks, strict=True):
-            out += rest[prev:slot] + block
+            parts += rest[prev:slot] + block
             prev = slot
-        return out + rest[prev:]
+        return parts + rest[prev:]
     inserted = fill(ai, target * rng.uniform(0.15, 0.4), True)
-    rest = fill(human, target - sum(len(t) for t, _ in inserted), False)
+    rest = fill(human, target - sum(len(text) for text, _ in inserted), False)
     if not inserted or len(rest) < 2:
         return None
     if kind == "start":
@@ -170,20 +170,20 @@ def build(rows: Iterable[dict[str, Any]], n: int, seed: int) -> list[Doc]:
     human, ai = pools(rows)
     for pool in (*human.values(), *ai.values()):
         rng.shuffle(pool)
-    types = [t for t in PROSE if human[t] and ai[t]]
+    types = [genre for genre in PROSE if human[genre] and ai[genre]]
 
     def draw(pool: list[str]) -> Callable[[], str | None]:
         return lambda: pool.pop() if pool else None
 
     docs: list[Doc] = []
-    k = 0
-    while len(docs) < n and k < n * 10:
-        kind, target = KINDS[k % len(KINDS)], LENGTHS[(k // len(KINDS)) % len(LENGTHS)]
-        k += 1
-        alive = [t for t in types if human[t] and ai[t]]
+    step = 0
+    while len(docs) < n and step < n * 10:
+        kind, target = KINDS[step % len(KINDS)], LENGTHS[(step // len(KINDS)) % len(LENGTHS)]
+        step += 1
+        alive = [genre for genre in types if human[genre] and ai[genre]]
         if not alive:
             break
-        data_type = rng.choices(alive, weights=[min(len(human[t]), len(ai[t])) for t in alive])[0]
+        data_type = rng.choices(alive, weights=[min(len(human[genre]), len(ai[genre])) for genre in alive])[0]
         parts = plan(kind, target, draw(human[data_type]), draw(ai[data_type]), rng)
         if parts:
             text, spans = compose(parts)
@@ -194,8 +194,8 @@ def build(rows: Iterable[dict[str, Any]], n: int, seed: int) -> list[Doc]:
 def read_docs(path: Path) -> list[Doc]:
     if not path.exists():
         raise SystemExit(f"long_docs: нет {path}; сначала build с теми же --split, --docs и --seed")
-    with path.open(encoding="utf-8") as f:
-        return [Doc(**json.loads(line)) for line in f if line.strip()]
+    with path.open(encoding="utf-8") as file:
+        return [Doc(**json.loads(line)) for line in file if line.strip()]
 
 
 # ─── Прогон модели ──────────────────────────────────────────────────────
@@ -210,7 +210,11 @@ def run_doc(loaded: models.Loaded, doc: Doc, overlap: float) -> dict[str, Any]:
         "head": round(loaded.probability(doc.text), 5),
         "seconds": round(scan.seconds, 4),
         # Фрагменты не на русском модель не оценивает, и в замер они не входят, как в classify.
-        "chunks": [[c.start, c.end, round(c.probability, 5)] for c in scan.chunks if c.probability is not None],
+        "chunks": [
+            [chunk.start, chunk.end, round(chunk.probability, 5)]
+            for chunk in scan.chunks
+            if chunk.probability is not None
+        ],
     }
 
 
@@ -218,14 +222,14 @@ def evaluate(docs: list[Doc], loaded: models.Loaded, overlap: float, path: Path)
     """Прогон с кэшем: уже посчитанные документы в файле пропускаются."""
     done = set()
     if path.exists():
-        with path.open(encoding="utf-8") as f:
-            done = {json.loads(line)["id"] for line in f if line.strip()}
-    todo = [d for d in docs if d.id not in done]
+        with path.open(encoding="utf-8") as file:
+            done = {json.loads(line)["id"] for line in file if line.strip()}
+    todo = [doc for doc in docs if doc.id not in done]
     started = time.perf_counter()
-    with path.open("a", encoding="utf-8") as f:
+    with path.open("a", encoding="utf-8") as file:
         for k, doc in enumerate(todo, 1):
-            f.write(json.dumps(run_doc(loaded, doc, overlap)) + "\n")
-            f.flush()
+            file.write(json.dumps(run_doc(loaded, doc, overlap)) + "\n")
+            file.flush()
             if k % 20 == 0 or k == len(todo):
                 spent = time.perf_counter() - started
                 left = spent / k * (len(todo) - k)
@@ -235,8 +239,8 @@ def evaluate(docs: list[Doc], loaded: models.Loaded, overlap: float, path: Path)
 def read_eval(path: Path) -> dict[int, dict[str, Any]]:
     if not path.exists():
         raise SystemExit(f"long_docs: нет {path}; сначала eval с теми же параметрами")
-    with path.open(encoding="utf-8") as f:
-        return {r["id"]: r for r in map(json.loads, f) if r}
+    with path.open(encoding="utf-8") as file:
+        return {run["id"]: run for run in map(json.loads, file) if run}
 
 
 # ─── Метрики ────────────────────────────────────────────────────────────
@@ -244,7 +248,11 @@ def read_eval(path: Path) -> dict[int, dict[str, Any]]:
 
 def ai_share(start: int, end: int, ai: list[list[int]]) -> float:
     """Доля ИИ-знаков во фрагменте [start, end)."""
-    return overlap_length([(start, end)], [(a, b) for a, b in ai]) / (end - start) if end > start else 0.0
+    return (
+        overlap_length([(start, end)], [(span_start, span_end) for span_start, span_end in ai]) / (end - start)
+        if end > start
+        else 0.0
+    )
 
 
 def rate(xs: Iterable[bool]) -> float | None:
@@ -257,13 +265,13 @@ def fragment_metrics(docs: list[Doc], runs: dict[int, dict[str, Any]]) -> dict[s
     human, ai, boundary = [], [], []
     for doc in docs:
         run = runs[doc.id]
-        for a, b, p in run["chunks"]:
-            share = ai_share(a, b, doc.ai)
-            flagged = p >= run["threshold"]
+        for start, end, probability in run["chunks"]:
+            share = ai_share(start, end, doc.ai)
+            flagged = probability >= run["threshold"]
             if share <= 1 - PURE:
-                human.append((p, flagged))
+                human.append((probability, flagged))
             elif share >= PURE:
-                ai.append((p, flagged))
+                ai.append((probability, flagged))
             else:
                 boundary.append((share, flagged))
     bins = [(0.0, 0.25), (0.25, 0.5), (0.5, 0.75), (0.75, 1.0)]
@@ -271,22 +279,22 @@ def fragment_metrics(docs: list[Doc], runs: dict[int, dict[str, Any]]) -> dict[s
         "human": len(human),
         "ai": len(ai),
         "boundary": len(boundary),
-        "rocAuc": roc_auc([p for p, _ in ai], [p for p, _ in human]),
-        "falsePositive": rate(f for _, f in human),
-        "truePositive": rate(f for _, f in ai),
+        "rocAuc": roc_auc([probability for probability, _ in ai], [probability for probability, _ in human]),
+        "falsePositive": rate(flagged for _, flagged in human),
+        "truePositive": rate(flagged for _, flagged in ai),
         "boundaryBins": [
-            {"from": lo, "to": hi, "n": len(xs), "flagged": rate(xs)}
+            {"from": lo, "to": hi, "n": len(flags), "flagged": rate(flags)}
             for lo, hi in bins
-            for xs in [[f for s, f in boundary if lo <= s < hi or (hi == 1.0 and s == 1.0)]]
+            for flags in [[flagged for share, flagged in boundary if lo <= share < hi or (hi == 1.0 and share == 1.0)]]
         ],
     }
 
 
 def doc_metrics(doc: Doc, run: dict[str, Any]) -> dict[str, Any]:
     """Один документ: что отметили фрагменты и начало, сколько ИИ нашлось и сколько лишнего."""
-    t = run["threshold"]
-    flagged = [(a, b) for a, b, p in run["chunks"] if p >= t]
-    ai = [(a, b) for a, b in doc.ai]
+    threshold = run["threshold"]
+    flagged = [(start, end) for start, end, probability in run["chunks"] if probability >= threshold]
+    ai = [(start, end) for start, end in doc.ai]
     ai_len, flagged_len = union_length(ai), union_length(flagged)
     hit = overlap_length(flagged, ai)
     return {
@@ -296,9 +304,9 @@ def doc_metrics(doc: Doc, run: dict[str, Any]) -> dict[str, Any]:
         "seconds": run["seconds"],
         "any": bool(flagged),
         "two": len(flagged) >= 2,
-        "head": run["head"] >= t,
+        "head": run["head"] >= threshold,
         # ИИ-кусок найден, если хотя бы один отмеченный фрагмент в основном из ИИ-текста.
-        "detected": any(ai_share(a, b, doc.ai) >= 0.5 for a, b in flagged),
+        "detected": any(ai_share(start, end, doc.ai) >= 0.5 for start, end in flagged),
         "recall": hit / ai_len if ai_len else None,
         "precision": hit / flagged_len if flagged_len else None,
         "trueShare": ai_len / len(doc.text),
@@ -308,34 +316,34 @@ def doc_metrics(doc: Doc, run: dict[str, Any]) -> dict[str, Any]:
 
 def kind_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     def avg(key: str) -> float | None:
-        xs = [r[key] for r in rows if r[key] is not None]
-        return mean(xs) if xs else None
+        values = [row[key] for row in rows if row[key] is not None]
+        return mean(values) if values else None
 
     return {
         "docs": len(rows),
-        "any": rate(r["any"] for r in rows),
-        "two": rate(r["two"] for r in rows),
-        "head": rate(r["head"] for r in rows),
-        "detected": rate(r["detected"] for r in rows),
+        "any": rate(row["any"] for row in rows),
+        "two": rate(row["two"] for row in rows),
+        "head": rate(row["head"] for row in rows),
+        "detected": rate(row["detected"] for row in rows),
         "recall": avg("recall"),
         "precision": avg("precision"),
-        "shareError": mean(abs(r["flaggedShare"] - r["trueShare"]) for r in rows) if rows else None,
+        "shareError": mean(abs(row["flaggedShare"] - row["trueShare"]) for row in rows) if rows else None,
     }
 
 
 def metrics(docs: list[Doc], runs: dict[int, dict[str, Any]]) -> dict[str, Any]:
-    per_doc = [doc_metrics(d, runs[d.id]) for d in docs]
-    by_kind = {k: kind_metrics([r for r in per_doc if r["kind"] == k]) for k in KINDS}
-    fragments = sum(r["fragments"] for r in per_doc)
+    per_doc = [doc_metrics(doc, runs[doc.id]) for doc in docs]
+    by_kind = {kind: kind_metrics([row for row in per_doc if row["kind"] == kind]) for kind in KINDS}
+    fragments = sum(row["fragments"] for row in per_doc)
     return {
         "docs": len(docs),
         "fragments": fragments,
-        "fragmentsPerDoc": median(r["fragments"] for r in per_doc),
-        "msPerFragment": 1000 * sum(r["seconds"] for r in per_doc) / fragments if fragments else None,
-        "msPerDoc": 1000 * mean(r["seconds"] for r in per_doc) if per_doc else None,
+        "fragmentsPerDoc": median(row["fragments"] for row in per_doc),
+        "msPerFragment": 1000 * sum(row["seconds"] for row in per_doc) / fragments if fragments else None,
+        "msPerDoc": 1000 * mean(row["seconds"] for row in per_doc) if per_doc else None,
         "chunks": fragment_metrics(docs, runs),
         "kinds": by_kind,
-        "mixed": kind_metrics([r for r in per_doc if r["kind"] in MIXED]),
+        "mixed": kind_metrics([row for row in per_doc if row["kind"] in MIXED]),
     }
 
 
@@ -352,20 +360,20 @@ def num(x: float | None, digits: int = 3) -> str:
 
 def md_table(head: list[str], rows: list[list[str]]) -> str:
     align = ["---", *["--:"] * (len(head) - 1)]
-    return "\n".join("| " + " | ".join(r) + " |" for r in [head, align, *rows])
+    return "\n".join("| " + " | ".join(row) + " |" for row in [head, align, *rows])
 
 
 def dataset_md(docs: list[Doc]) -> str:
     rows = []
     for kind in KINDS:
-        ds = [d for d in docs if d.kind == kind]
-        share = [sum(b - a for a, b in d.ai) / len(d.text) for d in ds]
+        kind_docs = [doc for doc in docs if doc.kind == kind]
+        share = [sum(end - start for start, end in doc.ai) / len(doc.text) for doc in kind_docs]
         rows.append(
             [
                 KIND_LABELS[kind],
-                str(len(ds)),
-                f"{median(len(d.text) for d in ds):,.0f}".replace(",", " ") if ds else "—",
-                pct(mean(share)) if ds else "—",
+                str(len(kind_docs)),
+                f"{median(len(doc.text) for doc in kind_docs):,.0f}".replace(",", " ") if kind_docs else "—",
+                pct(mean(share)) if kind_docs else "—",
             ]
         )
     return md_table(["Вид", "Документов", "Знаков, медиана", "Доля ИИ-знаков"], rows)
@@ -374,43 +382,44 @@ def dataset_md(docs: list[Doc]) -> str:
 def models_md(results: dict[str, dict[str, Any]]) -> str:
     """Главная таблица: модели по столбцам, метрики по строкам."""
     names = list(results)
-    r = results
 
     def row(label: str, get: Callable[[dict[str, Any]], str]) -> list[str]:
-        return [label, *(get(r[n]) for n in names)]
+        return [label, *(get(results[name]) for name in names)]
 
     rows = [
-        row("Фрагментов на документ, медиана", lambda m: f"{m['fragmentsPerDoc']:g}"),
-        row("мс на фрагмент", lambda m: num(m["msPerFragment"], 0)),
-        row("ROC AUC по фрагментам", lambda m: num(m["chunks"]["rocAuc"])),
-        row("Человеческие фрагменты выше порога", lambda m: pct(m["chunks"]["falsePositive"])),
-        row("ИИ-фрагменты выше порога", lambda m: pct(m["chunks"]["truePositive"])),
-        row("Человеческий документ: хоть один фрагмент выше порога", lambda m: pct(m["kinds"]["human"]["any"])),
-        row("Человеческий документ: два фрагмента и больше", lambda m: pct(m["kinds"]["human"]["two"])),
-        row("Человеческий документ: выше порога по началу", lambda m: pct(m["kinds"]["human"]["head"])),
-        row("Смешанный документ: ИИ-кусок найден", lambda m: pct(m["mixed"]["detected"])),
-        row("Смешанный документ: два фрагмента и больше", lambda m: pct(m["mixed"]["two"])),
-        row("Смешанный документ: найдено по началу", lambda m: pct(m["mixed"]["head"])),
-        row("Доля ИИ-знаков под отмеченными фрагментами", lambda m: pct(m["mixed"]["recall"])),
-        row("Доля ИИ среди отмеченных знаков", lambda m: pct(m["mixed"]["precision"])),
-        row("Ошибка доли ИИ в документе, пункты", lambda m: num(100 * m["mixed"]["shareError"], 1)),
-        row("Документ целиком ИИ: найден", lambda m: pct(m["kinds"]["ai"]["detected"])),
+        row("Фрагментов на документ, медиана", lambda result: f"{result['fragmentsPerDoc']:g}"),
+        row("мс на фрагмент", lambda result: num(result["msPerFragment"], 0)),
+        row("ROC AUC по фрагментам", lambda result: num(result["chunks"]["rocAuc"])),
+        row("Человеческие фрагменты выше порога", lambda result: pct(result["chunks"]["falsePositive"])),
+        row("ИИ-фрагменты выше порога", lambda result: pct(result["chunks"]["truePositive"])),
+        row(
+            "Человеческий документ: хоть один фрагмент выше порога", lambda result: pct(result["kinds"]["human"]["any"])
+        ),
+        row("Человеческий документ: два фрагмента и больше", lambda result: pct(result["kinds"]["human"]["two"])),
+        row("Человеческий документ: выше порога по началу", lambda result: pct(result["kinds"]["human"]["head"])),
+        row("Смешанный документ: ИИ-кусок найден", lambda result: pct(result["mixed"]["detected"])),
+        row("Смешанный документ: два фрагмента и больше", lambda result: pct(result["mixed"]["two"])),
+        row("Смешанный документ: найдено по началу", lambda result: pct(result["mixed"]["head"])),
+        row("Доля ИИ-знаков под отмеченными фрагментами", lambda result: pct(result["mixed"]["recall"])),
+        row("Доля ИИ среди отмеченных знаков", lambda result: pct(result["mixed"]["precision"])),
+        row("Ошибка доли ИИ в документе, пункты", lambda result: num(100 * result["mixed"]["shareError"], 1)),
+        row("Документ целиком ИИ: найден", lambda result: pct(result["kinds"]["ai"]["detected"])),
     ]
-    return md_table(["", *(f"`{n}`" for n in names)], rows)
+    return md_table(["", *(f"`{name}`" for name in names)], rows)
 
 
 def kinds_md(m: dict[str, Any]) -> str:
     rows = [
         [
-            KIND_LABELS[k],
-            str(m["kinds"][k]["docs"]),
-            pct(m["kinds"][k]["any"]),
-            pct(m["kinds"][k]["head"]),
-            pct(m["kinds"][k]["detected"]) if k != "human" else "—",
-            pct(m["kinds"][k]["recall"]) if k != "human" else "—",
-            pct(m["kinds"][k]["precision"]),
+            KIND_LABELS[kind],
+            str(m["kinds"][kind]["docs"]),
+            pct(m["kinds"][kind]["any"]),
+            pct(m["kinds"][kind]["head"]),
+            pct(m["kinds"][kind]["detected"]) if kind != "human" else "—",
+            pct(m["kinds"][kind]["recall"]) if kind != "human" else "—",
+            pct(m["kinds"][kind]["precision"]),
         ]
-        for k in KINDS
+        for kind in KINDS
     ]
     head = ["Вид", "Документов", "Хоть один фрагмент выше порога", "Выше порога по началу", "ИИ найден"]
     return md_table([*head, "ИИ-знаков под отметками", "ИИ среди отмеченного"], rows)
@@ -420,24 +429,30 @@ def boundary_md(results: dict[str, dict[str, Any]]) -> str:
     names = list(results)
     bins = results[names[0]]["chunks"]["boundaryBins"]
     rows = []
-    for k, b in enumerate(bins):
-        label = f"{100 * b['from']:.0f}–{100 * b['to']:.0f} %"
-        rows.append([label, str(b["n"]), *(pct(results[n]["chunks"]["boundaryBins"][k]["flagged"]) for n in names)])
-    return md_table(["ИИ-знаков во фрагменте", "Фрагментов", *(f"`{n}`" for n in names)], rows)
+    for k, bucket in enumerate(bins):
+        label = f"{100 * bucket['from']:.0f}–{100 * bucket['to']:.0f} %"
+        rows.append(
+            [
+                label,
+                str(bucket["n"]),
+                *(pct(results[name]["chunks"]["boundaryBins"][k]["flagged"]) for name in names),
+            ]
+        )
+    return md_table(["ИИ-знаков во фрагменте", "Фрагментов", *(f"`{name}`" for name in names)], rows)
 
 
 def overlap_md(results: dict[float, dict[str, Any]]) -> str:
     rows = [
         [
-            f"{100 * o:g} %",
-            f"{m['fragmentsPerDoc']:g}",
-            pct(m["kinds"]["human"]["any"]),
-            pct(m["mixed"]["detected"]),
-            pct(m["mixed"]["recall"]),
-            pct(m["mixed"]["precision"]),
-            num(m["msPerDoc"], 0),
+            f"{100 * overlap:g} %",
+            f"{result['fragmentsPerDoc']:g}",
+            pct(result["kinds"]["human"]["any"]),
+            pct(result["mixed"]["detected"]),
+            pct(result["mixed"]["recall"]),
+            pct(result["mixed"]["precision"]),
+            num(result["msPerDoc"], 0),
         ]
-        for o, m in results.items()
+        for overlap, result in results.items()
     ]
     head = ["Перекрытие", "Фрагментов на документ", "Ложная тревога в человеческом", "ИИ найден"]
     return md_table([*head, "ИИ-знаков под отметками", "ИИ среди отмеченного", "мс на документ"], rows)
@@ -455,31 +470,37 @@ def replace_block(text: str, name: str, body: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    sub = ap.add_subparsers(dest="command", required=True)
+    argument_parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
+    subparsers = argument_parser.add_subparsers(dest="command", required=True)
     for name in ("build", "eval", "report"):
-        p = sub.add_parser(name)
-        p.add_argument("--split", default="test", choices=["test", "valid"])
-        p.add_argument("--docs", type=int, default=600, help="документов")
-        p.add_argument("--seed", type=int, default=1)
+        command_parser = subparsers.add_parser(name)
+        command_parser.add_argument("--split", default="test", choices=["test", "valid"])
+        command_parser.add_argument("--docs", type=int, default=600, help="документов")
+        command_parser.add_argument("--seed", type=int, default=1)
         if name == "eval":
-            p.add_argument("--model", required=True, choices=[m for m in models.MODELS if m != "lightgbm"])
-            p.add_argument("--overlap", type=float, default=models.OVERLAP)
-            p.add_argument("--label", help="имя прогона в кэше и отчёте, по умолчанию имя модели")
+            command_parser.add_argument(
+                "--model", required=True, choices=[model for model in models.MODELS if model != "lightgbm"]
+            )
+            command_parser.add_argument("--overlap", type=float, default=models.OVERLAP)
+            command_parser.add_argument("--label", help="имя прогона в кэше и отчёте, по умолчанию имя модели")
         if name == "report":
-            p.add_argument("--models", nargs="+", default=["modernbert", "transformer", "mini-frida"])
-            p.add_argument("--overlap", type=float, default=models.OVERLAP, help="перекрытие для таблиц моделей")
-            p.add_argument("--overlaps", type=float, nargs="*", default=[], help="сравнить перекрытия")
-            p.add_argument("--overlap-split", default="valid", choices=["test", "valid"])
-            p.add_argument("--overlap-model", default="transformer", help="модель для сравнения перекрытий")
-            p.add_argument("--out", type=Path, help="отчёт с метками <!-- long-docs:… -->")
-    args = ap.parse_args(argv)
+            command_parser.add_argument("--models", nargs="+", default=["modernbert", "transformer", "mini-frida"])
+            command_parser.add_argument(
+                "--overlap", type=float, default=models.OVERLAP, help="перекрытие для таблиц моделей"
+            )
+            command_parser.add_argument("--overlaps", type=float, nargs="*", default=[], help="сравнить перекрытия")
+            command_parser.add_argument("--overlap-split", default="valid", choices=["test", "valid"])
+            command_parser.add_argument(
+                "--overlap-model", default="transformer", help="модель для сравнения перекрытий"
+            )
+            command_parser.add_argument("--out", type=Path, help="отчёт с метками <!-- long-docs:… -->")
+    args = argument_parser.parse_args(argv)
     path = docs_path(args.split, args.docs, args.seed)
     if args.command == "build":
         rows = [json.loads(line) for line in load(data_dir(), "classification", args.split)]
         docs = build(rows, args.docs, args.seed)
         long_dir().mkdir(parents=True, exist_ok=True)
-        path.write_text("".join(json.dumps(asdict(d), ensure_ascii=False) + "\n" for d in docs), encoding="utf-8")
+        path.write_text("".join(json.dumps(asdict(doc), ensure_ascii=False) + "\n" for doc in docs), encoding="utf-8")
         print(f"{len(docs)} документов: {path}")
         print(dataset_md(docs))
         return
@@ -487,26 +508,29 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "eval":
         loaded = models.load(models.get(args.model))
         label = args.label or args.model
-        out = eval_path(args.split, args.docs, args.seed, label, args.overlap)
-        print(f"{label} ({models.local_path(loaded.model)}), перекрытие {args.overlap:g}: {out}", flush=True)
-        evaluate(docs, loaded, args.overlap, out)
+        eval_file = eval_path(args.split, args.docs, args.seed, label, args.overlap)
+        print(f"{label} ({models.local_path(loaded.model)}), перекрытие {args.overlap:g}: {eval_file}", flush=True)
+        evaluate(docs, loaded, args.overlap, eval_file)
         return
     results = {
-        m: metrics(docs, read_eval(eval_path(args.split, args.docs, args.seed, m, args.overlap))) for m in args.models
+        model: metrics(docs, read_eval(eval_path(args.split, args.docs, args.seed, model, args.overlap)))
+        for model in args.models
     }
     blocks = {
         "dataset": dataset_md(docs),
         "models": models_md(results),
-        "kinds": "\n\n".join(f"`{m}`:\n\n{kinds_md(results[m])}" for m in args.models),
+        "kinds": "\n\n".join(f"`{model}`:\n\n{kinds_md(results[model])}" for model in args.models),
         "boundary": boundary_md(results),
     }
     if args.overlaps:
-        odocs = read_docs(docs_path(args.overlap_split, args.docs, args.seed))
-        om = args.overlap_model
+        overlap_docs = read_docs(docs_path(args.overlap_split, args.docs, args.seed))
+        overlap_model = args.overlap_model
         blocks["overlap"] = overlap_md(
             {
-                o: metrics(odocs, read_eval(eval_path(args.overlap_split, args.docs, args.seed, om, o)))
-                for o in args.overlaps
+                overlap: metrics(
+                    overlap_docs, read_eval(eval_path(args.overlap_split, args.docs, args.seed, overlap_model, overlap))
+                )
+                for overlap in args.overlaps
             }
         )
     summary = ROOT / "docs" / "long-documents.json"

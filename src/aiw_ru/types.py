@@ -51,7 +51,7 @@ class Issue(Record):
     hint: str
     # Правки ради краткости (канцелярит 1Б) — совет по стилю, а не довод о машинном
     # авторстве. В оценку идут с малым весом.
-    style_only: bool = Field(default=False, exclude_if=lambda v: not v)
+    style_only: bool = Field(default=False, exclude_if=lambda value: not value)
 
 
 class Stats(Record):

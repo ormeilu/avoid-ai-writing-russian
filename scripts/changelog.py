@@ -18,8 +18,8 @@ def section(changelog: str, version: str) -> str | None:
         return None
     body_start = changelog.find("\n", start) + 1
     rest = changelog[body_start:]
-    m = NEXT_SECTION.search(rest)
-    body = rest if m is None else rest[: m.start()]
+    next_section = NEXT_SECTION.search(rest)
+    body = rest if next_section is None else rest[: next_section.start()]
     return LINK_DEFINITION.sub("", body).strip()
 
 

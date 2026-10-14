@@ -93,38 +93,42 @@ def _sigmoid(z: float) -> float:
 
 
 def predict(model: Model, f: list[float]) -> float:
-    z = model.bias
-    for i, v in enumerate(f):
-        z += (model.weights[i] if i < len(model.weights) else 0) * v
-    return _sigmoid(z)
+    logit = model.bias
+    for i, value in enumerate(f):
+        logit += (model.weights[i] if i < len(model.weights) else 0) * value
+    return _sigmoid(logit)
 
 
 def features_for(text: str, fragment_issues: list[Issue]) -> list[float]:
-    ws = words(text)
-    n = max(len(ws), 1)
-    ss = [s for s in sentences(text) if s.words >= 2]
-    lens = [s.words for s in ss]
+    text_words = words(text)
+    word_count = max(len(text_words), 1)
+    fragment_sentences = [sentence for sentence in sentences(text) if sentence.words >= 2]
+    lengths = [sentence.words for sentence in fragment_sentences]
 
-    signal = total(WEIGHTS.get(i.type, 1) for i in fragment_issues if not i.style_only)
-    density = min(4, signal * 100 / n / 3)
-    uniformity = max(0, 1 - cv(lens) / 0.6) if len(lens) >= 3 else 0.3
-    m = mean(lens)
-    typical = math.exp(-(((m - 19) / 7) ** 2)) if lens else 0
+    signal = total(WEIGHTS.get(issue.type, 1) for issue in fragment_issues if not issue.style_only)
+    density = min(4, signal * 100 / word_count / 3)
+    uniformity = max(0, 1 - cv(lengths) / 0.6) if len(lengths) >= 3 else 0.3
+    mean_length = mean(lengths)
+    typical = math.exp(-(((mean_length - 19) / 7) ** 2)) if lengths else 0
     # Признак «канцелярит» и веса калибровок подобраны под канцелярит и многословие; жаргон тоже
     # совет по стилю (style_only), но в этот признак не идёт.
-    clerical = min(3, sum(1 for i in fragment_issues if i.style_only and i.type != "jargon") * 100 / n / 2)
-    rare = sum(1 for s in ss if RARE_PUNCT_RE.search(s.text))
-    poor_punct = max(0, 1 - rare / len(ss) / 0.5) if len(ss) >= 3 else 0.3
-    firsts = [(words(s.text) or [""])[0].lower() for s in ss]
-    opener_repeat = 1 - len(set(firsts)) / len(firsts) if len(firsts) >= 3 else 0
-    diversity = mattr(ws, min(50, len(ws))) if len(ws) >= 30 else 0.8
+    clerical = min(
+        3, sum(1 for issue in fragment_issues if issue.style_only and issue.type != "jargon") * 100 / word_count / 2
+    )
+    rare = sum(1 for sentence in fragment_sentences if RARE_PUNCT_RE.search(sentence.text))
+    poor_punct = max(0, 1 - rare / len(fragment_sentences) / 0.5) if len(fragment_sentences) >= 3 else 0.3
+    first_words = [(words(sentence.text) or [""])[0].lower() for sentence in fragment_sentences]
+    opener_repeat = 1 - len(set(first_words)) / len(first_words) if len(first_words) >= 3 else 0
+    diversity = mattr(text_words, min(50, len(text_words))) if len(text_words) >= 30 else 0.8
     poor_vocab = max(0, min(1, (0.85 - diversity) / 0.2))
     return [density, uniformity, typical, clerical, poor_punct, opener_repeat, poor_vocab]
 
 
-def _reasons_for(model: Model, f: list[float]) -> list[str]:
-    contrib = [(i, v * (model.weights[i] if i < len(model.weights) else 0)) for i, v in enumerate(f)]
-    top = sorted((x for x in contrib if x[1] > 0.5), key=lambda x: -x[1])[:3]
+def _reasons_for(model: Model, features: list[float]) -> list[str]:
+    contributions = [
+        (i, value * (model.weights[i] if i < len(model.weights) else 0)) for i, value in enumerate(features)
+    ]
+    top = sorted((item for item in contributions if item[1] > 0.5), key=lambda item: -item[1])[:3]
     return [FEATURE_NAMES[i] if i < len(FEATURE_NAMES) else "" for i, _ in top]
 
 
@@ -137,79 +141,79 @@ class _RawFragment:
 
 def _fragments_of(internals: Internals) -> list[_RawFragment]:
     """Абзацы прозы и списков; короткие склеиваются со следующими."""
-    out: list[_RawFragment] = []
-    cur: _RawFragment | None = None
-    for b in internals.blocks:
-        if b.kind not in ("prose", "list"):
-            if b.kind == "heading" and cur and len(words(cur.text)) >= MIN_FRAGMENT_WORDS / 2:
-                out.append(cur)
-                cur = None
+    fragments: list[_RawFragment] = []
+    current: _RawFragment | None = None
+    for block in internals.blocks:
+        if block.kind not in ("prose", "list"):
+            if block.kind == "heading" and current and len(words(current.text)) >= MIN_FRAGMENT_WORDS / 2:
+                fragments.append(current)
+                current = None
             continue
-        if cur is None:
-            cur = _RawFragment(b.start, b.end, b.text)
+        if current is None:
+            current = _RawFragment(block.start, block.end, block.text)
         else:
-            cur.end = b.end
-            cur.text += f"\n\n{b.text}"
-        if len(words(cur.text)) >= MIN_FRAGMENT_WORDS:
-            out.append(cur)
-            cur = None
-    if cur is not None:
-        if out and len(words(cur.text)) < MIN_FRAGMENT_WORDS / 2:
-            out[-1].end = cur.end
-            out[-1].text += f"\n\n{cur.text}"
+            current.end = block.end
+            current.text += f"\n\n{block.text}"
+        if len(words(current.text)) >= MIN_FRAGMENT_WORDS:
+            fragments.append(current)
+            current = None
+    if current is not None:
+        if fragments and len(words(current.text)) < MIN_FRAGMENT_WORDS / 2:
+            fragments[-1].end = current.end
+            fragments[-1].text += f"\n\n{current.text}"
         else:
-            out.append(cur)
-    return out
+            fragments.append(current)
+    return fragments
 
 
-def _chars(s: str) -> int:
+def _chars(text: str) -> int:
     """Длина текста без лишних пробелов."""
-    return len(trim(SPACES_RE.sub(" ", s)))
+    return len(trim(SPACES_RE.sub(" ", text)))
 
 
 def antiplagiat(
     source: str, context: ContextMode = "academic", model: Model | None = None, system: System = "antiplagiat"
 ) -> AntiplagiatReport:
     result, internals = analyze_internal(source, context)
-    m = model or DEFAULT_MODEL
-    p = internals.prepared
+    active_model = model or DEFAULT_MODEL
+    prepared = internals.prepared
 
-    def to_src(i: int) -> int:
-        return p.to_source[i] if i < len(p.to_source) else i
+    def to_source(index: int) -> int:
+        return prepared.to_source[index] if index < len(prepared.to_source) else index
 
     ai_chars = 0
     all_chars = 0
     fragments: list[Fragment] = []
-    for r in _fragments_of(internals):
-        s, e = to_src(r.start), to_src(r.end)
-        inside = [i for i in result.issues if s <= i.index < e]
-        f = features_for(r.text, inside)
-        prob = predict(m, f)
-        chars = _chars(r.text)
+    for raw in _fragments_of(internals):
+        start, end = to_source(raw.start), to_source(raw.end)
+        inside = [issue for issue in result.issues if start <= issue.index < end]
+        fragment_features = features_for(raw.text, inside)
+        probability = predict(active_model, fragment_features)
+        chars = _chars(raw.text)
         all_chars += chars
-        ai = prob >= m.threshold
+        ai = probability >= active_model.threshold
         if ai:
             ai_chars += chars
         fragments.append(
             Fragment(
-                start=s,
-                end=e,
-                line=line_col(p.line_starts, s)[0],
-                end_line=line_col(p.line_starts, e)[0],
-                words=len(words(r.text)),
-                features=[fixed(v, 3) for v in f],
-                probability=fixed(prob, 3),
+                start=start,
+                end=end,
+                line=line_col(prepared.line_starts, start)[0],
+                end_line=line_col(prepared.line_starts, end)[0],
+                words=len(words(raw.text)),
+                features=[fixed(value, 3) for value in fragment_features],
+                probability=fixed(probability, 3),
                 ai=ai,
-                reasons=_reasons_for(m, f),
-                preview=trim(SPACES_RE.sub(" ", p.source[s : min(e, s + 90)])),
+                reasons=_reasons_for(active_model, fragment_features),
+                preview=trim(SPACES_RE.sub(" ", prepared.source[start : min(end, start + 90)])),
             )
         )
 
     reasons: list[str] = []
-    if p.invisible:
-        reasons.append(f"невидимые символы: {len(p.invisible)}")
-    if p.homoglyphs:
-        reasons.append(f"слова со смешанной латиницей и кириллицей: {len(p.homoglyphs)}")
+    if prepared.invisible:
+        reasons.append(f"невидимые символы: {len(prepared.invisible)}")
+    if prepared.homoglyphs:
+        reasons.append(f"слова со смешанной латиницей и кириллицей: {len(prepared.homoglyphs)}")
     return AntiplagiatReport(
         ai_share=fixed(ai_chars * 100 / all_chars, 1) if all_chars else 0,
         fragments=fragments,
@@ -217,7 +221,7 @@ def antiplagiat(
         suspicious_reasons=reasons,
         light=result.light,
         model="calibrated" if model else "default",
-        threshold=m.threshold,
+        threshold=active_model.threshold,
         system=system,
     )
 
@@ -297,18 +301,18 @@ MIN_MARKED_WORDS = 5
 HEAT_RED = 3
 
 
-def _tokens(s: str) -> list[tuple[int, int, str]]:
-    return [(m.start(), m.end(), m.group().lower().replace("ё", "е")) for m in WORD_RE.finditer(s)]
+def _tokens(text: str) -> list[tuple[int, int, str]]:
+    return [(match.start(), match.end(), match.group().lower().replace("ё", "е")) for match in WORD_RE.finditer(text)]
 
 
-def _find(words_: list[str], seq: list[str], start: int, *, last: bool = False) -> int | None:
+def _find(doc_words: list[str], piece_words: list[str], start: int, *, last: bool = False) -> int | None:
     """Первое вхождение начала (или конца, `last`) куска не раньше `start`: по 6 словам, если не нашлось — по 3."""
     for k in (6, 5, 4, 3):
-        if len(seq) < k:
+        if len(piece_words) < k:
             continue
-        q = seq[-k:] if last else seq[:k]
-        for i in range(start, len(words_) - k + 1):
-            if words_[i : i + k] == q:
+        probe = piece_words[-k:] if last else piece_words[:k]
+        for i in range(start, len(doc_words) - k + 1):
+            if doc_words[i : i + k] == probe:
                 return i + k - 1 if last else i
     return None
 
@@ -320,14 +324,14 @@ def marked_spans(source: str, marked: list[str]) -> list[tuple[int, int]]:
     и мелкие расхождения текстового слоя PDF внутри куска не мешают. Если конец не нашёлся
     или кусок вышел заметно длиннее себя, засчитывается только его начало длиной в сам кусок.
     """
-    toks = _tokens(source)
-    words_ = [w for _, _, w in toks]
+    tokens = _tokens(source)
+    doc_words = [word for _, _, word in tokens]
     spans: list[tuple[int, int]] = []
-    for m in marked:
-        seq = [w for _, _, w in _tokens(m)]
-        if len(seq) < MIN_MARKED_WORDS:
+    for piece in marked:
+        piece_words = [word for _, _, word in _tokens(piece)]
+        if len(piece_words) < MIN_MARKED_WORDS:
             continue
-        first_start = _find(words_, seq, 0)
+        first_start = _find(doc_words, piece_words, 0)
         if first_start is None:
             continue
         # Начало куска встречается и раньше, чем сам кусок: заголовок раздела стоит ещё в оглавлении.
@@ -335,13 +339,13 @@ def marked_spans(source: str, marked: list[str]) -> list[tuple[int, int]]:
         start_word: int | None = first_start
         end_word: int | None = None
         while start_word is not None:
-            end_word = _find(words_, seq, start_word, last=True)
-            if end_word is not None and end_word - start_word + 1 <= len(seq) * 1.5 + 20:
+            end_word = _find(doc_words, piece_words, start_word, last=True)
+            if end_word is not None and end_word - start_word + 1 <= len(piece_words) * 1.5 + 20:
                 break
-            start_word = _find(words_, seq, start_word + 1)
+            start_word = _find(doc_words, piece_words, start_word + 1)
         if start_word is None or end_word is None:
-            start_word, end_word = first_start, min(first_start + len(seq), len(toks)) - 1
-        spans.append((toks[start_word][0], toks[end_word][1]))
+            start_word, end_word = first_start, min(first_start + len(piece_words), len(tokens)) - 1
+        spans.append((tokens[start_word][0], tokens[end_word][1]))
     return spans
 
 
@@ -367,24 +371,24 @@ def marked_fragments(source: str, marked: list[str], context: ContextMode = "aca
     подсветка идёт через несколько абзацев; второе — подсветке предложениями в «Антиплагиате».
     """
     _, internals = analyze_internal(source, context)
-    p = internals.prepared
+    prepared = internals.prepared
     spans = marked_spans(source, marked)
-    toks = _tokens(source)
-    out: list[MarkedFragment] = []
-    for r in _fragments_of(internals):
-        s = p.to_source[r.start] if r.start < len(p.to_source) else r.start
-        e = p.to_source[r.end] if r.end < len(p.to_source) else r.end
-        inside = [t for t in toks if s <= t[0] < e]
-        covered = sum(1 for t in inside if any(a <= t[0] < b for a, b in spans))
-        out.append(
+    tokens = _tokens(source)
+    fragments: list[MarkedFragment] = []
+    for raw in _fragments_of(internals):
+        start = prepared.to_source[raw.start] if raw.start < len(prepared.to_source) else raw.start
+        end = prepared.to_source[raw.end] if raw.end < len(prepared.to_source) else raw.end
+        inside = [token for token in tokens if start <= token[0] < end]
+        covered = sum(1 for token in inside if any(span_start <= token[0] < span_end for span_start, span_end in spans))
+        fragments.append(
             MarkedFragment(
-                start=s,
-                end=e,
+                start=start,
+                end=end,
                 coverage=covered / len(inside) if inside else 0,
-                holds_piece=any(s <= a and b <= e for a, b in spans),
+                holds_piece=any(start <= span_start and span_end <= end for span_start, span_end in spans),
             )
         )
-    return out
+    return fragments
 
 
 # Абзац под подсветкой считается неправленым, если ближайший абзац итога совпадает с ним хотя бы
@@ -470,11 +474,11 @@ def label_fragments(source: str, marked: list[str]) -> list[Sample]:
     тепловой карты (`marked_from_heatmap`).
     """
     result, internals = analyze_internal(source, "academic")
-    out: list[Sample] = []
-    for r, m in zip(_fragments_of(internals), marked_fragments(source, marked), strict=True):
-        inside = [i for i in result.issues if m.start <= i.index < m.end]
-        out.append(Sample(f=features_for(r.text, inside), y=1 if m.marked else 0))
-    return out
+    samples: list[Sample] = []
+    for raw, mark in zip(_fragments_of(internals), marked_fragments(source, marked), strict=True):
+        inside = [issue for issue in result.issues if mark.start <= issue.index < mark.end]
+        samples.append(Sample(f=features_for(raw.text, inside), y=1 if mark.marked else 0))
+    return samples
 
 
 class HeatFragment(Record):
@@ -501,89 +505,98 @@ def marked_from_heatmap(raw: str, min_level: int = HEAT_RED) -> list[str] | None
             data = data.get("fragments")
         if not isinstance(data, list):
             return None
-        items = [HeatFragment.model_validate(x) for x in data]
+        items = [HeatFragment.model_validate(item) for item in data]
     except ValueError:
         return None
-    return [x.text for x in items if x.level >= min_level]
+    return [item.text for item in items if item.level >= min_level]
 
 
 def fit(samples: list[Sample], start: Model = DEFAULT_MODEL) -> Model:
     """Логистическая регрессия с L2 и выбором порога по сбалансированной точности."""
-    pos = sum(1 for s in samples if s.y == 1)
-    neg = len(samples) - pos
-    if pos == 0 or neg == 0:
+    positives = sum(1 for sample in samples if sample.y == 1)
+    negatives = len(samples) - positives
+    if positives == 0 or negatives == 0:
         return start
-    w_pos = len(samples) / (2 * pos)
-    w_neg = len(samples) / (2 * neg)
-    w = list(start.weights)
-    b = start.bias
-    lr = 0.05
+    positive_weight = len(samples) / (2 * positives)
+    negative_weight = len(samples) / (2 * negatives)
+    weights = list(start.weights)
+    bias = start.bias
+    learning_rate = 0.05
     l2 = 0.01
     for _ in range(4000):
-        gw = [0.0] * len(w)
-        gb = 0.0
-        cur = Model(bias=b, weights=w, threshold=0.5)
-        for s in samples:
-            err = (predict(cur, s.f) - s.y) * (w_pos if s.y == 1 else w_neg)
-            for k in range(len(w)):
-                gw[k] += err * (s.f[k] if k < len(s.f) else 0)
-            gb += err
-        for k in range(len(w)):
-            w[k] = w[k] - lr * (gw[k] / len(samples) + l2 * (w[k] - start.weights[k]))
-        b -= lr * gb / len(samples)
-    model = Model(bias=b, weights=w, threshold=0.5)
-    best_t, best_score = 0.5, -1.0
-    t = 0.2
-    while t <= 0.8001:
-        tp = tn = 0
-        for s in samples:
-            hit = predict(model, s.f) >= t
-            if hit and s.y == 1:
-                tp += 1
-            if not hit and s.y == 0:
-                tn += 1
-        bal = (tp / pos + tn / neg) / 2
-        if bal > best_score:
-            best_t, best_score = t, bal
-        t += 0.02
-    return Model(bias=fixed(model.bias, 4), weights=[fixed(x, 4) for x in model.weights], threshold=fixed(best_t, 2))
+        weight_grads = [0.0] * len(weights)
+        bias_grad = 0.0
+        current = Model(bias=bias, weights=weights, threshold=0.5)
+        for sample in samples:
+            error = (predict(current, sample.f) - sample.y) * (positive_weight if sample.y == 1 else negative_weight)
+            for k in range(len(weights)):
+                weight_grads[k] += error * (sample.f[k] if k < len(sample.f) else 0)
+            bias_grad += error
+        for k in range(len(weights)):
+            weights[k] = weights[k] - learning_rate * (
+                weight_grads[k] / len(samples) + l2 * (weights[k] - start.weights[k])
+            )
+        bias -= learning_rate * bias_grad / len(samples)
+    model = Model(bias=bias, weights=weights, threshold=0.5)
+    best_threshold, best_score = 0.5, -1.0
+    threshold = 0.2
+    while threshold <= 0.8001:
+        true_positives = true_negatives = 0
+        for sample in samples:
+            hit = predict(model, sample.f) >= threshold
+            if hit and sample.y == 1:
+                true_positives += 1
+            if not hit and sample.y == 0:
+                true_negatives += 1
+        balanced = (true_positives / positives + true_negatives / negatives) / 2
+        if balanced > best_score:
+            best_threshold, best_score = threshold, balanced
+        threshold += 0.02
+    return Model(
+        bias=fixed(model.bias, 4),
+        weights=[fixed(weight, 4) for weight in model.weights],
+        threshold=fixed(best_threshold, 2),
+    )
 
 
 def balanced_accuracy(model: Model, samples: list[Sample]) -> float:
-    pos = [s for s in samples if s.y == 1]
-    neg = [s for s in samples if s.y == 0]
-    if not pos or not neg:
+    positives = [sample for sample in samples if sample.y == 1]
+    negatives = [sample for sample in samples if sample.y == 0]
+    if not positives or not negatives:
         return math.nan
-    tp = sum(1 for s in pos if predict(model, s.f) >= model.threshold)
-    tn = sum(1 for s in neg if predict(model, s.f) < model.threshold)
-    return (tp / len(pos) + tn / len(neg)) / 2
+    true_positives = sum(1 for sample in positives if predict(model, sample.f) >= model.threshold)
+    true_negatives = sum(1 for sample in negatives if predict(model, sample.f) < model.threshold)
+    return (true_positives / len(positives) + true_negatives / len(negatives)) / 2
 
 
 def document_sample(source: str, share: float) -> DocSample:
     """Признаки и длины фрагментов документа с долей ИИ-текста из отчёта."""
     report = antiplagiat(source)
     return DocSample(
-        fragments=[DocFragment(f=f.features, chars=_chars(source[f.start : f.end])) for f in report.fragments],
+        fragments=[
+            DocFragment(f=fragment.features, chars=_chars(source[fragment.start : fragment.end]))
+            for fragment in report.fragments
+        ],
         share=share,
     )
 
 
 def predict_share(model: Model, doc: DocSample) -> float:
     """Доля ИИ-текста по знакам, которую модель предскажет для документа."""
-    ai = 0
-    all_ = 0
-    for fr in doc.fragments:
-        all_ += fr.chars
-        if predict(model, fr.f) >= model.threshold:
-            ai += fr.chars
-    return ai * 100 / all_ if all_ else 0
+    ai_chars = 0
+    all_chars = 0
+    for fragment in doc.fragments:
+        all_chars += fragment.chars
+        if predict(model, fragment.f) >= model.threshold:
+            ai_chars += fragment.chars
+    return ai_chars * 100 / all_chars if all_chars else 0
 
 
 def share_error(model: Model, docs: list[DocSample]) -> float:
     """Средняя ошибка доли ИИ-текста в процентных пунктах."""
     if not docs:
         return math.nan
-    return total(abs(predict_share(model, d) - d.share) for d in docs) / len(docs)
+    return total(abs(predict_share(model, doc) - doc.share) for doc in docs) / len(docs)
 
 
 def fit_share(model: Model, docs: list[DocSample]) -> Model:
@@ -595,13 +608,13 @@ def fit_share(model: Model, docs: list[DocSample]) -> Model:
     """
     if not docs:
         return model
-    best_bias, best_err = model.bias, share_error(model, docs)
-    d = -8.0
-    while d <= 8.0001:
-        bias = model.bias + d
-        err = share_error(model.model_copy(update={"bias": bias}), docs)
-        closer = abs(d) < abs(best_bias - model.bias)
-        if err < best_err - 1e-9 or (abs(err - best_err) <= 1e-9 and closer):
-            best_bias, best_err = bias, err
-        d += 0.02
+    best_bias, best_error = model.bias, share_error(model, docs)
+    shift = -8.0
+    while shift <= 8.0001:
+        bias = model.bias + shift
+        error = share_error(model.model_copy(update={"bias": bias}), docs)
+        closer = abs(shift) < abs(best_bias - model.bias)
+        if error < best_error - 1e-9 or (abs(error - best_error) <= 1e-9 and closer):
+            best_bias, best_error = bias, error
+        shift += 0.02
     return model.model_copy(update={"bias": fixed(best_bias, 4)})

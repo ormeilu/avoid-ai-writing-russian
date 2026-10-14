@@ -74,13 +74,13 @@ def runner(backend: str, model_dir: Path, onnx_dir: Path, threads: int) -> Any:
         return run
     import onnxruntime as ort
 
-    so = ort.SessionOptions()
-    so.intra_op_num_threads = threads
-    so.inter_op_num_threads = 1
-    so.log_severity_level = 3
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = threads
+    options.inter_op_num_threads = 1
+    options.log_severity_level = 3
     path = onnx_dir / ("fast.onnx" if backend == "onnx-fast" else "plain.onnx")
-    sess = ort.InferenceSession(str(path), so, providers=["CPUExecutionProvider"])
-    return lambda ids, mask: sess.run(None, {"input_ids": ids, "attention_mask": mask})
+    session = ort.InferenceSession(str(path), options, providers=["CPUExecutionProvider"])
+    return lambda ids, mask: session.run(None, {"input_ids": ids, "attention_mask": mask})
 
 
 def inputs(n: int) -> tuple[np.ndarray, np.ndarray]:
@@ -98,44 +98,58 @@ def peak_mb(backend: str, model_dir: Path, onnx_dir: Path, n: int, threads: int)
         "print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)"
     )
     args = [str(ROOT / "scripts"), backend, str(model_dir), str(onnx_dir), str(n), str(threads)]
-    r = subprocess.run([sys.executable, "-c", code, *args], capture_output=True, text=True, check=True)
-    rss = int(r.stdout.strip().splitlines()[-1])
+    done = subprocess.run([sys.executable, "-c", code, *args], capture_output=True, text=True, check=True)
+    rss = int(done.stdout.strip().splitlines()[-1])
     # ru_maxrss на macOS в байтах, на Linux в килобайтах.
     return rss / 2**20 if sys.platform == "darwin" else rss / 2**10
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    ap.add_argument("model_dir", type=Path)
-    ap.add_argument("--lengths", default="512,2048,8192")
-    ap.add_argument("--threads", default=f"{os.cpu_count()},2")
-    ap.add_argument("--plain-max", type=int, default=4096, help="обычный ONNX мерить только до стольких токенов")
-    ap.add_argument("--out", type=Path)
-    args = ap.parse_args(argv)
-    lengths = [int(x) for x in args.lengths.split(",")]
-    threads = [int(x) for x in args.threads.split(",")]
+    argument_parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
+    argument_parser.add_argument("model_dir", type=Path)
+    argument_parser.add_argument("--lengths", default="512,2048,8192")
+    argument_parser.add_argument("--threads", default=f"{os.cpu_count()},2")
+    argument_parser.add_argument(
+        "--plain-max", type=int, default=4096, help="обычный ONNX мерить только до стольких токенов"
+    )
+    argument_parser.add_argument("--out", type=Path)
+    args = argument_parser.parse_args(argv)
+    lengths = [int(value) for value in args.lengths.split(",")]
+    threads = [int(value) for value in args.threads.split(",")]
     rows: list[dict[str, Any]] = []
     with tempfile.TemporaryDirectory() as tmp:
         onnx_dir = Path(tmp)
         for name, fast in (("plain.onnx", False), ("fast.onnx", True)):
             export(args.model_dir, onnx_dir / name, fast)
-        for t in threads:
-            runs = {b: runner(b, args.model_dir, onnx_dir, t) for b in BACKENDS}
-            for n in lengths:
-                todo = [b for b in BACKENDS if b != "onnx" or n <= args.plain_max]
-                ids, mask = inputs(n)
+        for thread_count in threads:
+            runs = {backend: runner(backend, args.model_dir, onnx_dir, thread_count) for backend in BACKENDS}
+            for tokens in lengths:
+                todo = [backend for backend in BACKENDS if backend != "onnx" or tokens <= args.plain_max]
+                ids, mask = inputs(tokens)
                 best = dict.fromkeys(todo, float("inf"))
-                for b in todo:
-                    runs[b](ids, mask)
-                for _ in range(8 if n <= 2048 else 3):
-                    for b in todo:
+                for backend in todo:
+                    runs[backend](ids, mask)
+                for _ in range(8 if tokens <= 2048 else 3):
+                    for backend in todo:
                         start = time.perf_counter()
-                        runs[b](ids, mask)
-                        best[b] = min(best[b], time.perf_counter() - start)
-                for b in todo:
-                    ram = peak_mb(b, args.model_dir, onnx_dir, n, t)
-                    rows.append({"backend": b, "tokens": n, "threads": t, "seconds": best[b], "peak_mb": ram})
-                    print(f"{b:10} {n:5} токенов, {t} потоков: {best[b]:.3f} с, пик {ram:.0f} МБ", flush=True)
+                        runs[backend](ids, mask)
+                        best[backend] = min(best[backend], time.perf_counter() - start)
+                for backend in todo:
+                    ram = peak_mb(backend, args.model_dir, onnx_dir, tokens, thread_count)
+                    rows.append(
+                        {
+                            "backend": backend,
+                            "tokens": tokens,
+                            "threads": thread_count,
+                            "seconds": best[backend],
+                            "peak_mb": ram,
+                        }
+                    )
+                    print(
+                        f"{backend:10} {tokens:5} токенов, {thread_count} потоков: {best[backend]:.3f} с, "
+                        f"пик {ram:.0f} МБ",
+                        flush=True,
+                    )
     if args.out:
         result = {"rows": rows, "cpu": os.uname().machine, "cpus": os.cpu_count()}
         args.out.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

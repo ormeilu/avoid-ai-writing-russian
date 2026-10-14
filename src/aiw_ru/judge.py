@@ -61,33 +61,39 @@ class JudgeFragment(Record):
 def judge_fragments(source: str, context: ContextMode = "academic") -> list[JudgeFragment]:
     """Фрагменты для судьи, пронумерованные с 1."""
     return [
-        JudgeFragment(n=k, line=f.line, end_line=f.end_line, words=f.words, text=source[f.start : f.end].strip())
-        for k, f in enumerate(antiplagiat(source, context).fragments, 1)
+        JudgeFragment(
+            n=number,
+            line=fragment.line,
+            end_line=fragment.end_line,
+            words=fragment.words,
+            text=source[fragment.start : fragment.end].strip(),
+        )
+        for number, fragment in enumerate(antiplagiat(source, context).fragments, 1)
     ]
 
 
 def judge_prompt(source: str, context: ContextMode = "academic") -> str:
-    frs = judge_fragments(source, context)
-    body = "\n\n".join(f"[P{f.n}]\n{f.text}" for f in frs)
-    return PROMPT.replace("{count}", str(len(frs))).replace("{fragments}", body)
+    fragments = judge_fragments(source, context)
+    body = "\n\n".join(f"[P{fragment.n}]\n{fragment.text}" for fragment in fragments)
+    return PROMPT.replace("{count}", str(len(fragments))).replace("{fragments}", body)
 
 
 def parse_answer(text: str) -> dict[int, int]:
     """Уровни из ответа судьи: номер фрагмента → 0–3. Повтор номера берёт первый ответ."""
-    out: dict[int, int] = {}
-    for m in ANSWER_RE.finditer(text):
-        out.setdefault(int(m[1]), LEVELS[m[2].lower()])
-    return out
+    levels: dict[int, int] = {}
+    for match in ANSWER_RE.finditer(text):
+        levels.setdefault(int(match[1]), LEVELS[match[2].lower()])
+    return levels
 
 
 def auc(scores: list[float], labels: list[bool]) -> float:
     """ROC AUC с ничьими пополам; nan, если нет одного из классов."""
-    pos = [s for s, y in zip(scores, labels, strict=True) if y]
-    neg = [s for s, y in zip(scores, labels, strict=True) if not y]
-    if not pos or not neg:
+    positives = [score for score, label in zip(scores, labels, strict=True) if label]
+    negatives = [score for score, label in zip(scores, labels, strict=True) if not label]
+    if not positives or not negatives:
         return math.nan
-    wins = sum((a > b) + 0.5 * (a == b) for a in pos for b in neg)
-    return wins / (len(pos) * len(neg))
+    wins = sum((positive > negative) + 0.5 * (positive == negative) for positive in positives for negative in negatives)
+    return wins / (len(positives) * len(negatives))
 
 
 class JudgedFragment(Record):
@@ -125,49 +131,60 @@ def judge_score(
     source: str, answers: list[str], marked: list[str] | None = None, context: ContextMode = "academic"
 ) -> JudgeReport:
     report = antiplagiat(source, context)
-    runs = [parse_answer(a) for a in answers]
+    runs = [parse_answer(answer) for answer in answers]
     marks = marked_fragments(source, marked, context) if marked is not None else None
-    frs: list[JudgedFragment] = []
-    for k, f in enumerate(report.fragments, 1):
-        levels = [r.get(k) for r in runs]
-        got = [x for x in levels if x is not None]
-        frs.append(
+    fragments: list[JudgedFragment] = []
+    for number, fragment in enumerate(report.fragments, 1):
+        levels = [run.get(number) for run in runs]
+        answered = [level for level in levels if level is not None]
+        fragments.append(
             JudgedFragment(
-                n=k,
-                line=f.line,
-                end_line=f.end_line,
-                words=f.words,
+                n=number,
+                line=fragment.line,
+                end_line=fragment.end_line,
+                words=fragment.words,
                 levels=levels,
-                mean=fixed(sum(got) / len(got), 2) if got else None,
-                detector=f.probability,
-                marked=fixed(marks[k - 1].coverage, 2) if marks else None,
-                preview=f.preview,
+                mean=fixed(sum(answered) / len(answered), 2) if answered else None,
+                detector=fragment.probability,
+                marked=fixed(marks[number - 1].coverage, 2) if marks else None,
+                preview=fragment.preview,
             )
         )
-    total = sum(f.words for f in frs) or 1
+    total_words = sum(fragment.words for fragment in fragments) or 1
 
     def share(level: float) -> float:
-        return fixed(sum(f.words for f in frs if f.mean is not None and f.mean >= level) * 100 / total, 1)
+        return fixed(
+            sum(fragment.words for fragment in fragments if fragment.mean is not None and fragment.mean >= level)
+            * 100
+            / total_words,
+            1,
+        )
 
     pairs = list(combinations(range(len(runs)), 2))
     agreement = None
-    if pairs and frs:
+    if pairs and fragments:
         same = [
-            sum(1 for f in frs if f.levels[i] is not None and f.levels[i] == f.levels[j]) / len(frs) for i, j in pairs
+            sum(
+                1
+                for fragment in fragments
+                if fragment.levels[i] is not None and fragment.levels[i] == fragment.levels[j]
+            )
+            / len(fragments)
+            for i, j in pairs
         ]
         agreement = fixed(sum(same) / len(same), 3)
     judge_auc = detector_auc = None
     if marks:
-        rated = [(f, m) for f, m in zip(frs, marks, strict=True) if f.mean is not None]
-        labels = [m.marked for _, m in rated]
-        a = auc([f.mean or 0 for f, _ in rated], labels)
-        d = auc([f.detector for f in frs], [m.marked for m in marks])
-        judge_auc = None if math.isnan(a) else fixed(a, 3)
-        detector_auc = None if math.isnan(d) else fixed(d, 3)
+        rated = [(fragment, mark) for fragment, mark in zip(fragments, marks, strict=True) if fragment.mean is not None]
+        labels = [mark.marked for _, mark in rated]
+        judge_value = auc([fragment.mean or 0 for fragment, _ in rated], labels)
+        detector_value = auc([fragment.detector for fragment in fragments], [mark.marked for mark in marks])
+        judge_auc = None if math.isnan(judge_value) else fixed(judge_value, 3)
+        detector_auc = None if math.isnan(detector_value) else fixed(detector_value, 3)
     return JudgeReport(
         runs=len(runs),
-        fragments=frs,
-        missing=[f.n for f in frs if f.mean is None],
+        fragments=fragments,
+        missing=[fragment.n for fragment in fragments if fragment.mean is None],
         share_medium=share(1.5),
         share_low=share(0.5),
         agreement=agreement,

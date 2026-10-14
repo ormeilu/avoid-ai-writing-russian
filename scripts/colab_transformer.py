@@ -46,11 +46,11 @@ def colab(args: argparse.Namespace, *cmd: str, stdin: str | None = None, check: 
     if args.colab_config:
         base += ["--config", str(args.colab_config)]
     done = subprocess.run([*base, *cmd], input=stdin, capture_output=True, text=True, check=False)
-    out = done.stdout + done.stderr
-    print(out, end="" if out.endswith("\n") else "\n", flush=True)
+    output = done.stdout + done.stderr
+    print(output, end="" if output.endswith("\n") else "\n", flush=True)
     if check and done.returncode:
         raise SystemExit(f"colab {' '.join(cmd[:1])}: код {done.returncode}")
-    return out
+    return output
 
 
 def execute(args: argparse.Namespace, code: str, timeout: float) -> str:
@@ -59,8 +59,8 @@ def execute(args: argparse.Namespace, code: str, timeout: float) -> str:
 
 
 def git_commit() -> str:
-    def git(*a: str) -> str:
-        return subprocess.run(["git", *a], cwd=ROOT, capture_output=True, text=True, check=False).stdout.strip()
+    def git(*git_args: str) -> str:
+        return subprocess.run(["git", *git_args], cwd=ROOT, capture_output=True, text=True, check=False).stdout.strip()
 
     sha = git("rev-parse", "--short", "HEAD")
     return (sha + ("+правки" if git("status", "--porcelain") else "")) if sha else "неизвестен"
@@ -81,12 +81,12 @@ def bundle(path: Path) -> None:
         for name in BUNDLE:
             src = ROOT / name
             if src.exists():
-                tar.add(src, arcname=name, filter=lambda t: None if "__pycache__" in t.name else t)
+                tar.add(src, arcname=name, filter=lambda member: None if "__pycache__" in member.name else member)
 
 
 def cmd_up(args: argparse.Namespace) -> None:
-    out = colab(args, "new", "-s", args.session, "--gpu", args.gpu, check=False)
-    if "READY" not in out:
+    output = colab(args, "new", "-s", args.session, "--gpu", args.gpu, check=False)
+    if "READY" not in output:
         raise SystemExit(f"Colab не дал {args.gpu}: обучение не запускается, на CPU оно не имеет смысла")
 
 
@@ -134,9 +134,9 @@ print("GPU:", torch.cuda.get_device_name(0), float((x @ x).float().sum()))
     env = f"dict(os.environ, AIW_RU_DATA={DATA!r}, PYTHONPATH={REMOTE + '/src:' + REMOTE + '/scripts'!r})"
     fetch = "; ".join(
         f"subprocess.run([sys.executable, 'scripts/llmtrace.py', 'fetch', '--set', 'classification', "
-        f"'--split', {s!r}], cwd={REMOTE!r}, env={env}, check=True)"
-        for s in SPLITS
-        if s in args.splits
+        f"'--split', {split!r}], cwd={REMOTE!r}, env={env}, check=True)"
+        for split in SPLITS
+        if split in args.splits
     )
     execute(args, f"import os, subprocess, sys\n{fetch}\nprint(os.listdir({DATA!r}))", 3600)
 
@@ -177,7 +177,7 @@ print(subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used", "
 def cmd_fetch(args: argparse.Namespace) -> None:
     remote = args.remote.rstrip("/")
     archive = f"/content/{Path(remote).name}.tar.gz"
-    exclude = " ".join(f"--exclude={shlex.quote(x)}" for x in ("*.pt", "cache", *args.exclude))
+    exclude = " ".join(f"--exclude={shlex.quote(pattern)}" for pattern in ("*.pt", "cache", *args.exclude))
     code = f"""
 import subprocess
 subprocess.run("tar {exclude} -czf {archive} -C {Path(remote).parent} {Path(remote).name}", shell=True, check=True)
@@ -197,29 +197,29 @@ def cmd_down(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    ap.add_argument("--colab", default=os.environ.get("COLAB_CLI", "colab"), help="путь к Colab CLI")
-    ap.add_argument("--colab-config", type=Path, help="файл состояния сессий Colab CLI")
-    ap.add_argument("--session", default="aiw-transformer", help="имя сессии Colab")
-    sub = ap.add_subparsers(dest="command", required=True)
-    up = sub.add_parser("up", help="взять VM с GPU")
+    argument_parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
+    argument_parser.add_argument("--colab", default=os.environ.get("COLAB_CLI", "colab"), help="путь к Colab CLI")
+    argument_parser.add_argument("--colab-config", type=Path, help="файл состояния сессий Colab CLI")
+    argument_parser.add_argument("--session", default="aiw-transformer", help="имя сессии Colab")
+    subparsers = argument_parser.add_subparsers(dest="command", required=True)
+    up = subparsers.add_parser("up", help="взять VM с GPU")
     up.add_argument("--gpu", default="T4", help="T4, L4, A100 или H100, что разрешает аккаунт")
-    setup = sub.add_parser("setup", help="исходники, зависимости и корпус на VM")
+    setup = subparsers.add_parser("setup", help="исходники, зависимости и корпус на VM")
     setup.add_argument("--torch", help="версия torch вместо версии из uv.lock; builtin — torch из образа Colab")
     setup.add_argument("--splits", nargs="+", default=list(SPLITS), help="какие части корпуса скачать")
     setup.add_argument("--code-only", action="store_true", help="только обновить исходники на VM")
-    start = sub.add_parser("start", help="запустить задания train_transformer.py в фоне")
+    start = subparsers.add_parser("start", help="запустить задания train_transformer.py в фоне")
     start.add_argument("--name", required=True, help="имя лога")
     start.add_argument("--job", action="append", required=True, help="аргументы train_transformer.py")
-    status = sub.add_parser("status", help="хвост лога и загрузка GPU")
+    status = subparsers.add_parser("status", help="хвост лога и загрузка GPU")
     status.add_argument("--name", required=True, help="имя лога")
     status.add_argument("--chars", type=int, default=3000, help="сколько знаков лога показать")
-    fetch = sub.add_parser("fetch", help="забрать папку с VM")
+    fetch = subparsers.add_parser("fetch", help="забрать папку с VM")
     fetch.add_argument("remote", help="папка на VM")
     fetch.add_argument("local", type=Path, help="куда распаковать")
     fetch.add_argument("--exclude", action="append", default=[], help="шаблон файлов, которые не забирать")
-    sub.add_parser("down", help="освободить VM")
-    args = ap.parse_args(argv)
+    subparsers.add_parser("down", help="освободить VM")
+    args = argument_parser.parse_args(argv)
     {
         "up": cmd_up,
         "setup": cmd_setup,

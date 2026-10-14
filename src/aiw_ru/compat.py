@@ -46,54 +46,54 @@ def translate(source: str, flags: str = "") -> str:
     """Переводит выражение JS в синтаксис пакета `regex` с той же семантикой."""
     multiline = "m" in flags
     dotall = "s" in flags
-    out: list[str] = []
+    parts: list[str] = []
     i = 0
     in_class = False
     while i < len(source):
-        c = source[i]
-        if c == "\\" and i + 1 < len(source):
-            n = source[i + 1]
-            if in_class and n in _INSIDE:
-                out.append(_INSIDE[n])
-            elif not in_class and n in _OUTSIDE:
-                out.append(_OUTSIDE[n])
+        char = source[i]
+        if char == "\\" and i + 1 < len(source):
+            escaped = source[i + 1]
+            if in_class and escaped in _INSIDE:
+                parts.append(_INSIDE[escaped])
+            elif not in_class and escaped in _OUTSIDE:
+                parts.append(_OUTSIDE[escaped])
             else:
-                out.append(source[i : i + 2])
+                parts.append(source[i : i + 2])
             i += 2
             continue
         if in_class:
-            if c == "]":
+            if char == "]":
                 in_class = False
-            out.append(c)
+            parts.append(char)
         elif source.startswith("[\\s\\S]", i):
             # «Любой знак»: объединение \s и \S в Python то же самое.
-            out.append("[\\s\\S]")
+            parts.append("[\\s\\S]")
             i += 6
             continue
-        elif c == "[":
+        elif char == "[":
             in_class = True
-            out.append(c)
-        elif c == "." and not dotall:
-            out.append(f"[^{_LT}]")
-        elif c == "$":
-            out.append(f"(?=[{_LT}]|\\Z)" if multiline else "\\Z")
-        elif c == "^" and multiline:
-            out.append(f"(?:\\A|(?<=[{_LT}]))")
+            parts.append(char)
+        elif char == "." and not dotall:
+            parts.append(f"[^{_LT}]")
+        elif char == "$":
+            parts.append(f"(?=[{_LT}]|\\Z)" if multiline else "\\Z")
+        elif char == "^" and multiline:
+            parts.append(f"(?:\\A|(?<=[{_LT}]))")
         else:
-            out.append(c)
+            parts.append(char)
         i += 1
-    return "".join(out)
+    return "".join(parts)
 
 
 @cache
 def jsre(source: str, flags: str = "") -> regex.Pattern[str]:
     """Компилирует выражение JS; флаги `g`, `u`, `y` для Python значения не имеют."""
-    f = regex.V0
+    regex_flags = regex.V0
     if "i" in flags:
-        f |= regex.IGNORECASE
+        regex_flags |= regex.IGNORECASE
     if "s" in flags:
-        f |= regex.DOTALL
-    return regex.compile(translate(source, flags), f)
+        regex_flags |= regex.DOTALL
+    return regex.compile(translate(source, flags), regex_flags)
 
 
 def trim(s: str) -> str:
@@ -111,23 +111,23 @@ def trim_end(s: str) -> str:
 
 def js_round(x: float) -> int:
     """Math.round: половина округляется вверх (−2,5 → −2)."""
-    f = math.floor(x)
-    return int(f + 1 if x - f >= 0.5 else f)
+    floor = math.floor(x)
+    return int(floor + 1 if x - floor >= 0.5 else floor)
 
 
 def to_fixed(x: float, digits: int) -> str:
     """Number.prototype.toFixed: точное двоичное значение, половина — от нуля."""
     if math.isnan(x):
         return "NaN"
-    q = Decimal(x).quantize(Decimal(1).scaleb(-digits), rounding=ROUND_HALF_UP)
-    s = f"{q:f}"
-    return s[1:] if s.startswith("-") and not q else s
+    quantized = Decimal(x).quantize(Decimal(1).scaleb(-digits), rounding=ROUND_HALF_UP)
+    text = f"{quantized:f}"
+    return text[1:] if text.startswith("-") and not quantized else text
 
 
 def fixed(x: float, digits: int) -> float | int:
     """Number(x.toFixed(digits)): целое остаётся целым, как в JSON из JS."""
-    v = float(to_fixed(x, digits))
-    return int(v) if v.is_integer() else v
+    value = float(to_fixed(x, digits))
+    return int(value) if value.is_integer() else value
 
 
 def num_str(x: float) -> str:
@@ -139,7 +139,7 @@ def num_str(x: float) -> str:
 
 def total(xs) -> float:
     """Сумма слева направо, как reduce в JS; sum() в Python 3.12+ считает с компенсацией."""
-    acc = 0
+    running_sum = 0
     for x in xs:
-        acc += x
-    return acc
+        running_sum += x
+    return running_sum

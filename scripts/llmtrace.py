@@ -59,62 +59,62 @@ Span = tuple[int, int]
 
 def roc_auc(ai: Iterable[float], human: Iterable[float]) -> float:
     """Вероятность, что случайный ИИ-текст получит оценку выше случайного человеческого."""
-    a, h = list(ai), list(human)
-    if not a or not h:
+    ai_scores, human_scores = list(ai), list(human)
+    if not ai_scores or not human_scores:
         return 0.0
-    return float(roc_auc_score([1] * len(a) + [0] * len(h), a + h))
+    return float(roc_auc_score([1] * len(ai_scores) + [0] * len(human_scores), ai_scores + human_scores))
 
 
 def at_threshold(ai: list[float], human: list[float], t: float) -> dict[str, float]:
     """Метрики, если считать ИИ всё, что набрало не меньше `t`."""
-    tp = sum(s >= t for s in ai)
-    fp = sum(s >= t for s in human)
-    tn = len(human) - fp
-    precision = tp / (tp + fp) if tp + fp else 0.0
-    recall = tp / len(ai) if ai else 0.0
-    specificity = tn / len(human) if human else 0.0
+    true_positives = sum(score >= t for score in ai)
+    false_positives = sum(score >= t for score in human)
+    true_negatives = len(human) - false_positives
+    precision = true_positives / (true_positives + false_positives) if true_positives + false_positives else 0.0
+    recall = true_positives / len(ai) if ai else 0.0
+    specificity = true_negatives / len(human) if human else 0.0
     return {
         "threshold": t,
-        "accuracy": (tp + tn) / max(len(ai) + len(human), 1),
+        "accuracy": (true_positives + true_negatives) / max(len(ai) + len(human), 1),
         "precision": precision,
         "recall": recall,
         "f1": 2 * precision * recall / (precision + recall) if precision + recall else 0.0,
         "balanced_accuracy": (recall + specificity) / 2,
-        "fpr": fp / len(human) if human else 0.0,
+        "fpr": false_positives / len(human) if human else 0.0,
     }
 
 
 def best_f1(ai: list[float], human: list[float]) -> dict[str, float]:
     """Порог 1–100 с лучшим F1. Порог 0 не рассматривается: он называет ИИ всё подряд."""
-    return max((at_threshold(ai, human, t) for t in range(1, 101)), key=lambda c: c["f1"])
+    return max((at_threshold(ai, human, threshold) for threshold in range(1, 101)), key=lambda metrics: metrics["f1"])
 
 
 def merge(spans: Iterable[Span]) -> list[list[int]]:
-    out: list[list[int]] = []
-    for a, b in sorted((a, b) for a, b in spans if b > a):
-        if out and a <= out[-1][1]:
-            out[-1][1] = max(out[-1][1], b)
+    merged: list[list[int]] = []
+    for start, end in sorted((start, end) for start, end in spans if end > start):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
         else:
-            out.append([a, b])
-    return out
+            merged.append([start, end])
+    return merged
 
 
 def union_length(spans: Iterable[Span]) -> int:
     """Суммарная длина объединения отрезков."""
-    return sum(b - a for a, b in merge(spans))
+    return sum(end - start for start, end in merge(spans))
 
 
 def overlap_length(xs: Iterable[Span], ys: Iterable[Span]) -> int:
     """Длина пересечения двух наборов отрезков."""
-    a, b = merge(xs), merge(ys)
-    i = j = n = 0
-    while i < len(a) and j < len(b):
-        n += max(0, min(a[i][1], b[j][1]) - max(a[i][0], b[j][0]))
-        if a[i][1] < b[j][1]:
+    left, right = merge(xs), merge(ys)
+    i = j = total = 0
+    while i < len(left) and j < len(right):
+        total += max(0, min(left[i][1], right[j][1]) - max(left[i][0], right[j][0]))
+        if left[i][1] < right[j][1]:
             i += 1
         else:
             j += 1
-    return n
+    return total
 
 
 # ─── Данные ─────────────────────────────────────────────────────────────
@@ -138,22 +138,22 @@ def download(url: str) -> Iterator[bytes]:
         request = urllib.request.Request(url, headers={"Range": f"bytes={offset}-"} if offset else {})
         before = offset
         try:
-            with urllib.request.urlopen(request, timeout=60) as res:
-                if offset and res.status != 206:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                if offset and response.status != 206:
                     raise RuntimeError(f"{url}: сервер не умеет продолжать загрузку")
                 if not offset:
-                    total = int(res.headers.get("content-length") or 0)
+                    total = int(response.headers.get("content-length") or 0)
                     print(f"Скачиваю {url}" + (f" ({total / 1e6:.0f} МБ)" if total else ""), file=sys.stderr)
-                while chunk := res.read(1 << 20):
+                while chunk := response.read(1 << 20):
                     offset += len(chunk)
                     yield chunk
             return
-        except (OSError, TimeoutError) as e:
+        except (OSError, TimeoutError) as error:
             # Сдаёмся после пяти обрывов подряд без единого нового байта.
             stalled = 0 if offset > before else stalled + 1
             if stalled == 5:
                 raise
-            print(f"  связь оборвалась на {offset / 1e6:.0f} МБ ({e}), продолжаю", file=sys.stderr)
+            print(f"  связь оборвалась на {offset / 1e6:.0f} МБ ({error}), продолжаю", file=sys.stderr)
             time.sleep(stalled + 1)
 
 
@@ -161,26 +161,26 @@ def fetch(directory: Path, dataset: str, split: str) -> None:
     url = f"https://huggingface.co/datasets/iitolstykh/{REPOS[dataset]}/resolve/{REVISIONS[dataset]}/{split}.jsonl"
     directory.mkdir(parents=True, exist_ok=True)
     path = data_file(directory, dataset, split)
-    tmp = path.with_suffix(".part")
+    partial_path = path.with_suffix(".part")
     seen = kept = 0
-    buf = b""
-    with tmp.open("wb") as out:
+    buffer = b""
+    with partial_path.open("wb") as partial_file:
         for chunk in download(url):
-            buf += chunk
-            *lines, buf = buf.split(b"\n")
+            buffer += chunk
+            *lines, buffer = buffer.split(b"\n")
             for line in lines:
                 if not line.strip():
                     continue
                 seen += 1
                 if json.loads(line).get("lang") == "ru":
-                    out.write(line + b"\n")
+                    partial_file.write(line + b"\n")
                     kept += 1
-        if buf.strip():
+        if buffer.strip():
             seen += 1
-            if json.loads(buf).get("lang") == "ru":
-                out.write(buf + b"\n")
+            if json.loads(buffer).get("lang") == "ru":
+                partial_file.write(buffer + b"\n")
                 kept += 1
-    tmp.replace(path)
+    partial_path.replace(path)
     print(f"{path}: {kept} русских текстов из {seen}")
 
 
@@ -191,8 +191,8 @@ def load(directory: Path, dataset: str, split: str, limit: int = 0) -> list[str]
         raise SystemExit(
             f"llmtrace: нет {path}; сначала: uv run --group train scripts/llmtrace.py fetch --set {dataset} --split {split}"
         )
-    with path.open(encoding="utf-8") as f:
-        lines = [line for line in f if line.strip()]
+    with path.open(encoding="utf-8") as file:
+        lines = [line for line in file if line.strip()]
     if not limit or limit >= len(lines):
         return lines
     step = len(lines) / limit
@@ -208,37 +208,40 @@ NOT_DETECTOR = {"__init__.py", "__main__.py", "cli.py", "models.py"}
 
 def detector_key() -> str:
     """Хэш исходников детектора: меняется при правке правил, признаков и оценки."""
-    h = hashlib.sha1()
-    for p in sorted((ROOT / "src" / "aiw_ru").rglob("*.py")):
-        if p.name not in NOT_DETECTOR:
-            h.update(p.read_bytes())
-    return h.hexdigest()[:12]
+    digest = hashlib.sha1()
+    for path in sorted((ROOT / "src" / "aiw_ru").rglob("*.py")):
+        if path.name not in NOT_DETECTOR:
+            digest.update(path.read_bytes())
+    return digest.hexdigest()[:12]
 
 
 def keep_scan(text: str, context: ContextMode) -> dict:
-    r = analyze(text, context)
-    s = r.stats
+    result = analyze(text, context)
+    stats = result.stats
     return {
-        "score": r.score,
-        "types": dict(Counter(i.type for i in r.issues)),
+        "score": result.score,
+        "types": dict(Counter(issue.type for issue in result.issues)),
         "stats": {
-            "words": s.words,
-            "sentences": s.sentences,
-            "meanSentenceLength": s.mean_sentence_length,
-            "sentenceLengthCV": s.sentence_length_cv,
-            "mattr": s.mattr,
+            "words": stats.words,
+            "sentences": stats.sentences,
+            "meanSentenceLength": stats.mean_sentence_length,
+            "sentenceLengthCV": stats.sentence_length_cv,
+            "mattr": stats.mattr,
         },
     }
 
 
 def keep_antiplagiat(text: str, context: ContextMode) -> dict:
-    r = antiplagiat(text, context)
-    return {"share": r.ai_share, "spans": [[f.start, f.end] for f in r.fragments if f.ai]}
+    report = antiplagiat(text, context)
+    return {
+        "share": report.ai_share,
+        "spans": [[fragment.start, fragment.end] for fragment in report.fragments if fragment.ai],
+    }
 
 
 def _run_chunk(command: str, context: ContextMode, texts: list[str]) -> list[dict]:
     keep = keep_scan if command == "scan" else keep_antiplagiat
-    return [keep(t, context) for t in texts]
+    return [keep(text, context) for text in texts]
 
 
 def run_parallel[T](work: Callable[[list[str]], list[T]], texts: list[str], jobs: int) -> Iterator[T]:
@@ -271,14 +274,14 @@ def detect(
     stem = f"detector-{command}-{context}-{dataset}-{split}{f'-{limit}' if limit else ''}"
     cache = directory / f"{stem}-{detector_key()}.jsonl"
     if cache.exists():
-        with cache.open(encoding="utf-8") as f:
-            return lines, [json.loads(line) for line in f]
+        with cache.open(encoding="utf-8") as file:
+            return lines, [json.loads(line) for line in file]
     print(f"Детектор: {len(lines)} текстов в {jobs} процессах…", file=sys.stderr)
     texts = [json.loads(line)["text"] for line in lines]
     results = list(run_parallel(partial(_run_chunk, command, context), texts, jobs))
     for old in directory.glob(f"{stem}-*.jsonl"):
         old.unlink()
-    cache.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in results), encoding="utf-8")
+    cache.write_text("".join(json.dumps(result, ensure_ascii=False) + "\n" for result in results), encoding="utf-8")
     return lines, results
 
 
@@ -294,42 +297,45 @@ def pct(x: float) -> str:
 
 
 def table(title: str, head: list[str], rows: list[list[str]]) -> None:
-    widths = [max(len(r[k]) for r in [head, *rows]) for k in range(len(head))]
+    widths = [max(len(row[k]) for row in [head, *rows]) for k in range(len(head))]
 
-    def fmt(r: list[str]) -> str:
-        return "  ".join(c.ljust(w) if k == 0 else c.rjust(w) for k, (c, w) in enumerate(zip(r, widths, strict=True)))
+    def fmt(row: list[str]) -> str:
+        return "  ".join(
+            cell.ljust(width) if k == 0 else cell.rjust(width)
+            for k, (cell, width) in enumerate(zip(row, widths, strict=True))
+        )
 
     print(f"\n{title}\n{fmt(head)}")
-    for r in rows:
-        print(fmt(r))
+    for row in rows:
+        print(fmt(row))
 
 
 def classifier_rows(ai: list[float], human: list[float]) -> list[list[str]]:
     best = best_f1(ai, human)["threshold"]
     rows = []
-    for t in sorted({*THRESHOLDS, best}):
-        c = at_threshold(ai, human, t)
+    for threshold in sorted({*THRESHOLDS, best}):
+        metrics = at_threshold(ai, human, threshold)
         rows.append(
             [
-                f"{t}{' (лучший F1)' if t == best else ''}",
-                *(num(c[k]) for k in ("accuracy", "precision", "recall", "f1", "balanced_accuracy")),
-                pct(c["fpr"]),
+                f"{threshold}{' (лучший F1)' if threshold == best else ''}",
+                *(num(metrics[key]) for key in ("accuracy", "precision", "recall", "f1", "balanced_accuracy")),
+                pct(metrics["fpr"]),
             ]
         )
     return rows
 
 
 def cmd_eval(args: argparse.Namespace) -> None:
-    lines, res = detect(args.data, "classification", args.split, args.limit, "scan", args.context, args.jobs)
+    lines, results = detect(args.data, "classification", args.split, args.limit, "scan", args.context, args.jobs)
     rows = [json.loads(line) for line in lines]
-    for r in rows:
-        del r["text"]
-    human = [k for k, r in enumerate(rows) if r["label"] == "human"]
-    created = [k for k, r in enumerate(rows) if r["label"] == "ai" and r["prompt_type"] == "create"]
-    ai_all = [k for k, r in enumerate(rows) if r["label"] == "ai"]
+    for row in rows:
+        del row["text"]
+    human = [index for index, row in enumerate(rows) if row["label"] == "human"]
+    created = [index for index, row in enumerate(rows) if row["label"] == "ai" and row["prompt_type"] == "create"]
+    ai_all = [index for index, row in enumerate(rows) if row["label"] == "ai"]
 
-    def scores(ks: list[int]) -> list[float]:
-        return [res[k]["score"] for k in ks]
+    def scores(indices: list[int]) -> list[float]:
+        return [results[index]["score"] for index in indices]
 
     print(
         f"LLMTrace, русская часть {args.split}: {len(human)} человеческих текстов, {len(created)} сгенерированных "
@@ -350,7 +356,7 @@ def cmd_eval(args: argparse.Namespace) -> None:
         report[title] = {
             "auc": auc,
             "best": best_f1(scores(ai), scores(human)),
-            "thresholds": [at_threshold(scores(ai), scores(human), t) for t in THRESHOLDS],
+            "thresholds": [at_threshold(scores(ai), scores(human), threshold) for threshold in THRESHOLDS],
         }
     base = len(created) / max(len(created) + len(human), 1)
     print(
@@ -358,35 +364,37 @@ def cmd_eval(args: argparse.Namespace) -> None:
         "(люди против сгенерированных)."
     )
 
-    def share(ks: list[int], t: str) -> float:
-        return sum(t in res[k]["types"] for k in ks) / len(ks) if ks else 0.0
+    def share(indices: list[int], rule: str) -> float:
+        return sum(rule in results[index]["types"] for index in indices) / len(indices) if indices else 0.0
 
     labels = TYPE_LABELS
-    types = [t for t in labels if share(human, t) or share(created, t)]
-    types.sort(key=lambda t: share(created, t) / max(share(human, t), 1e-4))
+    types = [rule for rule in labels if share(human, rule) or share(created, rule)]
+    types.sort(key=lambda rule: share(created, rule) / max(share(human, rule), 1e-4))
     table(
         "Правила: доля документов со срабатыванием (сначала те, что чаще срабатывают у людей)",
         ["Правило", "Люди", "ИИ", "ИИ/люди", ""],
         [
             [
-                f"{labels[t]} ({t})",
-                pct(share(human, t)),
-                pct(share(created, t)),
-                num(share(created, t) / share(human, t), 1) if share(human, t) else "—",
-                "чаще у людей" if share(created, t) < share(human, t) else "",
+                f"{labels[rule]} ({rule})",
+                pct(share(human, rule)),
+                pct(share(created, rule)),
+                num(share(created, rule) / share(human, rule), 1) if share(human, rule) else "—",
+                "чаще у людей" if share(created, rule) < share(human, rule) else "",
             ]
-            for t in types
+            for rule in types
         ],
     )
-    report["rules"] = {t: {"human": share(human, t), "ai": share(created, t)} for t in types}
+    report["rules"] = {rule: {"human": share(human, rule), "ai": share(created, rule)} for rule in types}
 
     genre_rows = []
-    for g in sorted({r["data_type"] for r in rows}):
-        h = [k for k in human if rows[k]["data_type"] == g]
-        a = [k for k in created if rows[k]["data_type"] == g]
-        high = lambda ks: pct(sum(res[k]["score"] >= 40 for k in ks) / len(ks)) if ks else "—"
-        auc = num(roc_auc(scores(a), scores(h))) if h and a else "—"
-        genre_rows.append([g, str(len(h)), high(h), str(len(a)), high(a), auc])
+    for genre in sorted({row["data_type"] for row in rows}):
+        genre_human = [index for index in human if rows[index]["data_type"] == genre]
+        genre_ai = [index for index in created if rows[index]["data_type"] == genre]
+        high = lambda indices: (
+            pct(sum(results[index]["score"] >= 40 for index in indices) / len(indices)) if indices else "—"
+        )
+        auc = num(roc_auc(scores(genre_ai), scores(genre_human))) if genre_human and genre_ai else "—"
+        genre_rows.append([genre, str(len(genre_human)), high(genre_human), str(len(genre_ai)), high(genre_ai), auc])
     table(
         "Жанры: доля текстов с оценкой 40 и выше",
         ["Жанр", "Людей", "Люди ≥ 40", "ИИ", "ИИ ≥ 40", "ROC AUC"],
@@ -394,11 +402,11 @@ def cmd_eval(args: argparse.Namespace) -> None:
     )
 
     if args.rule:
-        hits = [k for k in human if args.rule in res[k]["types"]]
+        hits = [index for index in human if args.rule in results[index]["types"]]
         print(f"\nСрабатывания «{args.rule}» на человеческих текстах: {len(hits)}, примеры:")
-        for k in hits[: args.examples]:
-            row = json.loads(lines[k])
-            issue = next(i for i in analyze(row["text"], args.context).issues if i.type == args.rule)
+        for index in hits[: args.examples]:
+            row = json.loads(lines[index])
+            issue = next(issue for issue in analyze(row["text"], args.context).issues if issue.type == args.rule)
             around = " ".join(row["text"][max(0, issue.index - 80) : issue.index + 120].split())
             print(f"  [{row['data_type']}] «{issue.text}»\n    …{around}…")
     if args.json:
@@ -406,28 +414,28 @@ def cmd_eval(args: argparse.Namespace) -> None:
 
 
 def cmd_spans(args: argparse.Namespace) -> None:
-    lines, res = detect(args.data, "detection", args.split, args.limit, "antiplagiat", args.context, args.jobs)
-    tp = predicted = gold = 0
+    lines, results = detect(args.data, "detection", args.split, args.limit, "antiplagiat", args.context, args.jobs)
+    overlap_chars = predicted = gold = 0
     abs_error = 0.0
     by_label: dict[str, list[float]] = {}
     shares: dict[bool, list[float]] = {True: [], False: []}
-    for line, r in zip(lines, res, strict=True):
+    for line, result in zip(lines, results, strict=True):
         row = json.loads(line)
-        g = [(a, b) for a, b in row.get("ai_char_intervals") or []]
-        spans = [tuple(s) for s in r["spans"]]
-        tp += overlap_length(spans, g)
+        gold_spans = [(start, end) for start, end in row.get("ai_char_intervals") or []]
+        spans = [tuple(span) for span in result["spans"]]
+        overlap_chars += overlap_length(spans, gold_spans)
         predicted += union_length(spans)
-        gold += union_length(g)
-        n = len(row["text"])
-        gold_share = union_length(g) / n if n else 0.0
-        abs_error += abs(r["share"] / 100 - gold_share)
-        b = by_label.setdefault(row["label"], [0, 0.0, 0.0])
-        b[0] += 1
-        b[1] += r["share"] / 100
-        b[2] += gold_share
-        shares[row["label"] != "human"].append(r["share"])
-    precision = tp / predicted if predicted else 0.0
-    recall = tp / gold if gold else 0.0
+        gold += union_length(gold_spans)
+        length = len(row["text"])
+        gold_share = union_length(gold_spans) / length if length else 0.0
+        abs_error += abs(result["share"] / 100 - gold_share)
+        totals = by_label.setdefault(row["label"], [0, 0.0, 0.0])
+        totals[0] += 1
+        totals[1] += result["share"] / 100
+        totals[2] += gold_share
+        shares[row["label"] != "human"].append(result["share"])
+    precision = overlap_chars / predicted if predicted else 0.0
+    recall = overlap_chars / gold if gold else 0.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
     mae = abs_error / max(len(lines), 1)
     print(
@@ -442,7 +450,10 @@ def cmd_spans(args: argparse.Namespace) -> None:
     table(
         "Средняя доля ИИ-текста по меткам корпуса",
         ["Метка", "Текстов", "По antiplagiat", "По разметке"],
-        [[label, str(n), pct(s / n), pct(g / n)] for label, (n, s, g) in by_label.items()],
+        [
+            [label, str(count), pct(predicted_sum / count), pct(gold_sum / count)]
+            for label, (count, predicted_sum, gold_sum) in by_label.items()
+        ],
     )
     if args.json:
         Path(args.json).write_text(
@@ -456,20 +467,20 @@ def cmd_spans(args: argparse.Namespace) -> None:
 
 
 def parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("command", choices=["fetch", "eval", "spans"])
-    ap.add_argument("--data", type=Path, default=data_dir())
-    ap.add_argument("--split", default="test")
-    ap.add_argument("--set", dest="dataset", choices=list(REPOS))
-    ap.add_argument("--limit", type=int, default=0)
-    ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
-    ap.add_argument(
+    argument_parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    argument_parser.add_argument("command", choices=["fetch", "eval", "spans"])
+    argument_parser.add_argument("--data", type=Path, default=data_dir())
+    argument_parser.add_argument("--split", default="test")
+    argument_parser.add_argument("--set", dest="dataset", choices=list(REPOS))
+    argument_parser.add_argument("--limit", type=int, default=0)
+    argument_parser.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
+    argument_parser.add_argument(
         "--context", default="general", choices=CONTEXT_MODES, help="режим детектора, как у aiw-ru --context"
     )
-    ap.add_argument("--rule")
-    ap.add_argument("--examples", type=int, default=5)
-    ap.add_argument("--json")
-    return ap
+    argument_parser.add_argument("--rule")
+    argument_parser.add_argument("--examples", type=int, default=5)
+    argument_parser.add_argument("--json")
+    return argument_parser
 
 
 def main(argv: list[str] | None = None) -> None:
