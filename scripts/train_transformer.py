@@ -127,7 +127,7 @@ INFERENCE_VERSION = 1
 
 def _codes(*codes: int) -> str:
     """Символы для класса re в виде обратная косая + uXXXX: в исходниках только видимые знаки."""
-    return "".join(f"{chr(92)}u{c:04x}" for c in codes)
+    return "".join(f"{chr(92)}u{code:04x}" for code in codes)
 
 
 _INVISIBLE = _codes(0x200B, 0x200C, 0x200D, 0x200E, 0x200F, 0x2060, 0xFEFF, 0x00AD)
@@ -250,16 +250,16 @@ class Encoded:
     def seq(self, k: int) -> np.ndarray:
         return self.ids[self.offsets[k] : self.offsets[k + 1]]
 
-    def subset(self, idx: np.ndarray) -> Encoded:
-        seqs = [self.seq(int(k)) for k in idx]
+    def subset(self, indices: np.ndarray) -> Encoded:
+        sequences = [self.seq(int(k)) for k in indices]
         return Encoded(
-            ids=np.concatenate(seqs) if seqs else np.zeros(0, dtype=np.int32),
-            offsets=np.concatenate([[0], np.cumsum([len(s) for s in seqs])]).astype(np.int64),
-            truncated=self.truncated[idx],
-            y=self.y[idx],
-            genre=self.genre[idx],
-            prompt=self.prompt[idx],
-            generator=self.generator[idx],
+            ids=np.concatenate(sequences) if sequences else np.zeros(0, dtype=np.int32),
+            offsets=np.concatenate([[0], np.cumsum([len(sequence) for sequence in sequences])]).astype(np.int64),
+            truncated=self.truncated[indices],
+            y=self.y[indices],
+            genre=self.genre[indices],
+            prompt=self.prompt[indices],
+            generator=self.generator[indices],
         )
 
 
@@ -272,14 +272,16 @@ def encode_texts(texts: Sequence[str], tok: Any, max_length: int, raw: bool) -> 
     """Токены текстов с [CLS] и [SEP], обрезанные до max_length, и признак обрезки."""
     prep: Callable[[str], str] = str if raw else normalize
     cap = max_length * CHARS_PER_TOKEN
-    enc = tok([prep(t[:cap]) for t in texts], add_special_tokens=True, truncation=False)["input_ids"]
-    out, truncated = [], []
+    enc = tok([prep(source_text[:cap]) for source_text in texts], add_special_tokens=True, truncation=False)[
+        "input_ids"
+    ]
+    encoded, truncated = [], []
     for text, ids in zip(texts, enc, strict=True):
         if len(ids) <= max_length and len(text) > cap:
             ids = tok(prep(text), add_special_tokens=True, truncation=False)["input_ids"]
         truncated.append(len(ids) > max_length)
-        out.append(truncate(ids, max_length))
-    return out, truncated
+        encoded.append(truncate(ids, max_length))
+    return encoded, truncated
 
 
 def encode_split(
@@ -289,8 +291,8 @@ def encode_split(
     key = f"{tokenizer_key(tok)}-{max_length}-{'raw' if raw else normalize_key()}"
     cache = cache_dir / f"tokens-{split}{f'-{limit}' if limit else ''}-{key}.npz"
     if cache.exists():
-        z = np.load(cache)
-        return Encoded(**{f: z[f] for f in Encoded.__dataclass_fields__})
+        cached = np.load(cache)
+        return Encoded(**{field_name: cached[field_name] for field_name in Encoded.__dataclass_fields__})
     started = time.perf_counter()
     lines = load(data, "classification", split, limit)
     parts: list[np.ndarray] = []
@@ -298,14 +300,19 @@ def encode_split(
     truncated: list[bool] = []
     meta: list[tuple[int, str, str, str]] = []
     for i in range(0, len(lines), chunk):
-        rs = [json.loads(line) for line in lines[i : i + chunk]]
-        seqs, tr = encode_texts([r["text"] for r in rs], tok, max_length, raw)
-        parts += [np.asarray(s, dtype=np.int32) for s in seqs]
-        lengths += [len(s) for s in seqs]
-        truncated += tr
+        rows = [json.loads(line) for line in lines[i : i + chunk]]
+        seqs, chunk_truncated = encode_texts([row["text"] for row in rows], tok, max_length, raw)
+        parts += [np.asarray(sequence, dtype=np.int32) for sequence in seqs]
+        lengths += [len(sequence) for sequence in seqs]
+        truncated += chunk_truncated
         meta += [
-            (int(r["label"] == "ai"), r["data_type"], r["prompt_type"] or "", r["model"] if r["label"] == "ai" else "")
-            for r in rs
+            (
+                int(row["label"] == "ai"),
+                row["data_type"],
+                row["prompt_type"] or "",
+                row["model"] if row["label"] == "ai" else "",
+            )
+            for row in rows
         ]
         print(f"\r  {split}: {min(i + chunk, len(lines))}/{len(lines)}", end="", file=sys.stderr, flush=True)
     print(file=sys.stderr)
@@ -313,13 +320,13 @@ def encode_split(
         ids=np.concatenate(parts) if parts else np.zeros(0, dtype=np.int32),
         offsets=np.concatenate([[0], np.cumsum(lengths)]).astype(np.int64),
         truncated=np.array(truncated, dtype=bool),
-        y=np.array([m[0] for m in meta], dtype=np.int8),
-        genre=np.array([m[1] for m in meta]),
-        prompt=np.array([m[2] for m in meta]),
-        generator=np.array([m[3] for m in meta]),
+        y=np.array([entry[0] for entry in meta], dtype=np.int8),
+        genre=np.array([entry[1] for entry in meta]),
+        prompt=np.array([entry[2] for entry in meta]),
+        generator=np.array([entry[3] for entry in meta]),
     )
     cache_dir.mkdir(parents=True, exist_ok=True)
-    np.savez(cache, **{f: getattr(enc, f) for f in Encoded.__dataclass_fields__})
+    np.savez(cache, **{field_name: getattr(enc, field_name) for field_name in Encoded.__dataclass_fields__})
     print(
         f"Токены {split}: {len(enc)} текстов за {time.perf_counter() - started:.0f} с, "
         f"обрезано {comma_pct(float(enc.truncated.mean()))}",
@@ -333,13 +340,13 @@ def cut(order: np.ndarray, lengths: np.ndarray, size: int, tokens: int) -> list[
     """Режет тексты, отсортированные по длине, на пачки до size текстов и до tokens токенов (ширина × тексты)."""
     if not tokens:
         return [order[i : i + size] for i in range(0, len(order), size)]
-    out, start = [], 0
+    pieces, start = [], 0
     for i in range(1, len(order) + 1):
         # Ширина пачки — длина последнего, самого длинного текста.
         if i == len(order) or i - start == size or (i + 1 - start) * int(lengths[order[i]]) > tokens:
-            out.append(order[start:i])
+            pieces.append(order[start:i])
             start = i
-    return out
+    return pieces
 
 
 def batches(lengths: np.ndarray, size: int, rng: np.random.Generator | None, tokens: int = 0) -> list[np.ndarray]:
@@ -347,45 +354,45 @@ def batches(lengths: np.ndarray, size: int, rng: np.random.Generator | None, tok
 
     tokens ограничивает пачку по токенам: с окном 8192 пачка из длинных текстов иначе не влезает в память.
     """
-    n = len(lengths)
+    total = len(lengths)
     if rng is None:
         return cut(np.argsort(lengths, kind="stable"), lengths, size, tokens)
-    out: list[np.ndarray] = []
-    perm = rng.permutation(n)
+    pieces: list[np.ndarray] = []
+    perm = rng.permutation(total)
     pool = size * 64
-    for i in range(0, n, pool):
+    for i in range(0, total, pool):
         chunk = perm[i : i + pool]
-        out += cut(chunk[np.argsort(lengths[chunk], kind="stable")], lengths, size, tokens)
-    return [out[k] for k in rng.permutation(len(out))]
+        pieces += cut(chunk[np.argsort(lengths[chunk], kind="stable")], lengths, size, tokens)
+    return [pieces[k] for k in rng.permutation(len(pieces))]
 
 
-def collate(enc: Encoded, idx: np.ndarray, pad_id: int, multiple: int) -> tuple[np.ndarray, np.ndarray]:
+def collate(enc: Encoded, indices: np.ndarray, pad_id: int, multiple: int) -> tuple[np.ndarray, np.ndarray]:
     """input_ids и attention_mask пачки; ширина округляется вверх до кратной multiple."""
-    lens = enc.lengths[idx]
+    lens = enc.lengths[indices]
     width = int(-(-int(lens.max()) // multiple) * multiple)
-    ids = np.full((len(idx), width), pad_id, dtype=np.int64)
-    mask = np.zeros((len(idx), width), dtype=np.int64)
-    for row, k in enumerate(idx):
-        s = enc.seq(int(k))
-        ids[row, : len(s)] = s
-        mask[row, : len(s)] = 1
+    ids = np.full((len(indices), width), pad_id, dtype=np.int64)
+    mask = np.zeros((len(indices), width), dtype=np.int64)
+    for row, k in enumerate(indices):
+        sequence = enc.seq(int(k))
+        ids[row, : len(sequence)] = sequence
+        mask[row, : len(sequence)] = 1
     return ids, mask
 
 
 # ─── Метрики ────────────────────────────────────────────────────────────
 
 
-def quick(y: np.ndarray, p: np.ndarray) -> dict[str, float | None]:
+def quick(labels: np.ndarray, probs: np.ndarray) -> dict[str, float | None]:
     """Метрики для выбора шага: ROC AUC, accuracy при пороге 0,5 и logloss."""
     return {
-        "roc_auc": auc(y, p),
-        "accuracy": float((y == (p >= THRESHOLD)).mean()),
-        "logloss": float(log_loss(y, np.clip(p, 1e-7, 1 - 1e-7), labels=[0, 1])),
+        "roc_auc": auc(labels, probs),
+        "accuracy": float((labels == (probs >= THRESHOLD)).mean()),
+        "logloss": float(log_loss(labels, np.clip(probs, 1e-7, 1 - 1e-7), labels=[0, 1])),
     }
 
 
-def fmt(x: float | None, digits: int = 3) -> str:
-    return comma_num(x, digits) if x is not None else "—"
+def fmt(value: float | None, digits: int = 3) -> str:
+    return comma_num(value, digits) if value is not None else "—"
 
 
 # ─── Обучение ───────────────────────────────────────────────────────────
@@ -458,23 +465,23 @@ def predict_torch(
 ) -> np.ndarray:
     """Вероятность класса «ИИ» для каждого текста."""
     model.eval()
-    out = np.zeros(len(enc), dtype=np.float32)
-    for idx in batches(enc.lengths, size, None, tokens):
-        ids, mask = collate(enc, idx, pad_id, pad_multiple(device))
+    probs = np.zeros(len(enc), dtype=np.float32)
+    for indices in batches(enc.lengths, size, None, tokens):
+        ids, mask = collate(enc, indices, pad_id, pad_multiple(device))
         with autocast(device, precision):
             logits = model(
                 input_ids=torch.from_numpy(ids).to(device), attention_mask=torch.from_numpy(mask).to(device)
             ).logits
-        out[idx] = torch.softmax(logits.float(), dim=-1)[:, 1].cpu().numpy()
-    return out
+        probs[indices] = torch.softmax(logits.float(), dim=-1)[:, 1].cpu().numpy()
+    return probs
 
 
 def param_groups(model: Any, weight_decay: float) -> list[dict]:
     """Без затухания весов для смещений и нормировок."""
     decay, no_decay = [], []
-    for name, p in model.named_parameters():
-        if p.requires_grad:
-            (no_decay if p.ndim < 2 or "norm" in name.lower() else decay).append(p)
+    for name, parameter in model.named_parameters():
+        if parameter.requires_grad:
+            (no_decay if parameter.ndim < 2 or "norm" in name.lower() else decay).append(parameter)
     return [{"params": decay, "weight_decay": weight_decay}, {"params": no_decay, "weight_decay": 0.0}]
 
 
@@ -503,7 +510,7 @@ class Config:
         return 2 * self.batch_tokens
 
 
-def fit(cfg: Config, train: Encoded, valid: Encoded, out: Path, tok: Any) -> dict:
+def fit(cfg: Config, train: Encoded, valid: Encoded, out_dir: Path, tok: Any) -> dict:
     """Обучает модель; после каждой проверки на valid сохраняет лучший шаг в out/model."""
     device = pick_device(cfg.device)
     precision, why = pick_precision(device, cfg.precision)
@@ -535,14 +542,14 @@ def fit(cfg: Config, train: Encoded, valid: Encoded, out: Path, tok: Any) -> dic
         flush=True,
     )
     while step < total and not stop:
-        for idx in batches(train.lengths, cfg.batch, rng, cfg.batch_tokens):
+        for indices in batches(train.lengths, cfg.batch, rng, cfg.batch_tokens):
             model.train()
-            ids, mask = collate(train, idx, pad_id, pad_multiple(device))
+            ids, mask = collate(train, indices, pad_id, pad_multiple(device))
             with autocast(device, precision):
                 loss = model(
                     input_ids=torch.from_numpy(ids).to(device),
                     attention_mask=torch.from_numpy(mask).to(device),
-                    labels=torch.from_numpy(train.y[idx].astype(np.int64)).to(device),
+                    labels=torch.from_numpy(train.y[indices].astype(np.int64)).to(device),
                 ).loss
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
@@ -552,7 +559,7 @@ def fit(cfg: Config, train: Encoded, valid: Encoded, out: Path, tok: Any) -> dic
             scaler.update()
             sched.step()
             step += 1
-            seen += len(idx)
+            seen += len(indices)
             loss_sum += float(loss.detach())
             loss_n += 1
             if step % LOG_EVERY == 0:
@@ -574,17 +581,17 @@ def fit(cfg: Config, train: Encoded, valid: Encoded, out: Path, tok: Any) -> dic
                     f"({now - last:.0f} с на {LOG_EVERY} шагов)",
                     flush=True,
                 )
-                (out / "progress.json").write_text(json.dumps(progress) + "\n", encoding="utf-8")
+                (out_dir / "progress.json").write_text(json.dumps(progress) + "\n", encoding="utf-8")
                 last = now
             if step % eval_every == 0 or step == total:
                 sync(device)
-                t0 = time.perf_counter()
-                p = predict_torch(model, valid, device, precision, cfg.eval_batch, pad_id, cfg.eval_tokens)
+                eval_started = time.perf_counter()
+                probs = predict_torch(model, valid, device, precision, cfg.eval_batch, pad_id, cfg.eval_tokens)
                 point = {
                     "step": step,
                     "epoch": round(step / per_epoch, 3),
                     "train_loss": loss_sum / max(loss_n, 1),
-                    **quick(valid.y, p),
+                    **quick(valid.y, probs),
                     "seconds": time.perf_counter() - started,
                 }
                 curve.append(point)
@@ -593,21 +600,21 @@ def fit(cfg: Config, train: Encoded, valid: Encoded, out: Path, tok: Any) -> dic
                 better = score > best_auc
                 print(
                     f"valid на шаге {step}: ROC AUC {fmt(point['roc_auc'], 4)}, accuracy {fmt(point['accuracy'])}, "
-                    f"logloss {point['logloss']:.4f} ({time.perf_counter() - t0:.0f} с)"
+                    f"logloss {point['logloss']:.4f} ({time.perf_counter() - eval_started:.0f} с)"
                     + (", лучший" if better else ""),
                     flush=True,
                 )
                 if better:
                     best_auc, best_point, stale = score, point, 0
-                    model.save_pretrained(out / "model")
-                    tok.save_pretrained(out / "model")
-                    np.save(out / "valid-probs.npy", p)
+                    model.save_pretrained(out_dir / "model")
+                    tok.save_pretrained(out_dir / "model")
+                    np.save(out_dir / "valid-probs.npy", probs)
                 else:
                     stale += 1
                     if cfg.patience and stale >= cfg.patience:
                         print(f"Ранняя остановка: {stale} проверки подряд без роста ROC AUC", flush=True)
                         stop = True
-                (out / "curve.json").write_text(json.dumps(curve, indent=1) + "\n", encoding="utf-8")
+                (out_dir / "curve.json").write_text(json.dumps(curve, indent=1) + "\n", encoding="utf-8")
             if step >= total or stop:
                 break
     sync(device)
@@ -674,7 +681,7 @@ def base_revision(base: str) -> str:
         return HfApi().model_info(base).sha or ""
     except (HfHubHTTPError, OSError):
         snaps = Path(HF_HUB_CACHE) / f"models--{base.replace('/', '--')}" / "snapshots"
-        found = [p.name for p in snaps.iterdir()] if snaps.is_dir() else []
+        found = [snapshot.name for snapshot in snaps.iterdir()] if snaps.is_dir() else []
         return found[0] if len(found) == 1 else ""
 
 
@@ -709,13 +716,13 @@ def cmd_fit(args: argparse.Namespace, pilot: bool) -> None:
     limit = args.limit
     eval_limit = args.eval_limit if args.eval_limit is not None else limit // 2
     name = f"{short_name(cfg.base)}{'-raw' if cfg.raw else ''}"
-    out: Path = args.out or args.out_root / ("pilot" if pilot else "runs") / (f"{name}-{limit}" if limit else name)
-    out.mkdir(parents=True, exist_ok=True)
-    print(f"Папка запуска: {out}", flush=True)
+    out_dir: Path = args.out or args.out_root / ("pilot" if pilot else "runs") / (f"{name}-{limit}" if limit else name)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Папка запуска: {out_dir}", flush=True)
     train = encode_split(args.data, "train", limit, tok, cfg.max_length, cfg.raw, cache)
     valid = encode_split(args.data, "valid", eval_limit, tok, cfg.max_length, cfg.raw, cache)
-    summary = fit(cfg, train, valid, out, tok)
-    model: Any = AutoModelForSequenceClassification.from_pretrained(out / "model")
+    summary = fit(cfg, train, valid, out_dir, tok)
+    model: Any = AutoModelForSequenceClassification.from_pretrained(out_dir / "model")
     run: dict[str, Any] = {
         "created": datetime.now(UTC).strftime("%Y-%m-%d"),
         "kind": "pilot" if pilot else "train",
@@ -734,7 +741,7 @@ def cmd_fit(args: argparse.Namespace, pilot: bool) -> None:
             "base": cfg.base,
             "base_revision": base_revision(cfg.base),
             "base_license": LICENSES.get(cfg.base, ""),
-            "parameters": sum(p.numel() for p in model.parameters()),
+            "parameters": sum(probs.numel() for probs in model.parameters()),
             "max_length": cfg.max_length,
             "normalize": not cfg.raw,
             "normalize_rules": normalize_key(),
@@ -764,14 +771,16 @@ def cmd_fit(args: argparse.Namespace, pilot: bool) -> None:
         device = pick_device(cfg.device)
         started = time.perf_counter()
         _, _, pad_id = special_ids(tok)
-        p = predict_torch(model.to(device), test, device, summary["precision"], cfg.eval_batch, pad_id, cfg.eval_tokens)
-        np.save(out / "test-probs.npy", p)
+        probs = predict_torch(
+            model.to(device), test, device, summary["precision"], cfg.eval_batch, pad_id, cfg.eval_tokens
+        )
+        np.save(out_dir / "test-probs.npy", probs)
         run["dataset"]["test"] = len(test)
         run["params"]["truncated_share"]["test"] = float(test.truncated.mean())
-        run["torch_test"] = {**quick(test.y, p), "seconds": time.perf_counter() - started}
+        run["torch_test"] = {**quick(test.y, probs), "seconds": time.perf_counter() - started}
         print(f"test, PyTorch {summary['precision']}: {run['torch_test']}", flush=True)
-    (out / "run.json").write_text(json.dumps(run, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"Готово: {out / 'run.json'}", flush=True)
+    (out_dir / "run.json").write_text(json.dumps(run, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"Готово: {out_dir / 'run.json'}", flush=True)
 
 
 # ─── ONNX ───────────────────────────────────────────────────────────────
@@ -787,9 +796,9 @@ def export_onnx(model_dir: Path, path: Path) -> None:
     texts = ["Короткий пример.", "Пример подлиннее, чтобы в пачке были тексты разной длины."]
     sample = load_tokenizer(model_dir)(texts, padding=True)
     max_seq = int(model.config.max_position_embeddings)
-    big = sum(x.numel() for x in model.parameters()) * 4 > 1.8e9
+    big = sum(parameter.numel() for parameter in model.parameters()) * 4 > 1.8e9
     batch = torch.export.Dim("batch", min=1, max=1024)
-    seq = torch.export.Dim("sequence", min=2, max=max_seq)
+    sequence_dim = torch.export.Dim("sequence", min=2, max=max_seq)
     if model.config.model_type == "modernbert":
         model = FastModernBert(model).eval()
     torch.onnx.export(
@@ -802,7 +811,7 @@ def export_onnx(model_dir: Path, path: Path) -> None:
         },
         input_names=["input_ids", "attention_mask"],
         output_names=["logits"],
-        dynamic_shapes={"input_ids": {0: batch, 1: seq}, "attention_mask": {0: batch, 1: seq}},
+        dynamic_shapes={"input_ids": {0: batch, 1: sequence_dim}, "attention_mask": {0: batch, 1: sequence_dim}},
         dynamo=True,
         external_data=big,
         optimize=True,
@@ -845,13 +854,13 @@ def onnx_size(path: Path) -> float:
 
 
 def session(path: Path, threads: int) -> ort.InferenceSession:
-    so = ort.SessionOptions()
-    so.intra_op_num_threads = threads
-    so.inter_op_num_threads = 1
-    so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    so.log_severity_level = 3
-    return ort.InferenceSession(str(path), so, providers=["CPUExecutionProvider"])
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = threads
+    options.inter_op_num_threads = 1
+    options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    options.log_severity_level = 3
+    return ort.InferenceSession(str(path), options, providers=["CPUExecutionProvider"])
 
 
 class Session(Protocol):
@@ -861,9 +870,9 @@ class Session(Protocol):
 
 
 def softmax_ai(logits: np.ndarray) -> np.ndarray:
-    z = logits - logits.max(axis=1, keepdims=True)
-    e = np.exp(z)
-    return (e[:, 1] / e.sum(axis=1)).astype(np.float32)
+    shifted = logits - logits.max(axis=1, keepdims=True)
+    exp_logits = np.exp(shifted)
+    return (exp_logits[:, 1] / exp_logits.sum(axis=1)).astype(np.float32)
 
 
 def run_logits(sess: Session, ids: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -876,26 +885,26 @@ def predict_onnx(sess: Session, enc: Encoded, pad_id: int, size: int = 32) -> np
     Динамический int8 считает масштаб активаций по всей пачке, и ответ зависит от соседей
     по ней; aiw-ru подаёт тексты по одному, поэтому int8 оценивается с size=1.
     """
-    out = np.zeros(len(enc), dtype=np.float32)
-    for idx in batches(enc.lengths, size, None):
-        ids, mask = collate(enc, idx, pad_id, 1)
-        out[idx] = softmax_ai(run_logits(sess, ids, mask))
-    return out
+    probs = np.zeros(len(enc), dtype=np.float32)
+    for indices in batches(enc.lengths, size, None):
+        ids, mask = collate(enc, indices, pad_id, 1)
+        probs[indices] = softmax_ai(run_logits(sess, ids, mask))
+    return probs
 
 
-def timed(fn: Callable[[], object], warmup: int = 5, runs: int = 30) -> float:
+def timed(function: Callable[[], object], warmup: int = 5, runs: int = 30) -> float:
     """Медиана времени вызова в миллисекундах; для вызовов дольше секунды прогонов меньше."""
-    t = time.perf_counter()
-    fn()
-    if time.perf_counter() - t > 1:
+    started = time.perf_counter()
+    function()
+    if time.perf_counter() - started > 1:
         warmup, runs = 1, 5
     for _ in range(warmup - 1):
-        fn()
+        function()
     times = []
     for _ in range(runs):
-        t = time.perf_counter()
-        fn()
-        times.append(time.perf_counter() - t)
+        started = time.perf_counter()
+        function()
+        times.append(time.perf_counter() - started)
     return float(np.median(times) * 1000)
 
 
@@ -906,34 +915,36 @@ def run_torch(model: Any, ids: torch.Tensor, mask: torch.Tensor) -> None:
 
 def latency_inputs(enc: Encoded, length: int, suffix: Sequence[int]) -> tuple[np.ndarray, np.ndarray]:
     """Настоящий текст ровно на length токенов: самый длинный из части, обрезанный со служебным хвостом."""
-    s = enc.seq(int(np.argmax(enc.lengths)))
-    if len(s) > length:
-        s = np.concatenate([s[: length - len(suffix)], suffix]) if suffix else s[:length]
-    ids = s.astype(np.int64)[None, :]
+    sequence = enc.seq(int(np.argmax(enc.lengths)))
+    if len(sequence) > length:
+        sequence = np.concatenate([sequence[: length - len(suffix)], suffix]) if suffix else sequence[:length]
+    ids = sequence.astype(np.int64)[None, :]
     return ids, np.ones_like(ids)
 
 
 def latency_lengths(max_length: int) -> tuple[int, ...]:
     """Длины для замера задержки: 128 и 512 токенов у всех, у длинного окна ещё 2048 и всё окно."""
-    return tuple(sorted({*LATENCY_LENGTHS, *(n for n in (2048, max_length) if 512 < n <= max_length)}))
+    return tuple(sorted({*LATENCY_LENGTHS, *(length for length in (2048, max_length) if 512 < length <= max_length)}))
 
 
 def measure_latency(
     model: Any, onnx_files: dict[str, Path], enc: Encoded, suffix: Sequence[int], lengths: Sequence[int]
 ) -> list[dict]:
     """Задержка на один текст: ONNX Runtime и PyTorch на CPU, один поток и все ядра."""
-    out: list[dict] = []
+    rows: list[dict] = []
     for length in lengths:
         ids, mask = latency_inputs(enc, length, suffix)
         for threads in sorted({1, os.cpu_count() or 1}):
             for variant, path in onnx_files.items():
-                ms = timed(partial(run_logits, session(path, threads), ids, mask))
-                out.append({"runtime": f"onnxruntime {variant}", "tokens": ids.shape[1], "threads": threads, "ms": ms})
+                latency_ms = timed(partial(run_logits, session(path, threads), ids, mask))
+                rows.append(
+                    {"runtime": f"onnxruntime {variant}", "tokens": ids.shape[1], "threads": threads, "ms": latency_ms}
+                )
             torch.set_num_threads(threads)
-            ms = timed(partial(run_torch, model, torch.from_numpy(ids), torch.from_numpy(mask)))
-            out.append({"runtime": "torch fp32", "tokens": ids.shape[1], "threads": threads, "ms": ms})
+            latency_ms = timed(partial(run_torch, model, torch.from_numpy(ids), torch.from_numpy(mask)))
+            rows.append({"runtime": "torch fp32", "tokens": ids.shape[1], "threads": threads, "ms": latency_ms})
     torch.set_num_threads(os.cpu_count() or 1)
-    return out
+    return rows
 
 
 def cmd_export(args: argparse.Namespace) -> None:
@@ -953,9 +964,9 @@ def cmd_export(args: argparse.Namespace) -> None:
     wrap = model_wrap(model_dir)
     _, suffix = spec_wrap(wrap)
     pad_id = wrap["pad_id"]
-    p = run["params"]
+    params = run["params"]
     eval_limit = run["dataset"]["eval_limit"]
-    valid = eval_split(args.data, "valid", eval_limit, model_dir, p, args.out_root / "cache")
+    valid = eval_split(args.data, "valid", eval_limit, model_dir, params, args.out_root / "cache")
     # Сверка на текстах всех длин: равномерно по отсортированному списку.
     order = np.argsort(valid.lengths, kind="stable")
     pick = order[np.linspace(0, len(order) - 1, min(PARITY_TEXTS, len(order))).astype(int)]
@@ -972,25 +983,25 @@ def cmd_export(args: argparse.Namespace) -> None:
             "same_label": float(((got >= THRESHOLD) == (ref >= THRESHOLD)).mean()),
         }
     # Вывод по спецификации (tokenizers без transformers) даёт то же, что пакетная оценка.
-    spec = inference_spec(p, wrap, "head", "fp32")
+    spec = inference_spec(params, wrap, "head", "fp32")
     lines = load(args.data, "classification", "valid", eval_limit)
     texts = [json.loads(lines[int(k)])["text"] for k in pick[:50]]
-    btok = inference_tokenizer(model_dir / "tokenizer.json")
+    runtime_tokenizer = inference_tokenizer(model_dir / "tokenizer.json")
     sess = session(fp32, os.cpu_count() or 1)
-    one = np.array([predict_text(t, sess, btok, spec) for t in texts])
+    one = np.array([predict_text(text, sess, runtime_tokenizer, spec) for text in texts])
     batch = predict_onnx(sess, valid.subset(pick[:50]), pad_id)
     parity["spec_vs_batch_max_abs_diff"] = float(np.abs(one - batch).max())
     print(f"Сверка: {json.dumps(parity, ensure_ascii=False)}", flush=True)
     if parity["fp32"]["max_abs_diff"] > 1e-3 or parity["spec_vs_batch_max_abs_diff"] > 1e-3:
         raise SystemExit("ONNX fp32 или вывод по спецификации расходятся с PyTorch, см. сверку выше")
 
-    latency = measure_latency(model, {"fp32": fp32, "int8": int8}, valid, suffix, latency_lengths(p["max_length"]))
+    latency = measure_latency(model, {"fp32": fp32, "int8": int8}, valid, suffix, latency_lengths(params["max_length"]))
     table(
         "Задержка на один текст, мс",
         ["Среда", "Токенов", "Потоков", "мс"],
-        [[r["runtime"], str(r["tokens"]), str(r["threads"]), f"{r['ms']:.1f}"] for r in latency],
+        [[row["runtime"], str(row["tokens"]), str(row["threads"]), f"{row['ms']:.1f}"] for row in latency],
     )
-    weights = sum(f.stat().st_size for f in model_dir.glob("*.safetensors"))
+    weights = sum(file.stat().st_size for file in model_dir.glob("*.safetensors"))
     export = {
         "parity": parity,
         "latency": latency,
@@ -998,8 +1009,8 @@ def cmd_export(args: argparse.Namespace) -> None:
         "sizes_mb": {
             "onnx_fp32": onnx_size(fp32) / 1e6,
             "onnx_int8": onnx_size(int8) / 1e6,
-            "safetensors": (weights or sum(x.numel() for x in model.parameters()) * 4) / 1e6,
-            "tokenizer": sum(f.stat().st_size for f in model_dir.glob("tokenizer*")) / 1e6,
+            "safetensors": (weights or sum(parameter.numel() for parameter in model.parameters()) * 4) / 1e6,
+            "tokenizer": sum(file.stat().st_size for file in model_dir.glob("tokenizer*")) / 1e6,
         },
         "environment": environment(),
     }
@@ -1007,9 +1018,11 @@ def cmd_export(args: argparse.Namespace) -> None:
     print(f"Готово: {run_dir / args.json}", flush=True)
 
 
-def eval_split(data: Path, split: str, limit: int, model_dir: Path, p: dict, cache: Path) -> Encoded:
+def eval_split(data: Path, split: str, limit: int, model_dir: Path, params: dict, cache: Path) -> Encoded:
     """Часть корпуса в токенах, как при обучении."""
-    return encode_split(data, split, limit, load_tokenizer(model_dir), p["max_length"], not p["normalize"], cache)
+    return encode_split(
+        data, split, limit, load_tokenizer(model_dir), params["max_length"], not params["normalize"], cache
+    )
 
 
 def cpu_name() -> str:
@@ -1028,13 +1041,13 @@ def cpu_name() -> str:
 # ─── Вывод на CPU ───────────────────────────────────────────────────────
 
 
-def inference_spec(p: dict, wrap: dict, long_texts: str, weights: str = "int8") -> dict:
+def inference_spec(params: dict, wrap: dict, long_texts: str, weights: str = "int8") -> dict:
     """Всё, что нужно выводу без transformers: файл, токены, нормализация, порог, правило для длинных текстов.
 
     wrap — токены вокруг окна: cls_id, sep_id и pad_id.
     """
     windows = MAX_WINDOWS if long_texts == "mean_of_windows" else 1
-    read = p["max_length"]
+    read = params["max_length"]
     fragment = min(read, FRAGMENT_LENGTH)
     return {
         "version": INFERENCE_VERSION,
@@ -1053,7 +1066,7 @@ def inference_spec(p: dict, wrap: dict, long_texts: str, weights: str = "int8") 
         "long_texts": long_texts,
         "max_windows": windows,
         "normalize": [{"pattern": pat, "replacement": rep, "why": why} for pat, rep, why in NORMALIZE_RULES]
-        if p["normalize"]
+        if params["normalize"]
         else [],
     }
 
@@ -1071,13 +1084,15 @@ def windows(
 
 def window_probs(sess: Session, ids: Sequence[int], spec: dict) -> np.ndarray:
     """Вероятности окон текста целиком: окно read_length, если оно есть, иначе max_length."""
-    ws = windows(ids, spec.get("read_length", spec["max_length"]), *spec_wrap(spec), spec["max_windows"])
-    arr = np.full((len(ws), max(len(w) for w in ws)), spec["pad_id"], dtype=np.int64)
-    mask = np.zeros_like(arr)
-    for k, w in enumerate(ws):
-        arr[k, : len(w)] = w
-        mask[k, : len(w)] = 1
-    return softmax_ai(run_logits(sess, arr, mask))
+    text_windows = windows(ids, spec.get("read_length", spec["max_length"]), *spec_wrap(spec), spec["max_windows"])
+    batch_ids = np.full(
+        (len(text_windows), max(len(window) for window in text_windows)), spec["pad_id"], dtype=np.int64
+    )
+    mask = np.zeros_like(batch_ids)
+    for k, window in enumerate(text_windows):
+        batch_ids[k, : len(window)] = window
+        mask[k, : len(window)] = 1
+    return softmax_ai(run_logits(sess, batch_ids, mask))
 
 
 def predict_text(text: str, sess: Session, tok: tokenizers.Tokenizer, spec: dict) -> float:
@@ -1094,16 +1109,20 @@ def predict_text(text: str, sess: Session, tok: tokenizers.Tokenizer, spec: dict
 
 
 def long_texts(
-    sess: Session, data: Path, split: str, limit: int, enc: Encoded, head: np.ndarray, model_dir: Path, p: dict
+    sess: Session, data: Path, split: str, limit: int, enc: Encoded, head: np.ndarray, model_dir: Path, params: dict
 ) -> tuple[dict, np.ndarray, np.ndarray]:
     """Начало текста против среднего по окнам на текстах длиннее max_length."""
-    idx = np.flatnonzero(enc.truncated)
+    indices = np.flatnonzero(enc.truncated)
     lines = load(data, "classification", split, limit)
-    spec = inference_spec(p, model_wrap(model_dir), "mean_of_windows")
-    btok = inference_tokenizer(model_dir / "tokenizer.json")
-    mean = np.array([predict_text(json.loads(lines[int(k)])["text"], sess, btok, spec) for k in idx])
-    y = enc.y[idx]
-    return {"texts": len(idx), "head": quick(y, head[idx]), "mean_of_windows": quick(y, mean)}, idx, mean
+    spec = inference_spec(params, model_wrap(model_dir), "mean_of_windows")
+    runtime_tokenizer = inference_tokenizer(model_dir / "tokenizer.json")
+    mean = np.array([predict_text(json.loads(lines[int(k)])["text"], sess, runtime_tokenizer, spec) for k in indices])
+    labels = enc.y[indices]
+    return (
+        {"texts": len(indices), "head": quick(labels, head[indices]), "mean_of_windows": quick(labels, mean)},
+        indices,
+        mean,
+    )
 
 
 def spec_vs_eval(
@@ -1116,8 +1135,8 @@ def spec_vs_eval(
     order = np.argsort(enc.lengths, kind="stable")
     pick = order[np.linspace(0, len(order) - 1, min(PARITY_TEXTS, len(order))).astype(int)]
     lines = load(data, "classification", "valid", limit)
-    btok = inference_tokenizer(tokenizer)
-    one = np.array([predict_text(json.loads(lines[int(k)])["text"], sess, btok, spec) for k in pick])
+    runtime_tokenizer = inference_tokenizer(tokenizer)
+    one = np.array([predict_text(json.loads(lines[int(k)])["text"], sess, runtime_tokenizer, spec) for k in pick])
     diff = np.abs(one - probs[pick])
     return {"texts": len(pick), "max_abs_diff": float(diff.max()), "mean_abs_diff": float(diff.mean())}
 
@@ -1143,11 +1162,11 @@ def load_torch_classifier(model_dir: Path) -> Any:
 
 def install_size(packages: Sequence[str], python_platform: str, index: str | None = None) -> float | None:
     """Мегабайты на диске после установки пакетов с зависимостями через uv (Python 3.12)."""
-    uv = shutil.which("uv")
-    if not uv:
+    uv_path = shutil.which("uv")
+    if not uv_path:
         return None
-    with tempfile.TemporaryDirectory() as tmp:
-        cmd = [uv, "pip", "install", "--quiet", "--target", tmp, "--python-version", "3.12"]
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cmd = [uv_path, "pip", "install", "--quiet", "--target", tmp_dir, "--python-version", "3.12"]
         cmd += ["--python-platform", python_platform, *packages]
         if index:
             # У uv дополнительный индекс важнее основного: torch возьмётся из него, остальное с PyPI.
@@ -1158,7 +1177,7 @@ def install_size(packages: Sequence[str], python_platform: str, index: str | Non
         if done.returncode:
             print(f"uv pip install {' '.join(packages)}: {done.stderr.strip()[:300]}", file=sys.stderr)
             return None
-        return sum(f.stat().st_size for f in Path(tmp).rglob("*") if f.is_file()) / 1e6
+        return sum(file.stat().st_size for file in Path(tmp_dir).rglob("*") if file.is_file()) / 1e6
 
 
 def install_sizes() -> list[dict]:
@@ -1174,12 +1193,12 @@ def install_sizes() -> list[dict]:
         ("torch (CPU) + transformers", torch_deps, "x86_64-manylinux_2_28", "https://download.pytorch.org/whl/cpu"),
         ("torch + transformers", torch_deps, "x86_64-pc-windows-msvc", None),
     ]
-    out = []
+    rows = []
     for name, pkgs, plat, index in cases:
         size = install_size(pkgs, plat, index)
         print(f"  {name}, {plat}: {'—' if size is None else f'{size:.0f} МБ'}", file=sys.stderr, flush=True)
-        out.append({"stack": name, "packages": pkgs, "platform": plat, "mb": size})
-    return out
+        rows.append({"stack": name, "packages": pkgs, "platform": plat, "mb": size})
+    return rows
 
 
 # Приметы оформления: насколько каждая одна отделяет людей от моделей без всякого обучения.
@@ -1197,14 +1216,20 @@ SHORTCUTS: dict[str, Callable[[str], float]] = {
 
 def shortcut_probe(data: Path, split: str, limit: int) -> list[dict]:
     """ROC AUC каждой приметы оформления отдельно; 0,5 — примета ничего не говорит."""
-    rs = [json.loads(line) for line in load(data, "classification", split, limit)]
-    y = np.array([r["label"] == "ai" for r in rs], dtype=np.int8)
-    out = []
-    for name, fn in SHORTCUTS.items():
-        a = auc(y, np.array([fn(r["text"]) for r in rs], dtype=np.float64))
+    rows = [json.loads(line) for line in load(data, "classification", split, limit)]
+    labels = np.array([row["label"] == "ai" for row in rows], dtype=np.int8)
+    scores = []
+    for name, measure in SHORTCUTS.items():
+        auc_value = auc(labels, np.array([measure(row["text"]) for row in rows], dtype=np.float64))
         # Направление приметы не важно: 0,3 говорит столько же, сколько 0,7.
-        out.append({"cue": name, "roc_auc": a, "separation": None if a is None else max(a, 1 - a)})
-    return out
+        scores.append(
+            {
+                "cue": name,
+                "roc_auc": auc_value,
+                "separation": None if auc_value is None else max(auc_value, 1 - auc_value),
+            }
+        )
+    return scores
 
 
 def lightgbm_block() -> dict | None:
@@ -1213,64 +1238,71 @@ def lightgbm_block() -> dict | None:
     if not path.exists():
         try:
             path = Path(hf_hub_download(LIGHTGBM_REPO, "metrics.json"))
-        except (HfHubHTTPError, OSError) as e:
-            print(f"Метрики LightGBM не найдены: {e}", file=sys.stderr)
+        except (HfHubHTTPError, OSError) as error:
+            print(f"Метрики LightGBM не найдены: {error}", file=sys.stderr)
             return None
-    m = json.loads(path.read_text(encoding="utf-8"))
+    metrics = json.loads(path.read_text(encoding="utf-8"))
     keep = ("created", "git_commit", "test", "valid", "genres", "lengths", "prompt_types", "generators")
-    size = m.get("params", {}).get("size_kb")
-    return {"repo": LIGHTGBM_REPO, "size_mb": size / 1024 if size else None, **{k: m[k] for k in keep if k in m}}
+    size = metrics.get("params", {}).get("size_kb")
+    return {
+        "repo": LIGHTGBM_REPO,
+        "size_mb": size / 1024 if size else None,
+        **{k: metrics[k] for k in keep if k in metrics},
+    }
 
 
 def pilot_rows(out_root: Path) -> list[dict]:
     """Строки таблицы пилота: pilot/*/run.json и export.json."""
-    out = []
+    rows = []
     for run_file in sorted((out_root / "pilot").glob("*/run.json")):
         run = json.loads(run_file.read_text(encoding="utf-8"))
         exp_file = run_file.parent / "export.json"
-        exp = json.loads(exp_file.read_text(encoding="utf-8")) if exp_file.exists() else {}
-        lat = {(r["runtime"], r["tokens"], r["threads"]): r["ms"] for r in exp.get("latency", [])}
-        many = max((r["threads"] for r in exp.get("latency", [])), default=0)
-        p = run["params"]
-        out.append(
+        export_info = json.loads(exp_file.read_text(encoding="utf-8")) if exp_file.exists() else {}
+        latency_ms = {
+            (row["runtime"], row["tokens"], row["threads"]): row["ms"] for row in export_info.get("latency", [])
+        }
+        many = max((row["threads"] for row in export_info.get("latency", [])), default=0)
+        params = run["params"]
+        rows.append(
             {
-                "base": p["base"],
-                "license": p["base_license"],
-                "normalize": p["normalize"],
+                "base": params["base"],
+                "license": params["base_license"],
+                "normalize": params["normalize"],
                 "train": run["dataset"]["train"],
                 "valid": run["dataset"]["valid"],
-                "epochs": p.get("epochs"),
-                "lr": p.get("lr"),
-                "batch": p.get("batch"),
-                "seed": p.get("seed"),
+                "epochs": params.get("epochs"),
+                "lr": params.get("lr"),
+                "batch": params.get("batch"),
+                "seed": params.get("seed"),
                 "valid_roc_auc": run["valid"]["roc_auc"],
                 "valid_accuracy": run["valid"]["accuracy"],
-                "parameters": p["parameters"],
-                "train_seconds": p["train_seconds"],
-                "texts_per_second": p["texts_per_second"],
-                "gpu": p.get("gpu", ""),
-                "onnx_fp32_mb": exp.get("sizes_mb", {}).get("onnx_fp32"),
-                "onnx_int8_mb": exp.get("sizes_mb", {}).get("onnx_int8"),
-                "int8_ms_128_1": lat.get(("onnxruntime int8", 128, 1)),
-                "int8_ms_512_1": lat.get(("onnxruntime int8", 512, 1)),
-                "int8_ms_512_all": lat.get(("onnxruntime int8", 512, many)),
-                "fp32_ms_512_1": lat.get(("onnxruntime fp32", 512, 1)),
+                "parameters": params["parameters"],
+                "train_seconds": params["train_seconds"],
+                "texts_per_second": params["texts_per_second"],
+                "gpu": params.get("gpu", ""),
+                "onnx_fp32_mb": export_info.get("sizes_mb", {}).get("onnx_fp32"),
+                "onnx_int8_mb": export_info.get("sizes_mb", {}).get("onnx_int8"),
+                "int8_ms_128_1": latency_ms.get(("onnxruntime int8", 128, 1)),
+                "int8_ms_512_1": latency_ms.get(("onnxruntime int8", 512, 1)),
+                "int8_ms_512_all": latency_ms.get(("onnxruntime int8", 512, many)),
+                "fp32_ms_512_1": latency_ms.get(("onnxruntime fp32", 512, 1)),
             }
         )
-    return out
+    return rows
 
 
 def flat_environment(train_env: dict[str, str]) -> dict[str, str]:
     """Версии при обучении и при оценке на CPU в одном плоском словаре, как у LightGBM."""
-    ev = environment()
+    env_info = environment()
     # run.json с VM мог записать «2 ядер»: число ядер приводится к правильной форме.
     train_env = {
-        k: re.sub(r"(\d+) ядер\b", lambda g: plural(int(g[1]), "ядро", "ядра", "ядер"), v) for k, v in train_env.items()
+        k: re.sub(r"(\d+) ядер\b", lambda match: plural(int(match[1]), "ядро", "ядра", "ядер"), v)
+        for k, v in train_env.items()
     }
     return {
         **train_env,
         "onnx": _onnx_version(),
-        **{f"evaluate_{k}": v for k, v in ev.items() if train_env.get(k) != v},
+        **{f"evaluate_{k}": v for k, v in env_info.items() if train_env.get(k) != v},
     }
 
 
@@ -1323,7 +1355,7 @@ def copy_onnx(src: Path, dst: Path) -> None:
         onnx.save(onnx.load(src), dst, save_as_external_data=True, location=dst.name + ".data")
 
 
-def cpu_latency(run_dir: Path, m: dict) -> dict:
+def cpu_latency(run_dir: Path, metrics: dict) -> dict:
     """Задержка с другой машины: export в копии папки запуска кладёт export-latency.json.
 
     Нужен, когда обучение, экспорт и оценка шли на машине с GPU, а задержку в карточках
@@ -1332,10 +1364,14 @@ def cpu_latency(run_dir: Path, m: dict) -> dict:
     path = run_dir / "export-latency.json"
     if not path.exists():
         return {}
-    e = json.loads(path.read_text(encoding="utf-8"))
+    export_latency = json.loads(path.read_text(encoding="utf-8"))
     evaluated = json.loads((run_dir / "export.json").read_text(encoding="utf-8"))["cpu"]
-    hardware = f"обучение: {m['params']['gpu']}; оценка: {evaluated}; задержка: {e['cpu']}"
-    return {"latency": e["latency"], "latency_cpu": e["cpu"], "params": {**m["params"], "hardware": hardware}}
+    hardware = f"обучение: {metrics['params']['gpu']}; оценка: {evaluated}; задержка: {export_latency['cpu']}"
+    return {
+        "latency": export_latency["latency"],
+        "latency_cpu": export_latency["cpu"],
+        "params": {**metrics["params"], "hardware": hardware},
+    }
 
 
 def x86_latency(run_dir: Path) -> dict:
@@ -1358,13 +1394,13 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
     model_dir = run_dir / "model"
     run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     export = json.loads((run_dir / "export.json").read_text(encoding="utf-8"))
-    p = run["params"]
+    params = run["params"]
     limit = run["dataset"]["eval_limit"]
     hf_logging.set_verbosity_error()
     pad_id = model_wrap(model_dir)["pad_id"]
     cache = args.out_root / "cache"
-    valid = eval_split(args.data, "valid", limit, model_dir, p, cache)
-    test = eval_split(args.data, "test", limit, model_dir, p, cache)
+    valid = eval_split(args.data, "valid", limit, model_dir, params, cache)
+    test = eval_split(args.data, "test", limit, model_dir, params, cache)
     parts = {"valid": valid, "test": test}
     subset = args.onnx_texts > 0
     order = np.argsort(valid.lengths, kind="stable")
@@ -1378,7 +1414,7 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
     splits: dict[str, tuple[Encoded, np.ndarray]] = (
         {"valid_subset": (valid.subset(pick), valid.y[pick])}
         if pick is not None
-        else {s: (e, e.y) for s, e in parts.items()}
+        else {split_key: (encoded, encoded.y) for split_key, encoded in parts.items()}
     )
     if pick is not None:
         probs["torch"]["valid_subset"] = probs["torch"]["valid"][pick]
@@ -1392,9 +1428,9 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
         if not cached.exists():
             if variant not in sessions:
                 sessions[variant] = session(run_dir / "onnx" / files[variant], threads)
-            t0 = time.perf_counter()
+            started = time.perf_counter()
             np.save(cached, predict_onnx(sessions[variant], enc, pad_id, 1 if variant == "onnx_int8" else 32))
-            print(f"{variant} {split}: {time.perf_counter() - t0:.0f} с", flush=True)
+            print(f"{variant} {split}: {time.perf_counter() - started:.0f} с", flush=True)
         probs.setdefault(variant, {})[split] = np.load(cached)
 
     for variant in files:
@@ -1406,12 +1442,16 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
     # int8 идёт в поставку, если на valid теряет не больше --int8-max-drop ROC AUC и меняет метку не больше
     # чем у --int8-max-changes текстов; test в решении не участвует. --weights задаёт веса заранее.
     ref = cols[0]
-    ys0 = splits[ref][1]
-    drop = (quick(ys0, probs["onnx_fp32"][ref])["roc_auc"] or 0) - (quick(ys0, probs["onnx_int8"][ref])["roc_auc"] or 0)
+    ref_labels = splits[ref][1]
+    drop = (quick(ref_labels, probs["onnx_fp32"][ref])["roc_auc"] or 0) - (
+        quick(ref_labels, probs["onnx_int8"][ref])["roc_auc"] or 0
+    )
     changes = {
-        s: float(((probs["onnx_int8"][s] >= THRESHOLD) != (probs["onnx_fp32"][s] >= THRESHOLD)).mean())
-        for s in cols
-        if s in probs["onnx_int8"]
+        split_key: float(
+            ((probs["onnx_int8"][split_key] >= THRESHOLD) != (probs["onnx_fp32"][split_key] >= THRESHOLD)).mean()
+        )
+        for split_key in cols
+        if split_key in probs["onnx_int8"]
     }
     if args.weights == "auto":
         ok = drop <= args.int8_max_drop and changes[ref] <= args.int8_max_changes
@@ -1423,14 +1463,29 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
     for split in splits:
         if split not in probs[shipped]:
             run_variant(shipped, split)
-    ys = {s: y for s, (_, y) in splits.items()} | {s: e.y for s, e in parts.items()}
-    variants = {v: {s: quick(ys[s], q) for s, q in ps.items()} for v, ps in probs.items()}
+    labels_by_split = {split_key: labels for split_key, (_, labels) in splits.items()} | {
+        split_key: encoded.y for split_key, encoded in parts.items()
+    }
+    variants = {
+        variant_name: {
+            split_key: quick(labels_by_split[split_key], split_probs)
+            for split_key, split_probs in probs_by_split.items()
+        }
+        for variant_name, probs_by_split in probs.items()
+    }
     table(
         "Варианты модели: ROC AUC и accuracy",
-        ["Вариант", *(f"{s} {k}" for s in cols for k in ("AUC", "acc"))],
+        ["Вариант", *(f"{split_key} {k}" for split_key in cols for k in ("AUC", "acc"))],
         [
-            [v, *(fmt(m.get(s, {}).get(k), 4) for s in cols for k in ("roc_auc", "accuracy"))]
-            for v, m in variants.items()
+            [
+                variant_name,
+                *(
+                    fmt(variant_metrics.get(split_key, {}).get(k), 4)
+                    for split_key in cols
+                    for k in ("roc_auc", "accuracy")
+                ),
+            ]
+            for variant_name, variant_metrics in variants.items()
         ],
     )
     sess = session(run_dir / shipped_file, threads)
@@ -1438,39 +1493,39 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
 
     # Длинные тексты: начало или среднее по окнам, выбор по valid.
     if subset:
-        lng: dict[str, tuple[dict, np.ndarray, np.ndarray]] = {}
+        long_quality: dict[str, tuple[dict, np.ndarray, np.ndarray]] = {}
         for split, enc in parts.items():
-            w = np.load(run_dir / f"{split}-windows-probs.npz")
-            y = enc.y[w["idx"]]
-            q = {
-                "texts": len(w["idx"]),
-                "head": quick(y, main[split][w["idx"]]),
-                "mean_of_windows": quick(y, w["mean"]),
+            windows_npz = np.load(run_dir / f"{split}-windows-probs.npz")
+            labels = enc.y[windows_npz["idx"]]
+            quality = {
+                "texts": len(windows_npz["idx"]),
+                "head": quick(labels, main[split][windows_npz["idx"]]),
+                "mean_of_windows": quick(labels, windows_npz["mean"]),
             }
-            lng[split] = (q, w["idx"], w["mean"])
-        (lv, idx_v, mean_v), (lt, idx_t, mean_t) = lng["valid"], lng["test"]
+            long_quality[split] = (quality, windows_npz["idx"], windows_npz["mean"])
+        (long_valid, idx_v, mean_v), (long_test, idx_t, mean_t) = long_quality["valid"], long_quality["test"]
     else:
-        lv, idx_v, mean_v = long_texts(sess, args.data, "valid", limit, valid, main["valid"], model_dir, p)
-        lt, idx_t, mean_t = long_texts(sess, args.data, "test", limit, test, main["test"], model_dir, p)
-    use_windows = (lv["mean_of_windows"]["roc_auc"] or 0) > (lv["head"]["roc_auc"] or 0)
-    print(f"Длинные тексты, valid: {lv}\nДлинные тексты, test: {lt}", flush=True)
+        long_valid, idx_v, mean_v = long_texts(sess, args.data, "valid", limit, valid, main["valid"], model_dir, params)
+        long_test, idx_t, mean_t = long_texts(sess, args.data, "test", limit, test, main["test"], model_dir, params)
+    use_windows = (long_valid["mean_of_windows"]["roc_auc"] or 0) > (long_valid["head"]["roc_auc"] or 0)
+    print(f"Длинные тексты, valid: {long_valid}\nДлинные тексты, test: {long_test}", flush=True)
     final = main["test"].copy()
-    pv = main["valid"].copy()
+    final_valid = main["valid"].copy()
     if use_windows:
         final[idx_t] = mean_t
-        pv[idx_v] = mean_v
+        final_valid[idx_v] = mean_v
     wrap = model_wrap(model_dir)
-    spec = inference_spec(p, wrap, "mean_of_windows" if use_windows else "head", shipped.removeprefix("onnx_"))
-    spec_parity = spec_vs_eval(sess, args.data, limit, valid, pv, model_dir / "tokenizer.json", spec)
+    spec = inference_spec(params, wrap, "mean_of_windows" if use_windows else "head", shipped.removeprefix("onnx_"))
+    spec_parity = spec_vs_eval(sess, args.data, limit, valid, final_valid, model_dir / "tokenizer.json", spec)
     print(f"Вывод по inference.json против оценки: {spec_parity}", flush=True)
 
-    _, res = detect(args.data, "classification", "test", limit, "scan", "general", args.jobs)
-    score = np.array([r["score"] for r in res], dtype=np.float32)
+    _, results = detect(args.data, "classification", "test", limit, "scan", "general", args.jobs)
+    score = np.array([row["score"] for row in results], dtype=np.float32)
     part = Part(
         x=np.zeros((len(test), 0), dtype=np.float32),
         y=test.y,
         score=score,
-        words=np.array([r["stats"]["words"] for r in res]),
+        words=np.array([row["stats"]["words"] for row in results]),
         genre=test.genre,
         prompt=test.prompt,
         generator=test.generator,
@@ -1490,8 +1545,8 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
         "environment": flat_environment(run["environment"]),
         "dataset": {**run["dataset"], "valid": len(valid), "test": len(test)},
         "params": {
-            **p,
-            "license": p["base_license"],
+            **params,
+            "license": params["base_license"],
             "shipped": shipped,
             "shipped_file": shipped_file,
             "weights_choice": args.weights,
@@ -1503,10 +1558,13 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
             "onnx_texts": len(pick) if pick is not None else None,
             "size_mb": export["sizes_mb"][shipped],
             "external_data": (run_dir / f"{shipped_file}.data").exists(),
-            "hardware": f"обучение: {p['gpu']}; оценка и задержка: {export['cpu']}",
+            "hardware": f"обучение: {params['gpu']}; оценка и задержка: {export['cpu']}",
         },
         "test": {**model_test, "roc_auc": auc(test.y, final), "roc_auc_created": auc(test.y[created], final[created])},
-        "valid": {"accuracy": float((valid.y == (pv >= THRESHOLD)).mean()), "roc_auc": auc(valid.y, pv)},
+        "valid": {
+            "accuracy": float((valid.y == (final_valid >= THRESHOLD)).mean()),
+            "roc_auc": auc(valid.y, final_valid),
+        },
         "detector": {
             **classes(test.y, (score >= 40).astype(np.int8)),
             "threshold": 40,
@@ -1515,7 +1573,7 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
         },
         **breakdowns(part, final),
         "variants": variants,
-        "long_texts": {"rule": spec["long_texts"], "valid": lv, "test": lt},
+        "long_texts": {"rule": spec["long_texts"], "valid": long_valid, "test": long_test},
         "parity": {**export["parity"], "spec_vs_eval": spec_parity},
         "sizes_mb": export["sizes_mb"],
         "latency": export["latency"],
@@ -1525,7 +1583,7 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
         "shortcuts": shortcut_probe(args.data, "valid", limit),
         "curve": run["curve"],
         "pilot": pilot_rows(args.out_root),
-        "inference": {k: v for k, v in spec.items() if k != "normalize"},
+        "inference": {k: variant_name for k, variant_name in spec.items() if k != "normalize"},
         "lightgbm": lightgbm_block(),
     }
     (run_dir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -1593,28 +1651,28 @@ BASE_CITATIONS = {
 }
 
 
-def _auc(x: float | None) -> str:
-    return num(x) if x is not None else "—"
+def _auc(value: float | None) -> str:
+    return num(value) if value is not None else "—"
 
 
-def _num4(x: float | None) -> str:
-    return num(x, 4) if x is not None else "—"
+def _num4(value: float | None) -> str:
+    return num(value, 4) if value is not None else "—"
 
 
-def _ms(x: float | None) -> str:
-    return f"${x:.1f}$" if x is not None else "—"
+def _ms(value: float | None) -> str:
+    return f"${value:.1f}$" if value is not None else "—"
 
 
-def _mb(x: float | None) -> str:
-    if x is None:
+def _mb(value: float | None) -> str:
+    if value is None:
         return "—"
-    return f"${x:.0f}$" if x >= 100 else f"${x:.1f}$"
+    return f"${value:.0f}$" if value >= 100 else f"${value:.1f}$"
 
 
-def _sci(x: float) -> str:
+def _sci(value: float) -> str:
     """Малое число формулой: $3.2\\cdot 10^{-6}$."""
-    mant, exp = f"{x:.1e}".split("e")
-    return f"${mant}\\cdot 10^{{{int(exp)}}}$"
+    mantissa, exponent = f"{value:.1e}".split("e")
+    return f"${mantissa}\\cdot 10^{{{int(exponent)}}}$"
 
 
 def _code(text: str) -> str:
@@ -1623,136 +1681,136 @@ def _code(text: str) -> str:
 
 
 def _by(rows: list[dict] | None, key: str) -> dict[str, dict]:
-    return {r[key]: r for r in rows or []}
+    return {row[key]: row for row in rows or []}
 
 
-def _nw(n: int, one: str, few: str, many: str) -> str:
+def _nw(number: int, one: str, few: str, many: str) -> str:
     """Число формулой и слово в нужной форме: $2$ текста, $5$ текстов."""
     # Форма зависит только от двух последних цифр, а число меньше 100 plural не делит на разряды.
-    return f"{count(n)} {plural(n % 100, one, few, many).split(' ', 1)[1]}"
+    return f"{count(number)} {plural(number % 100, one, few, many).split(' ', 1)[1]}"
 
 
-def _tokens_gen(n: int) -> str:
+def _tokens_gen(number: int) -> str:
     """«длиннее $512$ токенов», «длиннее $21$ токена»."""
-    return _nw(n, "токена", "токенов", "токенов")
+    return _nw(number, "токена", "токенов", "токенов")
 
 
-def _texts_loc(n: int) -> str:
+def _texts_loc(number: int) -> str:
     """«на $5$ текстах», «на $21$ тексте»."""
-    return _nw(n, "тексте", "текстах", "текстах")
+    return _nw(number, "тексте", "текстах", "текстах")
 
 
-def _params_count(n: int) -> str:
-    return f"${n / 1e6:.1f}$ млн"
+def _params_count(number: int) -> str:
+    return f"${number / 1e6:.1f}$ млн"
 
 
-def _weights(m: dict) -> str:
-    return "int8" if m["params"]["shipped"] == "onnx_int8" else "fp32"
+def _weights(metrics: dict) -> str:
+    return "int8" if metrics["params"]["shipped"] == "onnx_int8" else "fp32"
 
 
 def _lat(rows_: list[dict] | None, runtime: str, tokens: int = 512, threads: int = 1) -> float | None:
-    for r in rows_ or []:
-        if (r["runtime"], r["tokens"], r["threads"]) == (runtime, tokens, threads):
-            return r["ms"]
+    for row in rows_ or []:
+        if (row["runtime"], row["tokens"], row["threads"]) == (runtime, tokens, threads):
+            return row["ms"]
     return None
 
 
-def _shipped_ms(m: dict, x86: bool = False) -> float | None:
+def _shipped_ms(metrics: dict, x86: bool = False) -> float | None:
     """Задержка того, что в поставке, на $512$ токенах в один поток: M1 или два ядра x86."""
-    return _lat(m.get("latency_x86") if x86 else m.get("latency"), f"onnxruntime {_weights(m)}")
+    return _lat(metrics.get("latency_x86") if x86 else metrics.get("latency"), f"onnxruntime {_weights(metrics)}")
 
 
 def _hub_link(repo: str) -> str:
     return f"[`{repo.split('/')[-1]}`](https://huggingface.co/{repo})"
 
 
-def _classify_cmd(b: Bundle) -> str:
-    return "aiw-ru classify текст.md" if b.default else f"aiw-ru classify --model {b.name} текст.md"
+def _classify_cmd(bundle: Bundle) -> str:
+    return "aiw-ru classify текст.md" if bundle.default else f"aiw-ru classify --model {bundle.name} текст.md"
 
 
 def related_row(run_dir: Path) -> dict:
     """Другая модель aiw-ru для сравнения в карточке: её metrics.json после evaluate."""
-    m = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
-    m |= x86_latency(run_dir)
-    b = bundle_for(m["params"]["base"])
+    metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+    metrics |= x86_latency(run_dir)
+    bundle = bundle_for(metrics["params"]["base"])
     return {
-        "name": b.name,
-        "repo": b.repo,
-        "base": m["params"]["base"],
-        "weights": _weights(m),
-        "size_mb": m["params"]["size_mb"],
-        "ms_512_1": _shipped_ms(m),
-        "x86_ms_512_1": _shipped_ms(m, x86=True),
-        "test": {k: m["test"][k] for k in ("accuracy", "roc_auc", "roc_auc_created", "macro", "classes")},
+        "name": bundle.name,
+        "repo": bundle.repo,
+        "base": metrics["params"]["base"],
+        "weights": _weights(metrics),
+        "size_mb": metrics["params"]["size_mb"],
+        "ms_512_1": _shipped_ms(metrics),
+        "x86_ms_512_1": _shipped_ms(metrics, x86=True),
+        "test": {k: metrics["test"][k] for k in ("accuracy", "roc_auc", "roc_auc_created", "macro", "classes")},
     }
 
 
-def _models_rows(m: dict, repo: str) -> list[dict]:
+def _models_rows(metrics: dict, repo: str) -> list[dict]:
     """Все модели aiw-ru с числами на test в порядке aiw-ru: по доле людей, принятых за ИИ."""
     rows = [
         {
-            "name": bundle_for(m["params"]["base"]).name,
+            "name": bundle_for(metrics["params"]["base"]).name,
             "repo": repo,
-            "test": m["test"],
-            "size_mb": m["params"]["size_mb"],
-            "ms": _shipped_ms(m),
-            "x86": _shipped_ms(m, x86=True),
+            "test": metrics["test"],
+            "size_mb": metrics["params"]["size_mb"],
+            "ms": _shipped_ms(metrics),
+            "x86": _shipped_ms(metrics, x86=True),
             "this": True,
         }
     ]
     rows += [
         {
-            "name": r["name"],
-            "repo": r["repo"],
-            "test": r["test"],
-            "size_mb": r["size_mb"],
-            "ms": r["ms_512_1"],
-            "x86": r["x86_ms_512_1"],
+            "name": run["name"],
+            "repo": run["repo"],
+            "test": run["test"],
+            "size_mb": run["size_mb"],
+            "ms": run["ms_512_1"],
+            "x86": run["x86_ms_512_1"],
             "this": False,
         }
-        for r in m.get("related", [])
+        for run in metrics.get("related", [])
     ]
-    lg = m.get("lightgbm") or {}
-    if lg.get("test"):
+    lightgbm = metrics.get("lightgbm") or {}
+    if lightgbm.get("test"):
         rows.append(
             {
                 "name": "lightgbm",
-                "repo": lg["repo"],
-                "test": lg["test"],
-                "size_mb": lg.get("size_mb"),
+                "repo": lightgbm["repo"],
+                "test": lightgbm["test"],
+                "size_mb": lightgbm.get("size_mb"),
                 "ms": None,
                 "x86": None,
                 "this": False,
             }
         )
-    return sorted(rows, key=lambda r: _fpr(r["test"]))
+    return sorted(rows, key=lambda run: _fpr(run["test"]))
 
 
-def _fpr(t: dict) -> float:
-    return 1 - t["classes"]["human"]["recall"]
+def _fpr(split_metrics: dict) -> float:
+    return 1 - split_metrics["classes"]["human"]["recall"]
 
 
 def _models_md(rows: list[dict]) -> str:
     """Таблица моделей: доля людей, принятых за ИИ, первой, потому что по ней aiw-ru выбирает модель."""
 
-    def name(r: dict) -> str:
-        link = f"[`{r['name']}`](https://huggingface.co/{r['repo']})"
-        return f"{link}, эта модель" if r["this"] else link
+    def name(row: dict) -> str:
+        link = f"[`{row['name']}`](https://huggingface.co/{row['repo']})"
+        return f"{link}, эта модель" if row["this"] else link
 
     head = ["Модель", "Людей принято за ИИ", "ROC AUC", "Accuracy", "Файл, МБ", "M1, мс", "x86, мс"]
     return md_table(
         head,
         [
             [
-                name(r),
-                pct(_fpr(r["test"])),
-                _num4(r["test"]["roc_auc"]),
-                num(r["test"]["accuracy"]),
-                _mb(r["size_mb"]),
-                _ms(r["ms"]),
-                _ms(r["x86"]),
+                name(row),
+                pct(_fpr(row["test"])),
+                _num4(row["test"]["roc_auc"]),
+                num(row["test"]["accuracy"]),
+                _mb(row["size_mb"]),
+                _ms(row["ms"]),
+                _ms(row["x86"]),
             ]
-            for r in rows
+            for row in rows
         ],
     )
 
@@ -1761,21 +1819,21 @@ def _summary(name: str) -> str:
     """Когда брать модель: та же строка, что показывает `aiw-ru models info`."""
     if name in MODELS:
         return MODELS[name].summary
-    return next((b.summary for b in BUNDLES.values() if b.name == name), "")
+    return next((bundle.summary for bundle in BUNDLES.values() if bundle.name == name), "")
 
 
 def _notes_md(rows: list[dict]) -> str:
     return "\n".join(
-        f"- `{r['name']}`{' (эта модель)' if r['this'] else ''} — {_summary(r['name'])}."
-        for r in rows
-        if _summary(r["name"])
+        f"- `{row['name']}`{' (эта модель)' if row['this'] else ''} — {_summary(row['name'])}."
+        for row in rows
+        if _summary(row["name"])
     )
 
 
-def _choose_md(m: dict, repo: str) -> str:
+def _choose_md(metrics: dict, repo: str) -> str:
     """Раздел «Какую модель выбрать»: вступление, таблица, строка на модель и правило выбора."""
-    rows = _models_rows(m, repo)
-    return f"""{_position(m, rows)}
+    rows = _models_rows(metrics, repo)
+    return f"""{_position(metrics, rows)}
 
 {_models_md(rows)}
 
@@ -1794,14 +1852,14 @@ _ORDINAL = {1: "первая", 2: "вторая", 3: "третья", 4: "чет�
 _OF = {2: "двух", 3: "трёх", 4: "четырёх", 5: "пяти", 6: "шести"}
 
 
-def _position(m: dict, rows: list[dict]) -> str:
+def _position(metrics: dict, rows: list[dict]) -> str:
     """Место модели среди трансформеров aiw-ru: точнее или быстрее и какой ценой."""
-    rel = m.get("related", [])
-    auc_, ms, mb = m["test"]["roc_auc"], _shipped_ms(m), m["params"]["size_mb"]
-    most_accurate = all(auc_ >= r["test"]["roc_auc"] for r in rel)
-    fastest = ms is not None and all(r["ms_512_1"] is None or ms <= r["ms_512_1"] for r in rel)
-    slowest = ms is not None and all(r["ms_512_1"] is None or ms >= r["ms_512_1"] for r in rel)
-    better = [f"`{r['name']}`" for r in rel if r["test"]["roc_auc"] > auc_]
+    rel = metrics.get("related", [])
+    auc_, latency_ms, size_mb = metrics["test"]["roc_auc"], _shipped_ms(metrics), metrics["params"]["size_mb"]
+    most_accurate = all(auc_ >= run["test"]["roc_auc"] for run in rel)
+    fastest = latency_ms is not None and all(run["ms_512_1"] is None or latency_ms <= run["ms_512_1"] for run in rel)
+    slowest = latency_ms is not None and all(run["ms_512_1"] is None or latency_ms >= run["ms_512_1"] for run in rel)
+    better = [f"`{run['name']}`" for run in rel if run["test"]["roc_auc"] > auc_]
     if most_accurate and fastest:
         lead = "Это самый точный трансформер aiw-ru и самый быстрый."
     elif most_accurate:
@@ -1812,42 +1870,42 @@ def _position(m: dict, rows: list[dict]) -> str:
         verb = "обходит" if len(better) == 1 else "обходят"
         lead = f"Это самый тяжёлый трансформер aiw-ru, но не самый точный: на test его {verb} {', '.join(better)}."
     else:
-        by_auc = sorted(rows, key=lambda r: -r["test"]["roc_auc"])
-        auc_rank = next(i for i, r in enumerate(by_auc, 1) if r["this"])
-        fpr_rank = next(i for i, r in enumerate(rows, 1) if r["this"])
+        by_auc = sorted(rows, key=lambda run: -run["test"]["roc_auc"])
+        auc_rank = next(i for i, run in enumerate(by_auc, 1) if run["this"])
+        fpr_rank = next(i for i, run in enumerate(rows, 1) if run["this"])
         link = "и" if auc_rank == fpr_rank else "а"
         lead = (
             f"По ROC AUC на test это {_ORDINAL[auc_rank]} из {_OF[len(rows)]} моделей aiw-ru, {link} по доле "
             f"людей, принятых за ИИ, — {_ORDINAL[fpr_rank]}."
         )
-    if mb >= 1000:
+    if size_mb >= 1000:
         lead += (
-            f" Модель тяжёлая, для мощных машин: {_mb(mb)} МБ на диске и {_ms(ms)} мс на текст в $512$ токенов "
+            f" Модель тяжёлая, для мощных машин: {_mb(size_mb)} МБ на диске и {_ms(latency_ms)} мс на текст в $512$ токенов "
             "на M1 в один поток."
         )
     return lead
 
 
-def _pilot_md(m: dict) -> str:
+def _pilot_md(metrics: dict) -> str:
     return md_table(
         ["База", "Лицензия", "Нормализация", "Параметров", "ROC AUC valid", "Accuracy valid", "int8, МБ", "int8, мс"],
         [
             [
-                f"`{r['base']}`",
-                LICENSE_NAMES.get(r["license"], r["license"]),
-                "да" if r["normalize"] else "нет",
-                _params_count(r["parameters"]),
-                _auc(r["valid_roc_auc"]),
-                num(r["valid_accuracy"]),
-                _mb(r.get("onnx_int8_mb")),
-                _ms(r.get("int8_ms_512_1")),
+                f"`{run['base']}`",
+                LICENSE_NAMES.get(run["license"], run["license"]),
+                "да" if run["normalize"] else "нет",
+                _params_count(run["parameters"]),
+                _auc(run["valid_roc_auc"]),
+                num(run["valid_accuracy"]),
+                _mb(run.get("onnx_int8_mb")),
+                _ms(run.get("int8_ms_512_1")),
             ]
-            for r in m["pilot"]
+            for run in metrics["pilot"]
         ],
     )
 
 
-def _finalists_md(m: dict) -> str:
+def _finalists_md(metrics: dict) -> str:
     return md_table(
         [
             "База",
@@ -1863,39 +1921,39 @@ def _finalists_md(m: dict) -> str:
         ],
         [
             [
-                f"`{r['base']}`",
-                f"`{bundle_for(r['base']).name}`",
-                _num4(r["valid_roc_auc"]),
-                num(r["valid_accuracy"]),
-                _num4(r.get("valid_roc_auc_int8")),
-                pct(r["int8_label_changes"]) if r.get("int8_label_changes") is not None else "—",
-                r.get("weights", "int8"),
-                _mb(r.get("shipped_mb", r.get("onnx_int8_mb"))),
-                _ms(r.get("shipped_ms_512_1", r.get("int8_ms_512_1"))),
-                _ms(r.get("x86_shipped_ms_512_1", r.get("x86_int8_ms_512_1"))),
+                f"`{run['base']}`",
+                f"`{bundle_for(run['base']).name}`",
+                _num4(run["valid_roc_auc"]),
+                num(run["valid_accuracy"]),
+                _num4(run.get("valid_roc_auc_int8")),
+                pct(run["int8_label_changes"]) if run.get("int8_label_changes") is not None else "—",
+                run.get("weights", "int8"),
+                _mb(run.get("shipped_mb", run.get("onnx_int8_mb"))),
+                _ms(run.get("shipped_ms_512_1", run.get("int8_ms_512_1"))),
+                _ms(run.get("x86_shipped_ms_512_1", run.get("x86_int8_ms_512_1"))),
             ]
-            for r in m.get("finalists", [])
+            for run in metrics.get("finalists", [])
         ],
     )
 
 
-def _finalists_intro(m: dict) -> str:
+def _finalists_intro(metrics: dict) -> str:
     """Какие базы дошли до полного train и чем стала каждая."""
-    rows = m["finalists"]
+    rows = metrics["finalists"]
     if len(rows) < 3:
         return (
             "Дальше на полном train обучены две базы: самая точная в пилоте и самая быстрая. Середина, "
             "`sergeyzh/rubert-mini-frida`, медленнее tiny2 больше чем вдвое при небольшом выигрыше в ROC AUC."
         )
-    fast = min(rows, key=lambda r: r.get("int8_ms_512_1") or float("inf"))
-    best = max(rows, key=lambda r: r["valid_roc_auc"])
-    mid = [r for r in rows if r is not fast and r is not best]
+    fast = min(rows, key=lambda run: run.get("int8_ms_512_1") or float("inf"))
+    best = max(rows, key=lambda run: run["valid_roc_auc"])
+    mid = [run for run in rows if run is not fast and run is not best]
 
-    def name(r: dict) -> str:
-        return f"`{bundle_for(r['base']).name}`"
+    def name(run: dict) -> str:
+        return f"`{bundle_for(run['base']).name}`"
 
-    bases = ", ".join(f"`{r['base']}`" for r in mid)
-    names = ", ".join(name(r) for r in mid)
+    bases = ", ".join(f"`{run['base']}`" for run in mid)
+    names = ", ".join(name(run) for run in mid)
     return (
         f"На полном train обучены {_nw(len(rows), 'база', 'базы', 'баз')} из пилота: самая быстрая, "
         f"`{fast['base']}`, самая точная, `{best['base']}`, и средняя по обоим, {bases}. Все они выпущены "
@@ -1904,76 +1962,86 @@ def _finalists_intro(m: dict) -> str:
     )
 
 
-def _compare_md(m: dict) -> str:
-    rel = sorted(m.get("related", []), key=lambda r: -r["test"]["roc_auc"])
-    cols = [m["test"], *(r["test"] for r in rel), (m.get("lightgbm") or {}).get("test", {}), m["detector"]]
+def _compare_md(metrics: dict) -> str:
+    rel = sorted(metrics.get("related", []), key=lambda run: -run["test"]["roc_auc"])
+    cols = [
+        metrics["test"],
+        *(run["test"] for run in rel),
+        (metrics.get("lightgbm") or {}).get("test", {}),
+        metrics["detector"],
+    ]
 
-    def fpr(r: dict) -> str:
-        return pct(1 - r["classes"]["human"]["recall"]) if r else "—"
+    def fpr(run: dict) -> str:
+        return pct(1 - run["classes"]["human"]["recall"]) if run else "—"
 
     rows = [
-        ["Accuracy", *(_auc(c.get("accuracy")) for c in cols)],
-        ["ROC AUC", *(_auc(c.get("roc_auc")) for c in cols)],
-        ["ROC AUC, люди против текстов с нуля", *(_auc(c.get("roc_auc_created")) for c in cols)],
-        ["F1, среднее по классам", *(_auc(c.get("macro", {}).get("f1")) for c in cols)],
-        ["Людей принято за ИИ", *(fpr(c) for c in cols)],
+        ["Accuracy", *(_auc(column.get("accuracy")) for column in cols)],
+        ["ROC AUC", *(_auc(column.get("roc_auc")) for column in cols)],
+        ["ROC AUC, люди против текстов с нуля", *(_auc(column.get("roc_auc_created")) for column in cols)],
+        ["F1, среднее по классам", *(_auc(column.get("macro", {}).get("f1")) for column in cols)],
+        ["Людей принято за ИИ", *(fpr(column) for column in cols)],
     ]
-    head = ["На test", "Эта модель", *(f"`{r['name']}`" for r in rel), "LightGBM", "Правила aiw-ru"]
+    head = ["На test", "Эта модель", *(f"`{run['name']}`" for run in rel), "LightGBM", "Правила aiw-ru"]
     return md_table(head, rows)
 
 
-def _cuts_md(m: dict, level: str) -> str:
-    lg = m.get("lightgbm") or {}
-    lg_g = _by(lg.get("genres"), "genre")
-    lg_l = _by(lg.get("lengths"), "bucket")
-    lg_p = _by(lg.get("prompt_types"), "prompt_type")
-    lg_m = _by(lg.get("generators"), "model")
+def _cuts_md(metrics: dict, level: str) -> str:
+    lightgbm = metrics.get("lightgbm") or {}
+    lg_g = _by(lightgbm.get("genres"), "genre")
+    lg_l = _by(lightgbm.get("lengths"), "bucket")
+    lg_p = _by(lightgbm.get("prompt_types"), "prompt_type")
+    lg_m = _by(lightgbm.get("generators"), "model")
     genres = md_table(
         ["Жанр", "Людей", "ИИ", "Accuracy", "ROC AUC", "ROC AUC LightGBM", "ROC AUC правил"],
         [
             [
-                f"`{g['genre']}`",
-                count(g["human"]),
-                count(g["ai"]),
-                num(g["accuracy"]),
-                _auc(g["roc_auc"]),
-                _auc(lg_g.get(g["genre"], {}).get("roc_auc")),
-                _auc(g["detector_roc_auc"]),
+                f"`{genre['genre']}`",
+                count(genre["human"]),
+                count(genre["ai"]),
+                num(genre["accuracy"]),
+                _auc(genre["roc_auc"]),
+                _auc(lg_g.get(genre["genre"], {}).get("roc_auc")),
+                _auc(genre["detector_roc_auc"]),
             ]
-            for g in m["genres"]
+            for genre in metrics["genres"]
         ],
     )
     lengths = md_table(
         ["Слов в тексте", "Текстов", "Accuracy", "ROC AUC", "Accuracy LightGBM", "ROC AUC LightGBM"],
         [
             [
-                _bucket(b["bucket"]),
-                count(b["n"]),
-                num(b["accuracy"]),
-                _auc(b["roc_auc"]),
-                _auc(lg_l.get(b["bucket"], {}).get("accuracy")),
-                _auc(lg_l.get(b["bucket"], {}).get("roc_auc")),
+                _bucket(bucket["bucket"]),
+                count(bucket["n"]),
+                num(bucket["accuracy"]),
+                _auc(bucket["roc_auc"]),
+                _auc(lg_l.get(bucket["bucket"], {}).get("accuracy")),
+                _auc(lg_l.get(bucket["bucket"], {}).get("roc_auc")),
             ]
-            for b in m["lengths"]
+            for bucket in metrics["lengths"]
         ],
     )
     prompts = md_table(
         ["Задание генератору", "ИИ-текстов", "Recall", "Recall LightGBM"],
         [
             [
-                f"`{x['prompt_type']}`",
-                count(x["n"]),
-                num(x["recall"]),
-                _auc(lg_p.get(x["prompt_type"], {}).get("recall")),
+                f"`{prompt_type['prompt_type']}`",
+                count(prompt_type["n"]),
+                num(prompt_type["recall"]),
+                _auc(lg_p.get(prompt_type["prompt_type"], {}).get("recall")),
             ]
-            for x in m["prompt_types"]
+            for prompt_type in metrics["prompt_types"]
         ],
     )
     generators = md_table(
         ["Модель-генератор", "Текстов в test", "Recall", "Recall LightGBM"],
         [
-            [f"`{x['model']}`", count(x["n"]), num(x["recall"]), _auc(lg_m.get(x["model"], {}).get("recall"))]
-            for x in m["generators"]
+            [
+                f"`{prompt_type['model']}`",
+                count(prompt_type["n"]),
+                num(prompt_type["recall"]),
+                _auc(lg_m.get(prompt_type["model"], {}).get("recall")),
+            ]
+            for prompt_type in metrics["generators"]
         ],
     )
     return f"""{level} По жанрам
@@ -2000,83 +2068,116 @@ def _cuts_md(m: dict, level: str) -> str:
 {generators}"""
 
 
-def _long_md(m: dict) -> str:
-    v, t = m["long_texts"]["valid"], m["long_texts"]["test"]
+def _long_md(metrics: dict) -> str:
+    valid, test = metrics["long_texts"]["valid"], metrics["long_texts"]["test"]
     return md_table(
         ["Правило", "ROC AUC valid", "Accuracy valid", "ROC AUC test", "Accuracy test"],
         [
-            [label, _auc(v[k]["roc_auc"]), num(v[k]["accuracy"]), _auc(t[k]["roc_auc"]), num(t[k]["accuracy"])]
+            [
+                label,
+                _auc(valid[k]["roc_auc"]),
+                num(valid[k]["accuracy"]),
+                _auc(test[k]["roc_auc"]),
+                num(test[k]["accuracy"]),
+            ]
             for k, label in (("head", "начало текста"), ("mean_of_windows", "среднее по окнам"))
         ],
     )
 
 
 def _latency_md(rows_: list[dict]) -> str:
-    lat = {(r["runtime"], r["tokens"], r["threads"]): r["ms"] for r in rows_}
-    runtimes = sorted({r["runtime"] for r in rows_})
-    threads = sorted({r["threads"] for r in rows_})
+    latency_ms = {(row["runtime"], row["tokens"], row["threads"]): row["ms"] for row in rows_}
+    runtimes = sorted({row["runtime"] for row in rows_})
+    threads = sorted({row["threads"] for row in rows_})
     # Длина берётся из замера: если текстов длиннее нет, замер короче LATENCY_LENGTHS.
-    tokens = sorted({r["tokens"] for r in rows_})
-    head = ["Среда", *(f"{plural(t, 'токен', 'токена', 'токенов')}, потоков: {n}" for t in tokens for n in threads)]
-    return md_table(head, [[r, *(_ms(lat.get((r, t, n))) for t in tokens for n in threads)] for r in runtimes])
-
-
-def _install_md(m: dict) -> str:
+    tokens = sorted({row["tokens"] for row in rows_})
+    head = [
+        "Среда",
+        *(
+            f"{plural(token_count, 'токен', 'токена', 'токенов')}, потоков: {thread_count}"
+            for token_count in tokens
+            for thread_count in threads
+        ),
+    ]
     return md_table(
-        ["Зависимости вывода", "Платформа", "МБ на диске"],
-        [[x["stack"], f"`{x['platform']}`", _mb(x["mb"])] for x in m["install"]],
+        head,
+        [
+            [
+                row,
+                *(
+                    _ms(latency_ms.get((row, token_count, thread_count)))
+                    for token_count in tokens
+                    for thread_count in threads
+                ),
+            ]
+            for row in runtimes
+        ],
     )
 
 
-def _variants_md(m: dict) -> str:
+def _install_md(metrics: dict) -> str:
+    return md_table(
+        ["Зависимости вывода", "Платформа", "МБ на диске"],
+        [[install["stack"], f"`{install['platform']}`", _mb(install["mb"])] for install in metrics["install"]],
+    )
+
+
+def _variants_md(metrics: dict) -> str:
     names = {"torch": "PyTorch на GPU", "onnx_fp32": "ONNX fp32 на CPU", "onnx_int8": "ONNX int8 на CPU"}
-    if m["params"].get("probs_source") == "torch":
-        n = m["params"]["onnx_texts"]
+    if metrics["params"].get("probs_source") == "torch":
+        onnx_texts = metrics["params"]["onnx_texts"]
         return md_table(
-            ["Вариант", f"ROC AUC на {n} текстах valid", "Accuracy", "ROC AUC на всём valid", "ROC AUC на test"],
+            [
+                "Вариант",
+                f"ROC AUC на {onnx_texts} текстах valid",
+                "Accuracy",
+                "ROC AUC на всём valid",
+                "ROC AUC на test",
+            ],
             [
                 [
                     names.get(v, v),
-                    _num4(x.get("valid_subset", {}).get("roc_auc")),
-                    _auc(x.get("valid_subset", {}).get("accuracy")),
-                    _num4(x.get("valid", {}).get("roc_auc")),
-                    _num4(x.get("test", {}).get("roc_auc")),
+                    _num4(variant.get("valid_subset", {}).get("roc_auc")),
+                    _auc(variant.get("valid_subset", {}).get("accuracy")),
+                    _num4(variant.get("valid", {}).get("roc_auc")),
+                    _num4(variant.get("test", {}).get("roc_auc")),
                 ]
-                for v, x in m["variants"].items()
+                for v, variant in metrics["variants"].items()
             ],
         )
-    if not all("test" in x for x in m["variants"].values()):
+    if not all("test" in variant for variant in metrics["variants"].values()):
         table_ = md_table(
             ["Вариант", "ROC AUC valid", "Accuracy valid"],
             [
-                [names.get(v, v), _num4(x["valid"]["roc_auc"]), _num4(x["valid"]["accuracy"])]
-                for v, x in m["variants"].items()
+                [names.get(v, v), _num4(variant["valid"]["roc_auc"]), _num4(variant["valid"]["accuracy"])]
+                for v, variant in metrics["variants"].items()
             ],
         )
         return (
             f"{table_}\n\nВарианты сравнивались только на valid, по нему выбираются веса. "
-            f"На test посчитан только вариант из поставки, ONNX {_weights(m)}."
+            f"На test посчитан только вариант из поставки, ONNX {_weights(metrics)}."
         )
     return md_table(
         ["Вариант", "ROC AUC valid", "Accuracy valid", "ROC AUC test", "Accuracy test"],
         [
             [
                 names.get(v, v),
-                *(_num4(x.get(s, {}).get(k)) for s in ("valid", "test") for k in ("roc_auc", "accuracy")),
+                *(_num4(variant.get(split, {}).get(k)) for split in ("valid", "test") for k in ("roc_auc", "accuracy")),
             ]
-            for v, x in m["variants"].items()
+            for v, variant in metrics["variants"].items()
         ],
     )
 
 
-def _shortcuts_md(m: dict) -> str:
+def _shortcuts_md(metrics: dict) -> str:
     return md_table(
-        ["Примета оформления", "ROC AUC одной приметы"], [[s["cue"], _auc(s["roc_auc"])] for s in m["shortcuts"]]
+        ["Примета оформления", "ROC AUC одной приметы"],
+        [[shortcut["cue"], _auc(shortcut["roc_auc"])] for shortcut in metrics["shortcuts"]],
     )
 
 
-def _shortcuts_note(m: dict) -> str:
-    best = max(m["shortcuts"], key=lambda s: s["separation"] or 0)
+def _shortcuts_note(metrics: dict) -> str:
+    best = max(metrics["shortcuts"], key=lambda shortcut: shortcut["separation"] or 0)
     return (
         f"Поодиночке приметы слабые, сильнее всех «{best['cue']}» с ROC AUC {num(best['roc_auc'])}. "
         "Но модель может сложить их вместе и учиться на оформлении вместо текста."
@@ -2094,121 +2195,134 @@ def _rules_md() -> str:
     )
 
 
-def _ablation(m: dict) -> str:
+def _ablation(metrics: dict) -> str:
     """Пилот одной базы с нормализацией и без: сколько ROC AUC стоит нормализация."""
     by_base: dict[str, dict[bool, float]] = {}
-    for r in m["pilot"]:
-        by_base.setdefault(r["base"], {})[r["normalize"]] = r["valid_roc_auc"]
-    pairs = {b: v for b, v in by_base.items() if True in v and False in v}
+    for run in metrics["pilot"]:
+        by_base.setdefault(run["base"], {})[run["normalize"]] = run["valid_roc_auc"]
+    pairs = {
+        base_name: auc_by_normalize
+        for base_name, auc_by_normalize in by_base.items()
+        if True in auc_by_normalize and False in auc_by_normalize
+    }
     if not pairs:
         return ""
-    base = m["params"]["base"] if m["params"]["base"] in pairs else next(iter(pairs))
-    v = pairs[base]
+    base = metrics["params"]["base"] if metrics["params"]["base"] in pairs else next(iter(pairs))
+    auc_by_normalize = pairs[base]
     return (
-        f"В пилоте база `{base}` без нормализации дала ROC AUC {num(v[False])} на valid, с нормализацией "
-        f"{num(v[True])}. Нормализация всё равно остаётся: модель, выучившая оформление корпуса, "
+        f"В пилоте база `{base}` без нормализации дала ROC AUC {num(auc_by_normalize[False])} на valid, с нормализацией "
+        f"{num(auc_by_normalize[True])}. Нормализация всё равно остаётся: модель, выучившая оформление корпуса, "
         "ошибётся на человеческом тексте, набранном в другом редакторе или скопированном из чата."
     )
 
 
-def _params_md(m: dict) -> str:
-    p = m["params"]
-    stop = ", сработала" if p["early_stopped"] else ", не понадобилась"
+def _params_md(metrics: dict) -> str:
+    params = metrics["params"]
+    stop = ", сработала" if params["early_stopped"] else ", не понадобилась"
     return md_table(
         ["Параметр", "Значение"],
         [
-            ["База", f"[`{p['base']}`](https://huggingface.co/{p['base']}), ревизия `{p['base_revision'][:12]}`"],
-            ["Параметров", _params_count(p["parameters"])],
-            ["Устройство", f"{p['gpu']}, `{p['device']}`"],
-            ["Точность", f"`{p['precision']}`, {p['precision_reason']}"],
-            ["Эпох", f"не больше {count(int(p['epochs']))}, лучшая проверка на эпохе {num(p['best_epoch'], 2)}"],
+            [
+                "База",
+                f"[`{params['base']}`](https://huggingface.co/{params['base']}), ревизия `{params['base_revision'][:12]}`",
+            ],
+            ["Параметров", _params_count(params["parameters"])],
+            ["Устройство", f"{params['gpu']}, `{params['device']}`"],
+            ["Точность", f"`{params['precision']}`, {params['precision_reason']}"],
+            [
+                "Эпох",
+                f"не больше {count(int(params['epochs']))}, лучшая проверка на эпохе {num(params['best_epoch'], 2)}",
+            ],
             [
                 "Ранняя остановка",
-                f"после {_nw(p['patience'], 'проверки', 'проверок', 'проверок')} без роста ROC AUC на valid{stop}",
+                f"после {_nw(params['patience'], 'проверки', 'проверок', 'проверок')} без роста ROC AUC на valid{stop}",
             ],
-            ["Проверок на valid за эпоху", count(p["evals_per_epoch"])],
-            ["Оптимизатор", f"AdamW, скорость `{p['lr']:g}`, разогрев {pct(p['warmup'])} шагов, линейный спад"],
-            ["Затухание весов, клиппинг градиента", f"`{p['weight_decay']:g}`, `{p['grad_clip']:g}`"],
+            ["Проверок на valid за эпоху", count(params["evals_per_epoch"])],
+            [
+                "Оптимизатор",
+                f"AdamW, скорость `{params['lr']:g}`, разогрев {pct(params['warmup'])} шагов, линейный спад",
+            ],
+            ["Затухание весов, клиппинг градиента", f"`{params['weight_decay']:g}`, `{params['grad_clip']:g}`"],
             [
                 "Пачка",
-                f"{_nw(p['batch'], 'текст', 'текста', 'текстов')} близкой длины"
+                f"{_nw(params['batch'], 'текст', 'текста', 'текстов')} близкой длины"
                 + (
-                    f", лимит пачки — {_nw(p['batch_tokens'], 'токен', 'токена', 'токенов')}"
-                    if p.get("batch_tokens")
+                    f", лимит пачки — {_nw(params['batch_tokens'], 'токен', 'токена', 'токенов')}"
+                    if params.get("batch_tokens")
                     else ""
                 ),
             ],
-            ["`max_length`", _nw(p["max_length"], "токен", "токена", "токенов")],
+            ["`max_length`", _nw(params["max_length"], "токен", "токена", "токенов")],
             *(
-                [["Локальное окно внимания", "±" + _nw(p["sliding_window"], "токен", "токена", "токенов")]]
-                if p.get("sliding_window")
+                [["Локальное окно внимания", "±" + _nw(params["sliding_window"], "токен", "токена", "токенов")]]
+                if params.get("sliding_window")
                 else []
             ),
-            ["`seed`", count(p["seed"])],
+            ["`seed`", count(params["seed"])],
             [
                 "Время обучения",
                 (
-                    f"${p['train_seconds'] / 60:.0f}$ мин, "
-                    f"{_nw(round(p['texts_per_second']), 'текст', 'текста', 'текстов')} в секунду"
+                    f"${params['train_seconds'] / 60:.0f}$ мин, "
+                    f"{_nw(round(params['texts_per_second']), 'текст', 'текста', 'текстов')} в секунду"
                 ),
             ],
-            ["Файл модели", f"`model.onnx`, веса {_weights(m)}, {_mb(p['size_mb'])} МБ"],
-            ["Обучено", f"{m['created']}, коммит `{m['git_commit']}`"],
+            ["Файл модели", f"`model.onnx`, веса {_weights(metrics)}, {_mb(params['size_mb'])} МБ"],
+            ["Обучено", f"{metrics['created']}, коммит `{metrics['git_commit']}`"],
         ],
     )
 
 
-def _curve_md(m: dict) -> str:
+def _curve_md(metrics: dict) -> str:
     return md_table(
         ["Шаг", "Эпоха", "loss train", "ROC AUC valid", "Accuracy valid", "logloss valid"],
         [
             [
-                count(c["step"]),
-                num(c["epoch"], 2),
-                num(c["train_loss"], 4),
-                _num4(c["roc_auc"]),
-                num(c["accuracy"]),
-                num(c["logloss"], 4),
+                count(point["step"]),
+                num(point["epoch"], 2),
+                num(point["train_loss"], 4),
+                _num4(point["roc_auc"]),
+                num(point["accuracy"]),
+                num(point["logloss"], 4),
             ]
-            for c in m["curve"]
+            for point in metrics["curve"]
         ],
     )
 
 
-def _speed_md(m: dict) -> str:
+def _speed_md(metrics: dict) -> str:
     x86 = ""
-    if m.get("latency_x86"):
+    if metrics.get("latency_x86"):
         x86 = f"""
 
 На двух ядрах виртуальной машины Colab, это ближе к слабому ноутбуку на x86,
-{m["latency_x86_cpu"]}:
+{metrics["latency_x86_cpu"]}:
 
-{_latency_md(m["latency_x86"])}"""
-    slow = any(r["ms"] > 1000 for r in [*m["latency"], *(m.get("latency_x86") or [])])
+{_latency_md(metrics["latency_x86"])}"""
+    slow = any(row["ms"] > 1000 for row in [*metrics["latency"], *(metrics.get("latency_x86") or [])])
     runs = "медиана $30$ прогонов" + (", у вызовов дольше секунды $5$" if slow else "")
-    return f"""Задержка на один текст в миллисекундах, {runs}, {m["latency_cpu"]}:
+    return f"""Задержка на один текст в миллисекундах, {runs}, {metrics["latency_cpu"]}:
 
-{_latency_md(m["latency"])}{x86}
+{_latency_md(metrics["latency"])}{x86}
 
 Размер зависимостей вывода после установки через uv для Python 3.12:
 
-{_install_md(m)}
+{_install_md(metrics)}
 
 Размер считается вместе со всеми зависимостями, в том числе numpy и
 huggingface-hub, которые aiw-ru с extra `ml` и так ставит для LightGBM.
 
-{_onnx_choice(m)}"""
+{_onnx_choice(metrics)}"""
 
 
-def _onnx_choice(m: dict) -> str:
+def _onnx_choice(metrics: dict) -> str:
     """Почему в поставке ONNX, а не PyTorch: задержка на этой машине против размера установки."""
-    lat = {(r["runtime"], r["tokens"], r["threads"]): r["ms"] for r in m["latency"]}
-    torch_ms, onnx_ms = lat.get(("torch fp32", 512, 1)), _shipped_ms(m)
-    sizes = {(x["stack"], x["platform"]): x["mb"] for x in m["install"] if x["mb"]}
-    onnx = {plat: mb for (stack, plat), mb in sizes.items() if stack.startswith("onnxruntime")}
+    latency_ms = {(row["runtime"], row["tokens"], row["threads"]): row["ms"] for row in metrics["latency"]}
+    torch_ms, onnx_ms = latency_ms.get(("torch fp32", 512, 1)), _shipped_ms(metrics)
+    sizes = {(install["stack"], install["platform"]): install["mb"] for install in metrics["install"] if install["mb"]}
+    onnx = {plat: size_mb for (stack, plat), size_mb in sizes.items() if stack.startswith("onnxruntime")}
     ratios = [
-        mb / onnx[plat]
-        for (stack, plat), mb in sizes.items()
+        size_mb / onnx[plat]
+        for (stack, plat), size_mb in sizes.items()
         if stack == "torch + transformers" and plat in onnx and "linux" not in plat
     ]
     cpu = sizes.get(("torch (CPU) + transformers", "x86_64-manylinux_2_28"))
@@ -2217,8 +2331,8 @@ def _onnx_choice(m: dict) -> str:
     cuda = sizes.get(("torch + transformers", "x86_64-manylinux_2_28"))
     if not (torch_ms and onnx_ms and ratios):
         return ""
-    v = m["variants"]
-    shipped, ref = v.get(m["params"]["shipped"], {}).get("test", {}), v.get("torch", {}).get("test", {})
+    v = metrics["variants"]
+    shipped, ref = v.get(metrics["params"]["shipped"], {}).get("test", {}), v.get("torch", {}).get("test", {})
     same = "точность та же"
     if shipped.get("roc_auc") is not None and ref.get("roc_auc") is not None:
         diff = abs(shipped["roc_auc"] - ref["roc_auc"])
@@ -2232,14 +2346,14 @@ def _onnx_choice(m: dict) -> str:
     linux = f", а на Linux со сборкой torch под CUDA по умолчанию — {_mb(cuda)} МБ" if cuda else ""
     return (
         f"На этой машине torch считает {faster} onnxruntime: {_ms(torch_ms)} мс против {_ms(onnx_ms)} мс "
-        f"у ONNX {_weights(m)} "
+        f"у ONNX {_weights(metrics)} "
         f"на $512$ токенах в один поток. Но torch с transformers занимает на диске в {span} раза больше{linux}. "
         f"aiw-ru ставят и на слабые ноутбуки, поэтому в поставке ONNX: установка лёгкая, а {same}."
     )
 
 
-def _limitations_md(m: dict) -> str:
-    fpr = 1 - m["test"]["classes"]["human"]["recall"]
+def _limitations_md(metrics: dict) -> str:
+    fpr = 1 - metrics["test"]["classes"]["human"]["recall"]
     return f"""- Корпус один. На научных статьях, дипломах и диссертациях модель не
   проверялась, а жанры за пределами таблицы по жанрам она не видела.
 - Вероятность — не доказательство авторства. Не используйте модель для
@@ -2252,14 +2366,14 @@ def _limitations_md(m: dict) -> str:
   распознаваться хуже."""
 
 
-def _usage_md(m: dict, repo: str) -> str:
-    b = bundle_for(m["params"]["base"])
+def _usage_md(metrics: dict, repo: str) -> str:
+    bundle = bundle_for(metrics["params"]["base"])
     return f"""Из командной строки:
 
 ```bash
 uv tool install "aiw-ru[ml]"
-aiw-ru models install {b.name}
-{_classify_cmd(b)}
+aiw-ru models install {bundle.name}
+{_classify_cmd(bundle)}
 ```
 
 Из Python без aiw-ru нужны только onnxruntime, tokenizers и numpy:
@@ -2312,12 +2426,12 @@ print(probability(open("текст.md", encoding="utf-8").read()))
 
 `inference.json` описывает вывод целиком: файл ONNX, токенизатор,
 `max_length`, токены вокруг окна, правила нормализации из обучения, порог
-{num(m["inference"]["threshold"], 1)} и число окон для длинных текстов.{_pytorch_md(m, repo)}"""
+{num(metrics["inference"]["threshold"], 1)} и число окон для длинных текстов.{_pytorch_md(metrics, repo)}"""
 
 
-def _pytorch_md(m: dict, repo: str) -> str:
+def _pytorch_md(metrics: dict, repo: str) -> str:
     """Как взять веса PyTorch из репозитория: для дообучения и своего экспорта."""
-    if not m["sizes_mb"].get("safetensors"):
+    if not metrics["sizes_mb"].get("safetensors"):
         return ""
     return f"""
 
@@ -2335,125 +2449,129 @@ tokenizer = AutoTokenizer.from_pretrained("{repo}")
 примере выше: на нём модель и обучалась."""
 
 
-def _int8_changes(m: dict) -> float | None:
-    ch = m["params"].get("int8_label_changes") or {}
-    return ch.get("valid", ch.get("valid_subset"))
+def _int8_changes(metrics: dict) -> float | None:
+    changes = metrics["params"].get("int8_label_changes") or {}
+    return changes.get("valid", changes.get("valid_subset"))
 
 
-def _extra_weights(m: dict) -> tuple[str, str]:
+def _extra_weights(metrics: dict) -> tuple[str, str]:
     """Другие файлы весов рядом с model.onnx: по-русски и по-английски."""
-    if _weights(m) == "int8":
-        fp32 = _mb(m["sizes_mb"]["onnx_fp32"])
-        ru, en = (
+    if _weights(metrics) == "int8":
+        fp32 = _mb(metrics["sizes_mb"]["onnx_fp32"])
+        text_ru, text_en = (
             f" Рядом лежит `model_fp32.onnx` на {fp32} МБ с весами fp32, aiw-ru его не скачивает.",
             f" An fp32 export, `model_fp32.onnx`, is an optional extra file of {fp32} MB.",
         )
     else:
-        int8, ch = _mb(m["sizes_mb"]["onnx_int8"]), _int8_changes(m)
-        why_ru = f": int8 меняет ответ у {pct(ch)} текстов valid" if ch is not None else ""
-        why_en = f" because int8 flips the label on {pct(ch)} of validation texts" if ch is not None else ""
-        ru, en = (
+        int8, changes = _mb(metrics["sizes_mb"]["onnx_int8"]), _int8_changes(metrics)
+        why_ru = f": int8 меняет ответ у {pct(changes)} текстов valid" if changes is not None else ""
+        why_en = f" because int8 flips the label on {pct(changes)} of validation texts" if changes is not None else ""
+        text_ru, text_en = (
             f" Рядом лежит `model_int8.onnx` на {int8} МБ с весами int8, aiw-ru его не скачивает{why_ru}.",
             f" An int8 export, `model_int8.onnx`, is an optional extra file of {int8} MB; aiw-ru uses fp32{why_en}.",
         )
-    if pytorch := m["sizes_mb"].get("safetensors"):
-        ru += f" Веса PyTorch для дообучения и своего экспорта — `model.safetensors` на {_mb(pytorch)} МБ."
-        en += f" PyTorch weights for fine-tuning or your own export are in `model.safetensors`, {_mb(pytorch)} MB."
-    return ru, en
+    if pytorch := metrics["sizes_mb"].get("safetensors"):
+        text_ru += f" Веса PyTorch для дообучения и своего экспорта — `model.safetensors` на {_mb(pytorch)} МБ."
+        text_en += f" PyTorch weights for fine-tuning or your own export are in `model.safetensors`, {_mb(pytorch)} MB."
+    return text_ru, text_en
 
 
-def _probs_note(m: dict) -> str:
-    p = m["params"]
-    if p.get("probs_source") != "torch":
+def _probs_note(metrics: dict) -> str:
+    params = metrics["params"]
+    if params.get("probs_source") != "torch":
         return ""
     return (
-        f" Итоговые цифры этой модели посчитаны по эмбеддингам с GPU ({p['precision']}): ONNX на CPU по "
-        f"всем текстам valid и test занял бы много часов. ONNX сверен с ними на {_texts_loc(p['onnx_texts'])} "
+        f" Итоговые цифры этой модели посчитаны по эмбеддингам с GPU ({params['precision']}): ONNX на CPU по "
+        f"всем текстам valid и test занял бы много часов. ONNX сверен с ними на {_texts_loc(params['onnx_texts'])} "
         "valid разной длины, расхождение — ниже."
     )
 
 
-def _weights_rule(m: dict) -> str:
-    p = m["params"]
-    if p.get("weights_choice", "auto") == "auto":
-        changes = p.get("int8_max_changes")
+def _weights_rule(metrics: dict) -> str:
+    params = metrics["params"]
+    if params.get("weights_choice", "auto") == "auto":
+        changes = params.get("int8_max_changes")
         tail = f" и меняет ответ не больше чем у {pct(changes)} текстов" if changes is not None else ""
-        verdict = f" Здесь в поставке {_weights(m)}"
-        ch = _int8_changes(m)
-        verdict += f": int8 меняет ответ у {pct(ch)} текстов valid." if ch is not None else "."
+        verdict = f" Здесь в поставке {_weights(metrics)}"
+        label_changes = _int8_changes(metrics)
+        verdict += f": int8 меняет ответ у {pct(label_changes)} текстов valid." if label_changes is not None else "."
         return (
-            f"int8 идёт в поставку, если на valid теряет не больше {num(p.get('int8_max_drop', 0.002))} ROC AUC{tail}; "
+            f"int8 идёт в поставку, если на valid теряет не больше {num(params.get('int8_max_drop', 0.002))} ROC AUC{tail}; "
             f"test в этом решении не участвует.{verdict}"
         )
-    ch = _int8_changes(m)
-    tail = f": int8 меняет ответ у {pct(ch)} текстов valid по сравнению с fp32" if ch is not None else ""
-    return f"Веса {_weights(m)} выбраны заранее, эту модель выпускают ради точности{tail}."
-
-
-def _long_rule(m: dict) -> str:
-    inf, n = m["inference"], _tokens_gen(m["params"]["max_length"])
-    if inf["long_texts"] == "mean_of_windows":
-        return (
-            f"Текст длиннее {n} режется на окна по столько же токенов, вероятность — среднее "
-            f"по первым {count(inf['max_windows'])} окнам: на valid так точнее, чем по началу текста."
-        )
-    fragments = (
-        f" `aiw-ru classify` вдобавок проверяет длинный текст фрагментами по {_tokens_gen(inf['max_length'])}: "
-        "на окне целиком ИИ-вставка тонет в человеческом тексте."
-        if inf.get("read_length")
+    label_changes = _int8_changes(metrics)
+    tail = (
+        f": int8 меняет ответ у {pct(label_changes)} текстов valid по сравнению с fp32"
+        if label_changes is not None
         else ""
     )
-    return f"Текст длиннее {n} модель читает только до этой границы: среднее по окнам на valid не точнее.{fragments}"
+    return f"Веса {_weights(metrics)} выбраны заранее, эту модель выпускают ради точности{tail}."
 
 
-def _trained_on(m: dict) -> str:
-    ds = m["dataset"]
+def _long_rule(metrics: dict) -> str:
+    inference, longer_than = metrics["inference"], _tokens_gen(metrics["params"]["max_length"])
+    if inference["long_texts"] == "mean_of_windows":
+        return (
+            f"Текст длиннее {longer_than} режется на окна по столько же токенов, вероятность — среднее "
+            f"по первым {count(inference['max_windows'])} окнам: на valid так точнее, чем по началу текста."
+        )
+    fragments = (
+        f" `aiw-ru classify` вдобавок проверяет длинный текст фрагментами по {_tokens_gen(inference['max_length'])}: "
+        "на окне целиком ИИ-вставка тонет в человеческом тексте."
+        if inference.get("read_length")
+        else ""
+    )
+    return f"Текст длиннее {longer_than} модель читает только до этой границы: среднее по окнам на valid не точнее.{fragments}"
+
+
+def _trained_on(metrics: dict) -> str:
+    dataset = metrics["dataset"]
     return (
-        f"Модель обучена на {_texts_loc(ds['train'])} из train, лучший шаг и ранняя остановка — по ROC AUC "
-        f"на {_texts_loc(ds['valid'])} из valid."
+        f"Модель обучена на {_texts_loc(dataset['train'])} из train, лучший шаг и ранняя остановка — по ROC AUC "
+        f"на {_texts_loc(dataset['valid'])} из valid."
     )
 
 
-def _what_ru(m: dict) -> str:
-    p = m["params"]
-    base = f"[`{p['base']}`](https://huggingface.co/{p['base']})"
-    return f"Это дообученный энкодер {base} на\n{_params_count(p['parameters'])} параметров"
+def _what_ru(metrics: dict) -> str:
+    params = metrics["params"]
+    base = f"[`{params['base']}`](https://huggingface.co/{params['base']})"
+    return f"Это дообученный энкодер {base} на\n{_params_count(params['parameters'])} параметров"
 
 
-def _what_en(m: dict) -> str:
-    p = m["params"]
-    return f"The model is `{p['base']}` fine-tuned"
+def _what_en(metrics: dict) -> str:
+    params = metrics["params"]
+    return f"The model is `{params['base']}` fine-tuned"
 
 
-def card_body(m: dict, repo: str) -> str:
+def card_body(metrics: dict, repo: str) -> str:
     """Карточка модели на Hugging Face: формулы в $…$, для Hub их переписывает hub_math."""
-    p, ds, t, v = m["params"], m["dataset"], m["test"], m["valid"]
-    lt = (m.get("lightgbm") or {}).get("test", {})
+    params, dataset, test, valid = metrics["params"], metrics["dataset"], metrics["test"], metrics["valid"]
+    lightgbm_test = (metrics.get("lightgbm") or {}).get("test", {})
     name = repo.split("/")[-1]
     report = f"{GITHUB}/blob/master/{DOCS.as_posix()}/{name}.md"
-    lgb_line = f" У LightGBM на признаках aiw-ru ROC AUC {num(lt['roc_auc'])}." if lt else ""
-    extra_ru, extra_en = _extra_weights(m)
+    lgb_line = f" У LightGBM на признаках aiw-ru ROC AUC {num(lightgbm_test['roc_auc'])}." if lightgbm_test else ""
+    extra_ru, extra_en = _extra_weights(metrics)
     files_ru, files_en = (
         (
             "Модель — `model.onnx` с весами в `model.onnx.data`, вместе",
             "`model.onnx` with its weights in `model.onnx.data` takes",
         )
-        if p.get("external_data")
+        if params.get("external_data")
         else ("Файл `model.onnx` занимает", "`model.onnx` takes")
     )
-    b = bundle_for(p["base"])
+    bundle = bundle_for(params["base"])
     install = (
-        f"Ставит её `aiw-ru models install` без имени, вместе с LightGBM, или `aiw-ru models install {b.name}`, "
+        f"Ставит её `aiw-ru models install` без имени, вместе с LightGBM, или `aiw-ru models install {bundle.name}`, "
         "и только если пользователь попросит."
-        if b.default
-        else f"Ставится она только по имени, командой `aiw-ru models install {b.name}`, и только если "
-        f"пользователь попросит; в `aiw-ru classify` её выбирают ключом `--model {b.name}`."
+        if bundle.default
+        else f"Ставится она только по имени, командой `aiw-ru models install {bundle.name}`, и только если "
+        f"пользователь попросит; в `aiw-ru classify` её выбирают ключом `--model {bundle.name}`."
     )
-    others = [f"{_hub_link(r['repo'])} (`{r['name']}`)" for r in m.get("related", [])]
+    others = [f"{_hub_link(run['repo'])} (`{run['name']}`)" for run in metrics.get("related", [])]
     others.append(f"[LightGBM на признаках aiw-ru](https://huggingface.co/{LIGHTGBM_REPO}) (`lightgbm`)")
     choose = ""
-    if m.get("related"):
-        choose = f"\n\n## Какую модель выбрать\n\n{_choose_md(m, repo)}"
+    if metrics.get("related"):
+        choose = f"\n\n## Какую модель выбрать\n\n{_choose_md(metrics, repo)}"
     return f"""# Детектор ИИ-текста для русского языка
 
 `{name}` оценивает вероятность, что русский текст написала нейросеть, а не
@@ -2461,10 +2579,10 @@ def card_body(m: dict, repo: str) -> str:
 LLMTrace. Помогает проверить текст на ИИ: статью, новость, отзыв, пост, ответ
 на вопрос.
 
-{_what_ru(m)}, переведённый в ONNX с весами {_weights(m)}.
-{files_ru} {_mb(p["size_mb"])} МБ и работает на CPU через onnxruntime, без
-torch и GPU.{extra_ru} На отложенной части корпуса ROC AUC {num(t["roc_auc"])}, accuracy
-{num(t["accuracy"])}.{lgb_line}
+{_what_ru(metrics)}, переведённый в ONNX с весами {_weights(metrics)}.
+{files_ru} {_mb(params["size_mb"])} МБ и работает на CPU через onnxruntime, без
+torch и GPU.{extra_ru} На отложенной части корпуса ROC AUC {num(test["roc_auc"])}, accuracy
+{num(test["accuracy"])}.{lgb_line}
 
 Модель необязательная: детектор и скиллы [aiw-ru]({GITHUB}) работают без неё. {install}
 Другие модели aiw-ru: {", ".join(others)}.
@@ -2474,112 +2592,112 @@ torch и GPU.{extra_ru} На отложенной части корпуса ROC 
 A Russian AI-generated text detector. It estimates the probability that a
 Russian text was written by a person or by an LLM such as {GENERATORS}
 and others, which makes it usable as an AI text detector, a ChatGPT detector or an
-"AI slop" filter for Russian. {_what_en(m)}, trained on the
-Russian part of the LLMTrace corpus and exported to ONNX with {_weights(m)} weights:
-{files_en} {_mb(p["size_mb"])} MB and runs on CPU with onnxruntime, no torch
+"AI slop" filter for Russian. {_what_en(metrics)}, trained on the
+Russian part of the LLMTrace corpus and exported to ONNX with {_weights(metrics)} weights:
+{files_en} {_mb(params["size_mb"])} MB and runs on CPU with onnxruntime, no torch
 or GPU needed.{extra_en}
-Test ROC AUC {num(t["roc_auc"])}, accuracy {num(t["accuracy"])}. Install it with
-`aiw-ru models install {b.name}`. The rest of the card is in Russian; usage is below.{choose}
+Test ROC AUC {num(test["roc_auc"])}, accuracy {num(test["accuracy"])}. Install it with
+`aiw-ru models install {bundle.name}`. The rest of the card is in Russian; usage is below.{choose}
 
 ## Данные
 
 Русская часть [LLMTrace classification](https://huggingface.co/datasets/{DATASET})
-([статья](https://arxiv.org/abs/2509.21269)), ревизия `{ds["revision"][:12]}`. {_trained_on(m)}
-Итоговые цифры посчитаны по test, это {_nw(ds["test"], "текст", "текста", "текстов")}: эту часть
+([статья](https://arxiv.org/abs/2509.21269)), ревизия `{dataset["revision"][:12]}`. {_trained_on(metrics)}
+Итоговые цифры посчитаны по test, это {_nw(dataset["test"], "текст", "текста", "текстов")}: эту часть
 корпуса модель при обучении не видела. Отчёт об обучении с выбором базы и командами для
 воспроизведения лежит [на GitHub]({report}).
 
 ## Результаты на test
 
-Текст считается написанным ИИ, если вероятность не меньше {num(THRESHOLD, 1)}. {_long_rule(m)}
+Текст считается написанным ИИ, если вероятность не меньше {num(THRESHOLD, 1)}. {_long_rule(metrics)}
 
-{_classes_table(t)}
+{_classes_table(test)}
 
 Сравнение с LightGBM на признаках aiw-ru и с оценкой правил детектора с порогом
-{count(m["detector"]["threshold"])} на том же test:
+{count(metrics["detector"]["threshold"])} на том же test:
 
-{_compare_md(m)}
+{_compare_md(metrics)}
 
-На valid accuracy {num(v["accuracy"])}, ROC AUC {num(v["roc_auc"])}.
+На valid accuracy {num(valid["accuracy"])}, ROC AUC {num(valid["roc_auc"])}.
 
-{_cuts_md(m, "###")}
+{_cuts_md(metrics, "###")}
 
 ### Длинные тексты
 
-Тексты длиннее {_tokens_gen(p["max_length"])}, в test их {count(m["long_texts"]["test"]["texts"])}.
+Тексты длиннее {_tokens_gen(params["max_length"])}, в test их {count(metrics["long_texts"]["test"]["texts"])}.
 Сравниваются вероятность по началу текста и среднее по окнам:
 
-{_long_md(m)}
+{_long_md(metrics)}
 
 ## Нормализация
 
 В LLMTrace оформление говорит о том, откуда взят человеческий текст: переводы
 строк, markdown, вид тире и кавычек, ё. Поэтому до токенизации текст проходит
 нормализацию: разметка и типографика сводятся к простому виду, правила лежат в
-`inference.json`. {_ablation(m)}
+`inference.json`. {_ablation(metrics)}
 
 ## Скорость и размер
 
-{_speed_md(m)}
+{_speed_md(metrics)}
 
 ## Как пользоваться
 
-{_usage_md(m, repo)}
+{_usage_md(metrics, repo)}
 
 ## Обучение
 
-{_params_md(m)}
+{_params_md(metrics)}
 
 ## Ограничения
 
-{_limitations_md(m)}
+{_limitations_md(metrics)}
 
 ## Лицензия и данные
 
-Модель распространяется по лицензии {LICENSE_NAMES.get(p["license"], p["license"])}, как и
-[`{p["base"]}`](https://huggingface.co/{p["base"]}). Корпус LLMTrace — Apache 2.0, человеческие тексты в
+Модель распространяется по лицензии {LICENSE_NAMES.get(params["license"], params["license"])}, как и
+[`{params["base"]}`](https://huggingface.co/{params["base"]}). Корпус LLMTrace — Apache 2.0, человеческие тексты в
 нём собраны из сторонних источников со своими лицензиями.
 
 {LLMTRACE_BIBTEX}
 
-{BASE_CITATIONS.get(p["base"], "")}
+{BASE_CITATIONS.get(params["base"], "")}
 """
 
 
-def _reproduce_md(m: dict) -> str:
-    p = m["params"]
-    run = short_name(p["base"])
-    b = bundle_for(p["base"])
+def _reproduce_md(metrics: dict) -> str:
+    params = metrics["params"]
+    run = short_name(params["base"])
+    bundle = bundle_for(params["base"])
     vm_run = f"/content/data/transformer/runs/{run}"
     full = "~/.cache/aiw-ru/llmtrace/transformer/full"
-    ra = m.get("report_args", {})
-    local = f"{full}/{ra.get('run') or run}"
+    report_args = metrics.get("report_args", {})
+    local = f"{full}/{report_args.get('run') or run}"
     # Colab даёт T4; на своей видеокарте обучение, экспорт и оценка идут на одной машине.
-    colab = "T4" in (p.get("gpu") or "")
-    eval_flags = "" if p.get("weights_choice", "auto") == "auto" else f" --weights {p['weights_choice']}"
-    if p.get("int8_valid_only"):
+    colab = "T4" in (params.get("gpu") or "")
+    eval_flags = "" if params.get("weights_choice", "auto") == "auto" else f" --weights {params['weights_choice']}"
+    if params.get("int8_valid_only"):
         eval_flags += " --int8-valid-only"
     report_flags = "".join(
         [
-            *(f" --finalist {full}/{d}" for d in ra.get("finalist", [])),
-            *(f" --related {full}/{d}" for d in ra.get("related", [])),
+            *(f" --finalist {full}/{folder}" for folder in report_args.get("finalist", [])),
+            *(f" --related {full}/{folder}" for folder in report_args.get("related", [])),
         ]
     )
     why_note = (
-        " Абзац о выборе базы передаётся ключом `--why`, его текст приведён в этом отчёте." if p.get("why") else ""
+        " Абзац о выборе базы передаётся ключом `--why`, его текст приведён в этом отчёте." if params.get("why") else ""
     )
     train_args = (
-        f"train --base {p['base']} --epochs {p['epochs']:g} --lr {p['lr']:g} --batch {p['batch']} "
-        f"--max-length {p['max_length']} --evals-per-epoch {p['evals_per_epoch']} --patience {p['patience']}"
-        + (f" --batch-tokens {p['batch_tokens']}" if p.get("batch_tokens") else "")
-        + (f" --sliding-window {p['sliding_window_arg']}" if p.get("sliding_window_arg") else "")
-        + (f" --seed {p['seed']}" if p.get("seed", SEED) != SEED else "")
+        f"train --base {params['base']} --epochs {params['epochs']:g} --lr {params['lr']:g} --batch {params['batch']} "
+        f"--max-length {params['max_length']} --evals-per-epoch {params['evals_per_epoch']} --patience {params['patience']}"
+        + (f" --batch-tokens {params['batch_tokens']}" if params.get("batch_tokens") else "")
+        + (f" --sliding-window {params['sliding_window_arg']}" if params.get("sliding_window_arg") else "")
+        + (f" --seed {params['seed']}" if params.get("seed", SEED) != SEED else "")
     )
-    if p.get("probs_source") == "torch":
-        eval_flags += f" --onnx-texts {p['onnx_texts']}"
-    uv = "uv run --group train --group transformer"
-    dirty = m["git_commit"].endswith("+правки")
-    commit = m["git_commit"].removesuffix("+правки")
+    if params.get("probs_source") == "torch":
+        eval_flags += f" --onnx-texts {params['onnx_texts']}"
+    uv_run = "uv run --group train --group transformer"
+    dirty = metrics["git_commit"].endswith("+правки")
+    commit = metrics["git_commit"].removesuffix("+правки")
     checkout = (
         f"Модель обучена на коммите `{commit}`, к которому `scripts/train_transformer.py` и "
         "`scripts/colab_transformer.py` ещё не были закоммичены. Для повтора берите их версию из коммита, "
@@ -2587,9 +2705,9 @@ def _reproduce_md(m: dict) -> str:
         if dirty
         else f"Модель обучена на коммите `{commit}`."
     )
-    env = md_table(["Компонент", "Версия"], [[k, f"`{val}`"] for k, val in m["environment"].items()])
-    head = f"""{checkout} Базовая модель — ревизия `{p["base_revision"]}`, корпус — ревизия
-`{m["dataset"]["revision"]}`, её закрепляет `scripts/llmtrace.py`. Окружение:
+    env = md_table(["Компонент", "Версия"], [[k, f"`{version}`"] for k, version in metrics["environment"].items()])
+    head = f"""{checkout} Базовая модель — ревизия `{params["base_revision"]}`, корпус — ревизия
+`{metrics["dataset"]["revision"]}`, её закрепляет `scripts/llmtrace.py`. Окружение:
 
 {env}"""
     tail = """Обучение на GPU не детерминировано до бита, повтор может разойтись в третьем
@@ -2598,7 +2716,7 @@ def _reproduce_md(m: dict) -> str:
     if not colab:
         return f"""{head}
 
-Модель обучена на {p.get("gpu") or "GPU"}, `{p["precision"]}`. На той же машине считались ONNX,
+Модель обучена на {params.get("gpu") or "GPU"}, `{params["precision"]}`. На той же машине считались ONNX,
 сверка с PyTorch и оценка на valid и test. Задержку в карточке мерил `export`
 на M1 в копии папки запуска с ключом `--json export-latency.json`: файл
 кладётся в папку запуска, и `report` берёт задержку из него.{why_note}
@@ -2607,10 +2725,10 @@ def _reproduce_md(m: dict) -> str:
 uv run --group train scripts/llmtrace.py fetch --set classification --split train
 uv run --group train scripts/llmtrace.py fetch --set classification --split valid
 uv run --group train scripts/llmtrace.py fetch --set classification --split test
-{uv} scripts/train_transformer.py {train_args} --out {local}
-{uv} scripts/train_transformer.py export {local}
-{uv} scripts/train_transformer.py evaluate {local}{eval_flags}
-{uv} scripts/train_transformer.py report {local}{report_flags}
+{uv_run} scripts/train_transformer.py {train_args} --out {local}
+{uv_run} scripts/train_transformer.py export {local}
+{uv_run} scripts/train_transformer.py evaluate {local}{eval_flags}
+{uv_run} scripts/train_transformer.py report {local}{report_flags}
 ```
 
 {tail}"""
@@ -2624,8 +2742,8 @@ uv run --group train scripts/llmtrace.py fetch --set classification --split test
 ```bash
 uv run scripts/colab_transformer.py up --gpu T4
 uv run scripts/colab_transformer.py setup
-uv run scripts/colab_transformer.py start --name {b.log} --job "{train_args}"
-uv run scripts/colab_transformer.py status --name {b.log}
+uv run scripts/colab_transformer.py start --name {bundle.log} --job "{train_args}"
+uv run scripts/colab_transformer.py status --name {bundle.log}
 uv run scripts/colab_transformer.py fetch {vm_run} {full}
 ```
 
@@ -2648,67 +2766,67 @@ uv run scripts/colab_transformer.py down
 uv run --group train scripts/llmtrace.py fetch --set classification --split train
 uv run --group train scripts/llmtrace.py fetch --set classification --split valid
 uv run --group train scripts/llmtrace.py fetch --set classification --split test
-{uv} scripts/train_transformer.py {train_args.replace('" --job "', f"\n{uv} scripts/train_transformer.py ").replace(vm_run, local)}
+{uv_run} scripts/train_transformer.py {train_args.replace('" --job "', f"\n{uv_run} scripts/train_transformer.py ").replace(vm_run, local)}
 ```
 
 Дальше на своём CPU: ONNX и сверка с PyTorch, задержка, оценка на valid и test,
 карточка и этот отчёт.{why_note}
 
 ```bash
-{uv} scripts/train_transformer.py export {local}
-{uv} scripts/train_transformer.py evaluate {local}{eval_flags}
-{uv} scripts/train_transformer.py report {local}{report_flags}
+{uv_run} scripts/train_transformer.py export {local}
+{uv_run} scripts/train_transformer.py evaluate {local}{eval_flags}
+{uv_run} scripts/train_transformer.py report {local}{report_flags}
 ```
 
 {tail}"""
 
 
-def _spec_parity(m: dict) -> str:
-    sp = m["parity"].get("spec_vs_eval")
-    if not sp:
+def _spec_parity(metrics: dict) -> str:
+    parity = metrics["parity"].get("spec_vs_eval")
+    if not parity:
         return ""
     return (
         f" Вывод по `inference.json`, текст за текстом, как в aiw-ru, расходится с итоговыми вероятностями "
-        f"оценки на {_texts_loc(sp['texts'])} valid не больше чем на {_sci(sp['max_abs_diff'])}."
-        if sp["max_abs_diff"] > 0
-        else f" Вывод по `inference.json`, текст за текстом, как в aiw-ru, на {_texts_loc(sp['texts'])} valid "
+        f"оценки на {_texts_loc(parity['texts'])} valid не больше чем на {_sci(parity['max_abs_diff'])}."
+        if parity["max_abs_diff"] > 0
+        else f" Вывод по `inference.json`, текст за текстом, как в aiw-ru, на {_texts_loc(parity['texts'])} valid "
         "даёт те же вероятности, что оценка."
     )
 
 
-def report_body(m: dict, repo: str) -> str:
+def report_body(metrics: dict, repo: str) -> str:
     """Отчёт об обучении для docs/models/: что сделано, на чём, как повторить."""
-    p, ds = m["params"], m["dataset"]
+    params, dataset = metrics["params"], metrics["dataset"]
     name = repo.split("/")[-1]
-    lgb = (m.get("lightgbm") or {}).get("test", {}).get("roc_auc")
-    pilot = m["pilot"][0] if m["pilot"] else {}
+    lightgbm_auc = (metrics.get("lightgbm") or {}).get("test", {}).get("roc_auc")
+    pilot = metrics["pilot"][0] if metrics["pilot"] else {}
     finalists = ""
-    if m.get("finalists"):
+    if metrics.get("finalists"):
         finalists = f"""
 
-{_finalists_intro(m)}
+{_finalists_intro(metrics)}
 
 ROC AUC и accuracy посчитаны на полном valid у PyTorch, «ROC AUC int8» — у ONNX int8;
 «сменил метку» — доля текстов valid, где int8 и PyTorch расходятся по порогу $0.5$.
 Размер и задержка — у варианта из поставки, на $512$ токенах в один поток: на M1 и на
 двух ядрах Xeon виртуальной машины Colab.
 
-{_finalists_md(m)}"""
-    why = f"\n\n{p['why']}" if p.get("why") else ""
-    parity = m["parity"]
-    b = bundle_for(p["base"])
+{_finalists_md(metrics)}"""
+    why = f"\n\n{params['why']}" if params.get("why") else ""
+    parity = metrics["parity"]
+    bundle = bundle_for(params["base"])
     choose = ""
-    if m.get("related"):
-        choose = f"\n\n{_choose_md(m, repo)}"
-    what = f"дообученный энкодер `{p['base']}`"
-    sizes = [r["parameters"] / 1e6 for r in m["pilot"] if r.get("parameters")]
-    lo, hi = (round(min(sizes)), round(max(sizes))) if sizes else (0, 0)
+    if metrics.get("related"):
+        choose = f"\n\n{_choose_md(metrics, repo)}"
+    what = f"дообученный энкодер `{params['base']}`"
+    sizes = [run["parameters"] / 1e6 for run in metrics["pilot"] if run.get("parameters")]
+    smallest, largest = (round(min(sizes)), round(max(sizes))) if sizes else (0, 0)
     span = (
         ""
         if not sizes
-        else f", а у кандидатов ниже ${lo}$ млн"
-        if lo == hi
-        else f", а у кандидатов ниже ${lo}\\text{{–}}{hi}$ млн"
+        else f", а у кандидатов ниже ${smallest}$ млн"
+        if smallest == largest
+        else f", а у кандидатов ниже ${smallest}\\text{{–}}{largest}$ млн"
     )
     return f"""# Отчёт об обучении: {name}
 
@@ -2721,11 +2839,11 @@ ROC AUC и accuracy посчитаны на полном valid у PyTorch, «ROC
 
 Необязательная модель aiw-ru: {what} оценивает
 вероятность, что русский текст написала языковая модель. Пользователь ставит её
-командой `aiw-ru models install {b.name}`, после чего `{_classify_cmd(b)}`
-выдаёт вероятность. В поставке ONNX с весами {_weights(m)} на {_mb(p["size_mb"])} МБ и
+командой `aiw-ru models install {bundle.name}`, после чего `{_classify_cmd(bundle)}`
+выдаёт вероятность. В поставке ONNX с весами {_weights(metrics)} на {_mb(params["size_mb"])} МБ и
 `inference.json`; для вывода нужны onnxruntime и tokenizers, torch не нужен.
-На test ROC AUC {num(m["test"]["roc_auc"])}, у LightGBM на признаках aiw-ru {_auc(lgb)},
-у оценки правил {num(m["detector"]["roc_auc"])}.{choose}
+На test ROC AUC {num(metrics["test"]["roc_auc"])}, у LightGBM на признаках aiw-ru {_auc(lightgbm_auc)},
+у оценки правил {num(metrics["detector"]["roc_auc"])}.{choose}
 
 ## Выбор базы
 
@@ -2737,23 +2855,23 @@ FRIDA взята его дистилляция `sergeyzh/rubert-mini-frida`.
 В пилоте все базы учились одинаково: {_nw(pilot.get("train", 0), "текст", "текста", "текстов")} train,
 эпох {count(int(pilot.get("epochs") or 1))}, скорость `{pilot.get("lr") or 0:g}`, пачка {count(pilot.get("batch") or 0)},
 `seed` {count(pilot.get("seed") or 0)}. ROC AUC посчитан на {_texts_loc(pilot.get("valid", 0))} valid,
-задержка — ONNX int8 на $512$ токенах в один поток, {m["latency_cpu"]}.
+задержка — ONNX int8 на $512$ токенах в один поток, {metrics["latency_cpu"]}.
 
-{_pilot_md(m)}{finalists}{why}
+{_pilot_md(metrics)}{finalists}{why}
 
 ## Данные
 
-Русская часть [LLMTrace classification](https://huggingface.co/datasets/{ds["repo"]})
+Русская часть [LLMTrace classification](https://huggingface.co/datasets/{dataset["repo"]})
 под Apache 2.0, [статья](https://arxiv.org/abs/2509.21269), ревизия набора
-`{ds["revision"]}`. Части корпуса используются как есть. {_trained_on(m)} Test нужен только для
-итоговых цифр, в нём {_nw(ds["test"], "текст", "текста", "текстов")}.
+`{dataset["revision"]}`. Части корпуса используются как есть. {_trained_on(metrics)} Test нужен только для
+итоговых цифр, в нём {_nw(dataset["test"], "текст", "текста", "текстов")}.
 
 Метка «ИИ» стоит на любом тексте с участием модели: написанном с нуля
 (`create`) и на человеческом тексте, который модель правила, сокращала или
 дописывала (`update`, `delete`, `expand`). При обучении от текста длиннее
-{_tokens_gen(p["max_length"])} остаётся только начало. Таких в train
-{pct(p["truncated_share"]["train"])}, в valid {pct(p["truncated_share"]["valid"])}, в test
-{pct(p["truncated_share"].get("test", 0))}.
+{_tokens_gen(params["max_length"])} остаётся только начало. Таких в train
+{pct(params["truncated_share"]["train"])}, в valid {pct(params["truncated_share"]["valid"])}, в test
+{pct(params["truncated_share"].get("test", 0))}.
 
 ## Нормализация
 
@@ -2761,96 +2879,96 @@ FRIDA взята его дистилляция `sergeyzh/rubert-mini-frida`.
 ROC AUC каждой приметы по отдельности на valid: $0.5$ значит, что примета ничего
 не говорит, чем дальше от $0.5$ в любую сторону, тем больше говорит.
 
-{_shortcuts_md(m)}
+{_shortcuts_md(metrics)}
 
-{_shortcuts_note(m)} Поэтому до токенизации текст проходит `normalize()`: правила ниже применяются
+{_shortcuts_note(metrics)} Поэтому до токенизации текст проходит `normalize()`: правила ниже применяются
 по порядку, шаблоны — `re` с флагом `MULTILINE`, в конце пробелы по краям
 срезаются. Тот же список лежит в `inference.json`. Длину текста так не убрать,
-см. таблицу по длине. {_ablation(m)}
+см. таблицу по длине. {_ablation(metrics)}
 
 {_rules_md()}
 
 ## Обучение
 
-{_params_md(m)}
+{_params_md(metrics)}
 
 Проверки на valid по ходу обучения:
 
-{_curve_md(m)}
+{_curve_md(metrics)}
 
 ## Результаты на test
 
-Текст считается написанным ИИ, если вероятность не меньше {num(THRESHOLD, 1)}. {_long_rule(m)}
+Текст считается написанным ИИ, если вероятность не меньше {num(THRESHOLD, 1)}. {_long_rule(metrics)}
 
-{_classes_table(m["test"])}
+{_classes_table(metrics["test"])}
 
-{_compare_md(m)}
+{_compare_md(metrics)}
 
-На valid accuracy {num(m["valid"]["accuracy"])}, ROC AUC {num(m["valid"]["roc_auc"])}.
+На valid accuracy {num(metrics["valid"]["accuracy"])}, ROC AUC {num(metrics["valid"]["roc_auc"])}.
 
-{_cuts_md(m, "###")}
+{_cuts_md(metrics, "###")}
 
 ### Детектор без модели
 
-Оценка правил aiw-ru с порогом {count(m["detector"]["threshold"])}, то есть «много примет»:
+Оценка правил aiw-ru с порогом {count(metrics["detector"]["threshold"])}, то есть «много примет»:
 
-{_classes_table(m["detector"])}
+{_classes_table(metrics["detector"])}
 
 ## Вывод на CPU
 
-Ниже варианты одной и той же модели. {_weights_rule(m)}{_probs_note(m)}
+Ниже варианты одной и той же модели. {_weights_rule(metrics)}{_probs_note(metrics)}
 
-{_variants_md(m)}
+{_variants_md(metrics)}
 
 Сверка с PyTorch на {_texts_loc(parity["fp32"]["texts"])} valid: у ONNX fp32 наибольшая
 разница вероятностей {_sci(parity["fp32"]["max_abs_diff"])}, у int8 {num(parity["int8"]["max_abs_diff"])},
-метки int8 совпадают у {pct(parity["int8"]["same_label"])} текстов.{_spec_parity(m)}
+метки int8 совпадают у {pct(parity["int8"]["same_label"])} текстов.{_spec_parity(metrics)}
 
 Правило для длинных текстов выбрано по valid, в test таких текстов
-{count(m["long_texts"]["test"]["texts"])}:
+{count(metrics["long_texts"]["test"]["texts"])}:
 
-{_long_md(m)}
+{_long_md(metrics)}
 
-{_speed_md(m)}
+{_speed_md(metrics)}
 
 ## Как пользоваться
 
-{_usage_md(m, repo)}
+{_usage_md(metrics, repo)}
 
 ## Как воспроизвести
 
-{_reproduce_md(m)}
+{_reproduce_md(metrics)}
 
 ## Ограничения
 
-{_limitations_md(m)}
+{_limitations_md(metrics)}
 
 ## Ссылки
 
 {LLMTRACE_BIBTEX}
 
-{BASE_CITATIONS.get(p["base"], "")}
+{BASE_CITATIONS.get(params["base"], "")}
 """
 
 
-def card(m: dict, repo: str | None = None) -> ModelCard:
-    repo = repo or bundle_for(m["params"]["base"]).repo
-    p = m["params"]
-    results = eval_results(m)
-    for r in results:
-        r.source_name = "aiw-ru scripts/train_transformer.py"
-        r.source_url = f"{GITHUB}/blob/master/scripts/train_transformer.py"
-    tags = [t for t in TAGS if t not in ("lightgbm", "tabular-features")]
-    arch = "modernbert" if "modernbert" in p["base"].lower() else "bert"
+def card(metrics: dict, repo: str | None = None) -> ModelCard:
+    repo = repo or bundle_for(metrics["params"]["base"]).repo
+    params = metrics["params"]
+    results = eval_results(metrics)
+    for result in results:
+        result.source_name = "aiw-ru scripts/train_transformer.py"
+        result.source_url = f"{GITHUB}/blob/master/scripts/train_transformer.py"
+    tags = [tag for tag in TAGS if tag not in ("lightgbm", "tabular-features")]
+    arch = "modernbert" if "modernbert" in params["base"].lower() else "bert"
     tags += [arch, "onnx"]
-    if _weights(m) == "int8":
+    if _weights(metrics) == "int8":
         tags.append("int8")
     data = ModelCardData(
         language="ru",
-        license=p["license"],
+        license=params["license"],
         library_name="onnx",
         pipeline_tag=TASK,
-        base_model=p["base"],
+        base_model=params["base"],
         base_model_relation="finetune",
         tags=tags,
         datasets=[DATASET],
@@ -2859,7 +2977,7 @@ def card(m: dict, repo: str | None = None) -> ModelCard:
         eval_results=results,
         inference=False,
     )
-    return ModelCard(f"---\n{data.to_yaml()}\n---\n\n{hub_math(card_body(m, repo))}")
+    return ModelCard(f"---\n{data.to_yaml()}\n---\n\n{hub_math(card_body(metrics, repo))}")
 
 
 def finalist(run_dir: Path, data: Path) -> dict:
@@ -2869,44 +2987,49 @@ def finalist(run_dir: Path, data: Path) -> dict:
     задержка на x86 — из export-x86.json, если он есть.
     """
     run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-    exp = json.loads((run_dir / "export.json").read_text(encoding="utf-8"))
-    lat = {(r["runtime"], r["tokens"], r["threads"]): r["ms"] for r in exp["latency"]}
+    export_info = json.loads((run_dir / "export.json").read_text(encoding="utf-8"))
+    latency_ms = {
+        (entry["runtime"], entry["tokens"], entry["threads"]): entry["ms"] for entry in export_info["latency"]
+    }
     row: dict[str, Any] = {
         "base": run["params"]["base"],
         "valid": run["dataset"]["valid"],
         "valid_roc_auc": run["valid"]["roc_auc"],
         "valid_accuracy": run["valid"]["accuracy"],
-        "onnx_fp32_mb": exp["sizes_mb"]["onnx_fp32"],
-        "onnx_int8_mb": exp["sizes_mb"]["onnx_int8"],
-        "int8_ms_128_1": lat.get(("onnxruntime int8", 128, 1)),
-        "int8_ms_512_1": lat.get(("onnxruntime int8", 512, 1)),
-        "fp32_ms_512_1": lat.get(("onnxruntime fp32", 512, 1)),
+        "onnx_fp32_mb": export_info["sizes_mb"]["onnx_fp32"],
+        "onnx_int8_mb": export_info["sizes_mb"]["onnx_int8"],
+        "int8_ms_128_1": latency_ms.get(("onnxruntime int8", 128, 1)),
+        "int8_ms_512_1": latency_ms.get(("onnxruntime int8", 512, 1)),
+        "fp32_ms_512_1": latency_ms.get(("onnxruntime fp32", 512, 1)),
     }
     # Веса в поставке — из metrics.json после evaluate; до него считаем, что int8.
     metrics = run_dir / "metrics.json"
-    w = (
+    weights = (
         json.loads(metrics.read_text(encoding="utf-8"))["params"]["shipped"].removeprefix("onnx_")
         if metrics.exists()
         else "int8"
     )
     row |= {
-        "weights": w,
-        "shipped_mb": exp["sizes_mb"][f"onnx_{w}"],
-        "shipped_ms_512_1": lat.get((f"onnxruntime {w}", 512, 1)),
+        "weights": weights,
+        "shipped_mb": export_info["sizes_mb"][f"onnx_{weights}"],
+        "shipped_ms_512_1": latency_ms.get((f"onnxruntime {weights}", 512, 1)),
     }
     x86 = run_dir / "export-x86.json"
     if x86.exists():
-        lx = {(r["runtime"], r["tokens"], r["threads"]): r["ms"] for r in json.loads(x86.read_text())["latency"]}
-        row["x86_int8_ms_512_1"] = lx.get(("onnxruntime int8", 512, 1))
-        row["x86_shipped_ms_512_1"] = lx.get((f"onnxruntime {w}", 512, 1))
+        x86_latency_ms = {
+            (entry["runtime"], entry["tokens"], entry["threads"]): entry["ms"]
+            for entry in json.loads(x86.read_text())["latency"]
+        }
+        row["x86_int8_ms_512_1"] = x86_latency_ms.get(("onnxruntime int8", 512, 1))
+        row["x86_shipped_ms_512_1"] = x86_latency_ms.get((f"onnxruntime {weights}", 512, 1))
     int8 = run_dir / "valid-probs-onnx_int8.npy"
     if int8.exists():
-        y = np.array([json.loads(line)["label"] == "ai" for line in load(data, "classification", "valid", 0)])
-        p, ref = np.load(int8), np.load(run_dir / "valid-probs.npy")
+        labels = np.array([json.loads(line)["label"] == "ai" for line in load(data, "classification", "valid", 0)])
+        int8_probs, torch_probs = np.load(int8), np.load(run_dir / "valid-probs.npy")
         row |= {
-            "valid_roc_auc_int8": auc(y, p),
-            "valid_accuracy_int8": float((y == (p >= THRESHOLD)).mean()),
-            "int8_label_changes": float(((p >= THRESHOLD) != (ref >= THRESHOLD)).mean()),
+            "valid_roc_auc_int8": auc(labels, int8_probs),
+            "valid_accuracy_int8": float((labels == (int8_probs >= THRESHOLD)).mean()),
+            "int8_label_changes": float(((int8_probs >= THRESHOLD) != (torch_probs >= THRESHOLD)).mean()),
         }
     return row
 
@@ -2914,108 +3037,116 @@ def finalist(run_dir: Path, data: Path) -> dict:
 def cmd_report(args: argparse.Namespace) -> None:
     """README.md в hub/ рядом с файлами модели, отчёт и метрики в docs/models/."""
     run_dir: Path = args.folder
-    m = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
-    repo = args.repo or bundle_for(m["params"]["base"]).repo
+    metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+    repo = args.repo or bundle_for(metrics["params"]["base"]).repo
     # Замеры задержки могли появиться после evaluate, метрики LightGBM — обновиться.
-    m |= cpu_latency(run_dir, m) | x86_latency(run_dir)
-    m["lightgbm"] = lightgbm_block() or m.get("lightgbm")
+    metrics |= cpu_latency(run_dir, metrics) | x86_latency(run_dir)
+    metrics["lightgbm"] = lightgbm_block() or metrics.get("lightgbm")
     if args.why:
-        m["params"]["why"] = args.why
+        metrics["params"]["why"] = args.why
     if args.finalist:
-        m["finalists"] = [finalist(d, args.data) for d in args.finalist]
+        metrics["finalists"] = [finalist(folder, args.data) for folder in args.finalist]
     if args.related:
-        m["related"] = [related_row(d) for d in args.related]
-    m["report_args"] = {
+        metrics["related"] = [related_row(folder) for folder in args.related]
+    metrics["report_args"] = {
         "run": run_dir.name,
-        "finalist": [d.name for d in args.finalist or []],
-        "related": [d.name for d in args.related or []],
+        "finalist": [folder.name for folder in args.finalist or []],
+        "related": [folder.name for folder in args.related or []],
     }
-    (run_dir / "metrics.json").write_text(json.dumps(m, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    hub_dir = bundle_hub(run_dir, m["params"]["shipped_file"])
-    card(m, repo).save(hub_dir / "README.md")
+    (run_dir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    hub_dir = bundle_hub(run_dir, metrics["params"]["shipped_file"])
+    card(metrics, repo).save(hub_dir / "README.md")
     print(f"Для Hugging Face: {hub_dir}", flush=True)
     name = repo.split("/")[-1]
-    if m["dataset"]["limit"]:
+    if metrics["dataset"]["limit"]:
         # Пилот на выборке в docs/ не идёт: отчёт только в папке запуска.
-        (run_dir / "report.md").write_text(report_body(m, repo), encoding="utf-8")
+        (run_dir / "report.md").write_text(report_body(metrics, repo), encoding="utf-8")
         print(f"Обучение на выборке: отчёт только в {run_dir / 'report.md'}", flush=True)
         return
     docs = ROOT / DOCS
     docs.mkdir(parents=True, exist_ok=True)
-    (docs / f"{name}.md").write_text(report_body(m, repo), encoding="utf-8")
-    (docs / f"{name}.json").write_text(json.dumps(m, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (docs / f"{name}.md").write_text(report_body(metrics, repo), encoding="utf-8")
+    (docs / f"{name}.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"Отчёт: {DOCS / f'{name}.md'} и {DOCS / f'{name}.json'}", flush=True)
 
 
 # ─── Командная строка ───────────────────────────────────────────────────
 
 
-def add_common(ap: argparse.ArgumentParser) -> None:
-    ap.add_argument("--data", type=Path, default=data_dir(), help="папка с частями корпуса")
-    ap.add_argument("--out-root", type=Path, help="папка запусков и кэша (по умолчанию transformer/ рядом с данными)")
+def add_common(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--data", type=Path, default=data_dir(), help="папка с частями корпуса")
+    parser.add_argument(
+        "--out-root", type=Path, help="папка запусков и кэша (по умолчанию transformer/ рядом с данными)"
+    )
 
 
-def add_fit(ap: argparse.ArgumentParser, pilot: bool) -> None:
-    add_common(ap)
-    ap.add_argument("--base", default=DEFAULT_BASE, help="исходная модель на Hugging Face")
-    ap.add_argument("--limit", type=int, default=20000 if pilot else 0, help="взять N текстов из train")
-    ap.add_argument("--eval-limit", type=int, help="взять N текстов из valid и test (по умолчанию половина --limit)")
-    ap.add_argument("--epochs", type=float, default=1 if pilot else 3, help="эпох обучения, можно дробное число")
-    ap.add_argument("--lr", type=float, default=1e-4, help="пиковая скорость обучения AdamW")
-    ap.add_argument("--batch", type=int, default=32, help="текстов в пачке")
-    ap.add_argument("--eval-batch", type=int, default=128, help="текстов в пачке при проверке")
-    ap.add_argument(
+def add_fit(parser: argparse.ArgumentParser, pilot: bool) -> None:
+    add_common(parser)
+    parser.add_argument("--base", default=DEFAULT_BASE, help="исходная модель на Hugging Face")
+    parser.add_argument("--limit", type=int, default=20000 if pilot else 0, help="взять N текстов из train")
+    parser.add_argument(
+        "--eval-limit", type=int, help="взять N текстов из valid и test (по умолчанию половина --limit)"
+    )
+    parser.add_argument("--epochs", type=float, default=1 if pilot else 3, help="эпох обучения, можно дробное число")
+    parser.add_argument("--lr", type=float, default=1e-4, help="пиковая скорость обучения AdamW")
+    parser.add_argument("--batch", type=int, default=32, help="текстов в пачке")
+    parser.add_argument("--eval-batch", type=int, default=128, help="текстов в пачке при проверке")
+    parser.add_argument(
         "--batch-tokens", type=int, default=0, help="токенов в пачке, ширина × тексты (0 — без лимита; нужен при 8192)"
     )
-    ap.add_argument(
+    parser.add_argument(
         "--sliding-window",
         type=int,
         default=0,
         help="полуширина локального окна ModernBERT (0 — как в config.json базы)",
     )
-    ap.add_argument("--seed", type=int, default=SEED, help="сид: порядок пачек и начальные веса головы")
-    ap.add_argument("--max-length", type=int, default=512, help="токенов на текст, дальше текст обрезается")
-    ap.add_argument("--warmup", type=float, default=0.06, help="доля шагов разогрева скорости обучения")
-    ap.add_argument("--weight-decay", type=float, default=0.01, help="затухание весов AdamW")
-    ap.add_argument("--patience", type=int, default=0 if pilot else 3, help="проверок без роста AUC до остановки")
-    ap.add_argument("--evals-per-epoch", type=int, default=1 if pilot else 4, help="проверок на valid за эпоху")
-    ap.add_argument("--device", default="auto", choices=["auto", "cuda", "mps", "cpu"], help="где учить")
-    ap.add_argument("--precision", default="auto", choices=["auto", "fp32", "fp16", "bf16"], help="точность")
-    ap.add_argument("--raw", action="store_true", help="без нормализации текста, для сравнения")
-    ap.add_argument("--out", type=Path, help="папка запуска")
+    parser.add_argument("--seed", type=int, default=SEED, help="сид: порядок пачек и начальные веса головы")
+    parser.add_argument("--max-length", type=int, default=512, help="токенов на текст, дальше текст обрезается")
+    parser.add_argument("--warmup", type=float, default=0.06, help="доля шагов разогрева скорости обучения")
+    parser.add_argument("--weight-decay", type=float, default=0.01, help="затухание весов AdamW")
+    parser.add_argument("--patience", type=int, default=0 if pilot else 3, help="проверок без роста AUC до остановки")
+    parser.add_argument("--evals-per-epoch", type=int, default=1 if pilot else 4, help="проверок на valid за эпоху")
+    parser.add_argument("--device", default="auto", choices=["auto", "cuda", "mps", "cpu"], help="где учить")
+    parser.add_argument("--precision", default="auto", choices=["auto", "fp32", "fp16", "bf16"], help="точность")
+    parser.add_argument("--raw", action="store_true", help="без нормализации текста, для сравнения")
+    parser.add_argument("--out", type=Path, help="папка запуска")
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    sub = ap.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
+    sub = parser.add_subparsers(dest="command", required=True)
     add_fit(sub.add_parser("pilot", help="короткое обучение на выборке, без test"), pilot=True)
     add_fit(sub.add_parser("train", help="полное обучение и ответы PyTorch на test"), pilot=False)
-    ex = sub.add_parser("export", help="ONNX fp32 и int8, сверка с PyTorch, задержка на CPU")
-    add_common(ex)
-    ex.add_argument("folder", type=Path, help="папка запуска с model/ и run.json")
-    ex.add_argument("--json", default="export.json", help="куда записать итог в папке запуска")
-    ev = sub.add_parser("evaluate", help="ONNX на CPU по valid и test, metrics.json и inference.json")
-    add_common(ev)
-    ev.add_argument("folder", type=Path, help="папка запуска после export")
-    ev.add_argument("--jobs", type=int, default=0, help="процессов детектора (по умолчанию по числу ядер)")
-    ev.add_argument("--int8-max-drop", type=float, default=0.002, help="допустимая потеря ROC AUC у int8 на valid")
-    ev.add_argument(
+    export_parser = sub.add_parser("export", help="ONNX fp32 и int8, сверка с PyTorch, задержка на CPU")
+    add_common(export_parser)
+    export_parser.add_argument("folder", type=Path, help="папка запуска с model/ и run.json")
+    export_parser.add_argument("--json", default="export.json", help="куда записать итог в папке запуска")
+    evaluate_parser = sub.add_parser("evaluate", help="ONNX на CPU по valid и test, metrics.json и inference.json")
+    add_common(evaluate_parser)
+    evaluate_parser.add_argument("folder", type=Path, help="папка запуска после export")
+    evaluate_parser.add_argument("--jobs", type=int, default=0, help="процессов детектора (по умолчанию по числу ядер)")
+    evaluate_parser.add_argument(
+        "--int8-max-drop", type=float, default=0.002, help="допустимая потеря ROC AUC у int8 на valid"
+    )
+    evaluate_parser.add_argument(
         "--weights",
         choices=("auto", "fp32", "int8"),
         default="auto",
         help="веса в поставке: auto — int8, если он теряет не больше --int8-max-drop",
     )
-    ev.add_argument(
+    evaluate_parser.add_argument(
         "--int8-valid-only",
         action="store_true",
         help="int8 считать только на valid: веса выбираются по нему, а int8 по одному тексту на CPU долог",
     )
-    ev.add_argument("--skip-install", action="store_true", help="не мерить размер установки зависимостей")
-    ev.add_argument("--reuse-install", type=Path, help="взять размер установки из metrics.json другого запуска")
-    ev.add_argument(
+    evaluate_parser.add_argument("--skip-install", action="store_true", help="не мерить размер установки зависимостей")
+    evaluate_parser.add_argument(
+        "--reuse-install", type=Path, help="взять размер установки из metrics.json другого запуска"
+    )
+    evaluate_parser.add_argument(
         "--int8-max-changes", type=float, default=0.005, help="допустимая доля текстов valid, где int8 меняет метку"
     )
-    ev.add_argument(
+    evaluate_parser.add_argument(
         "--onnx-texts",
         type=int,
         default=0,
@@ -3030,7 +3161,7 @@ def main(argv: list[str] | None = None) -> None:
     rep.add_argument(
         "--related", type=Path, action="append", help="папка другой модели aiw-ru после evaluate: сравнение в карточке"
     )
-    args = ap.parse_args(argv)
+    args = parser.parse_args(argv)
     args.out_root = args.out_root or args.data / "transformer"
     if args.command in ("pilot", "train"):
         cmd_fit(args, pilot=args.command == "pilot")
