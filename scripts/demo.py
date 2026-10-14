@@ -6,8 +6,9 @@
 Команды aiw-ru запускаются по-настоящему на примерах из docs/demo/: ширина 110
 колонок, цвет включён, сеть выключена. Набор команды имитируется с неровными
 паузами между буквами, после вывода идёт пауза на чтение, сцены разделены
-очисткой экрана. `classify --all` показывает все четыре модели, поэтому они
-должны быть в кэше: `aiw-ru models install modernbert transformer mini-frida lightgbm`.
+очисткой экрана. `classify` показывает модель по умолчанию, она должна быть в
+кэше: `aiw-ru models install modernbert`. В пост.md стоит узкий неразрывный пробел
+(U+202F): на нём светофор желтеет, а в правке пробел обычный и светофор зелёный.
 
 Рендер делает terminalizer (`npm install -g terminalizer`, около 10 минут): он
 пишет docs/demo/demo-raw.gif в двойном разрешении, в git этот файл не идёт. ffmpeg
@@ -44,7 +45,7 @@ SCENES: tuple[tuple[str, ...], ...] = (
     (
         "aiw-ru scan правка.md --context blog",
         "aiw-ru validate пост.md правка.md",
-        "aiw-ru classify --all правка.md",
+        "aiw-ru classify правка.md",
         "aiw-ru antiplagiat глава.md",
     ),
 )
@@ -185,8 +186,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Демо для README: запись terminalizer и gif")
     parser.add_argument("--no-render", action="store_true", help="только запись terminalizer, без gif")
     opts = parser.parse_args()
-    if missing := [model.name for model in models.MODELS.values() if not models.status(model).path]:
-        raise SystemExit(f"нет моделей {', '.join(missing)}: aiw-ru models install {' '.join(missing)}")
+    default = next(model for model in models.MODELS.values() if model.default)
+    if not models.status(default).path:
+        raise SystemExit(f"нет модели {default.name}: aiw-ru models install {default.name}")
     records, rows = recording()
     write(records, rows)
     print(f"{RECORDING.relative_to(ROOT)}: {len(records)} записей, {rows} строк")
