@@ -1043,7 +1043,7 @@ def _detect_stylometry(ctx: _Ctx, text_blocks: list[Block], prose_sentences: lis
 AGGREGATE = frozenset(
     (
         "uniform-sentences uniform-paragraphs low-diversity transition-run passive-run tier2-cluster "
-        "phrase3-cluster tier3 invisible-chars soft-hyphen model-idiolect truncated"
+        "phrase3-cluster tier3 invisible-chars soft-hyphen typography-chars model-idiolect truncated"
     ).split()
 )
 

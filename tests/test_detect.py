@@ -270,6 +270,19 @@ def test_typographic_chars_only_in_prose():
     assert "typography-chars" in types(f"Переход A \u2192 B занимает 25{NBSP}мс.")
 
 
+def test_typographic_chars_do_not_swallow_findings_next_to_them():
+    """текст находки — описание, а не фрагмент: подмена букв и жаргон сразу после пробела остаются"""
+    latin_a = chr(0x61)
+    homoglyph_text = f"Задержка 25{NBSP}мс, р{latin_a}бота идёт."
+    jargon_text = f"Сравнили с{NBSP}бейзлайном на valid."
+
+    homoglyph_types = types(homoglyph_text)
+    jargon_types = types(jargon_text)
+
+    assert {"typography-chars", "homoglyph"} <= set(homoglyph_types)
+    assert {"typography-chars", "jargon"} <= set(jargon_types)
+
+
 def test_nonbreaking_hyphen_is_yellow_and_word_still_found():
     """неразрывный дефис — тоже жёлтая находка, а слово со словарём по-прежнему ищется"""
     r = analyze(f"Это по{NBHY}настоящему важный шаг для команды.")
