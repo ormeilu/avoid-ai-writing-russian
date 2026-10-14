@@ -335,7 +335,7 @@ def test_plural_groups_thousands():
 GOST_TAIL = (
     "## Список литературы\n\n"
     "**1.** Иванов И. И. Оценка утомления // Транспорт. — 2023. — № 4. — С. 12–19.\n\n"
-    "**2.** Smith J. Drowsiness detection // Sensors. — 2023. — Vol. 23, № 20. — P. 8386.\n\n"
+    "**2.** Smith J. Shelf monitoring // Sensors. — 2021. — Vol. 21, № 7. — P. 2417.\n\n"
     "**Abstract.** We compare three drowsiness detection methods on cab recordings.\n\n"
     "**Keywords:** drowsiness, PERCLOS, train driver.\n\n"
     "## Сведения об авторах\n\n"
@@ -375,7 +375,7 @@ def test_service_records_without_heading():
     """три записи подряд без заголовка — список литературы, две — ещё нет"""
     records = [
         "1. Иванов И. И. Оценка // Транспорт. — 2023. — № 4. — С. 12–19.",
-        "2. Smith J. Drowsiness // Sensors. — 2023. — Vol. 23. — P. 8386.",
+        "2. Smith J. Shelf monitoring // Sensors. — 2021. — Vol. 21. — P. 2417.",
         "3. Петров П. П. Сон. — М. : Наука, 2019. — 240 с.",
     ]
     assert len(_service("Текст.\n\n" + "\n".join(records) + "\n\nДальше проза.")) == 1
@@ -387,7 +387,7 @@ def test_service_records_with_nonbreaking_spaces():
     nb = chr(0xA0)
     records = [
         f"1. Иванов И.{nb}И. Оценка // Транспорт. — 2023. — №{nb}4. — С.{nb}12–19.",
-        f"2. Smith J. Drowsiness // Sensors. — 2023. — Vol.{nb}23. — P.{nb}8386.",
+        f"2. Smith J. Shelf monitoring // Sensors. — 2021. — Vol.{nb}21. — P.{nb}2417.",
         f"3. Петров П.{nb}П. Сон. — М.{nb}: Наука, 2019. — 240{nb}с.",
     ]
     assert len(_service("Текст.\n\n" + "\n".join(records) + "\n\nДальше проза.")) == 1

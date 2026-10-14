@@ -106,12 +106,12 @@ def test_antiplagiat_skips_list_and_english_block(article: tuple[str, str, str])
 
 def test_unrecognized_records_would_fire():
     """проверка не пустая: две записи, которые не распознаются как список, дают рубленые фрагменты"""
-    assert "staccato" in types("Мы сравнили методы.\n\nЖурнал. — 2023. — Vol. 23, № 20. — P. 8386.")
+    assert "staccato" in types("Мы сравнили методы.\n\nЖурнал. — 2021. — Vol. 21, № 7. — P. 2417.")
     assert "staccato" not in types(
         "Мы сравнили методы.\n\n"
         "1. Иванов И. И. Оценка // Журнал. — 2023. — № 4. — С. 12–19.\n\n"
         "2. Петров П. П. Сон // Журнал. — 2022. — № 5. — С. 1–5.\n\n"
-        "3. Smith J. Drowsiness // Sensors. — 2023. — Vol. 23, № 20. — P. 8386.\n"
+        "3. Smith J. Shelf monitoring // Sensors. — 2021. — Vol. 21, № 7. — P. 2417.\n"
     )
 
 
@@ -130,7 +130,7 @@ BIBLIOGRAPHY = (
     "## Список литературы\n\n"
     "1. Иванов И. И. «Оценка» // Журнал. — 2023. — № 4. — С. 12–19.\n\n"
     '2. Петров П. П. "Сон и бдительность" // Журнал. — 2022. — № 5. — С. 1–5.\n\n'
-    "3. Smith J. “Drowsiness” // Sensors. — 2023. — Vol. 23, № 20. — P. 8386.\n"
+    "3. Smith J. “Shelf monitoring” // Sensors. — 2021. — Vol. 21, № 7. — P. 2417.\n"
 )
 
 

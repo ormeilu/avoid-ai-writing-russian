@@ -257,7 +257,7 @@ def test_scan_shows_light(cli: Cli):
 
 def test_validate_marked_lists_unedited_red_paragraphs(cli: Cli, tmp_path: Path):
     """validate --marked называет красные абзацы отчёта, оставшиеся без правки"""
-    red = "Предлагаемый метод основан на анализе изображения лица, глаз и позы оператора, что позволяет выявлять предаварийное состояние заранее."
+    red = "Ночная смена принимает больше всего возвратов, поэтому именно ночью на складе появляется большая часть расхождений."
     doc = tmp_path / "doc.md"
     doc.write_text(red + "\n\nВторой абзац остаётся обычным.\n", encoding="utf-8")
     heat = tmp_path / "heat.json"
