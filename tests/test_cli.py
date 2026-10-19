@@ -488,16 +488,18 @@ def test_calibrate_writes_to_config_from_env(cli: Cli, tmp_path: Path):
     assert report["model"] == "calibrated"
 
 
-def test_calibrate_accumulates_in_user_config(cli: Cli, tmp_path: Path):
+def test_calibrate_accumulates_in_user_config(cli: Cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """calibrate дописывает образцы в ~/.config/aiw-ru.json, а не в новый файл в текущей папке"""
+    # Path.home() на Windows смотрит в USERPROFILE, на других платформах — в HOME.
+    monkeypatch.setenv("USERPROFILE", os.environ["HOME"])
+    user_config = Path.home() / ".config" / "aiw-ru.json"
+    user_config.parent.mkdir(parents=True)
     doc = tmp_path / "doc.md"
     marked = tmp_path / "marked.txt"
     ai = AI_VAK.read_text(encoding="utf-8")
     human = HUMAN_VAK.read_text(encoding="utf-8")
     doc.write_text(f"{ai}\n\n{human}", encoding="utf-8")
     marked.write_text(ai.split("\n\n")[1], encoding="utf-8")
-    user_config = Path(os.environ["HOME"]) / ".config" / "aiw-ru.json"
-    user_config.parent.mkdir(parents=True)
 
     assert cli("calibrate", "--doc", str(doc), "--marked", str(marked), "--config", str(user_config)).code == 0
     first = json.loads(user_config.read_text(encoding="utf-8"))
