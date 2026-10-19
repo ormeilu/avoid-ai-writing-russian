@@ -47,13 +47,15 @@ def cli(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp
     """Запуск `main()` в этом процессе: без цвета, без калибровки, в пустом каталоге.
 
     NO_COLOR включён, FORCE_COLOR выключен, пока тест не
-    попросит иначе. HOME подменён, чтобы не подхватить ~/.config/aiw-ru.json.
+    попросит иначе. HOME и USERPROFILE подменены, чтобы не подхватить ~/.config/aiw-ru.json:
+    на Windows `Path.home()` читает USERPROFILE, а не HOME.
     """
     monkeypatch.setenv("AIW_RU_CONFIG", "")
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.delenv("COLUMNS", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     # Модели из кэша Hugging Face разработчика не должны попадать в вывод.
     for model in models.MODELS.values():
         monkeypatch.setenv(model.env, str(tmp_path / "нет-модели"))
@@ -488,10 +490,8 @@ def test_calibrate_writes_to_config_from_env(cli: Cli, tmp_path: Path):
     assert report["model"] == "calibrated"
 
 
-def test_calibrate_accumulates_in_user_config(cli: Cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_calibrate_accumulates_in_user_config(cli: Cli, tmp_path: Path):
     """calibrate дописывает образцы в ~/.config/aiw-ru.json, а не в новый файл в текущей папке"""
-    # Path.home() на Windows смотрит в USERPROFILE, на других платформах — в HOME.
-    monkeypatch.setenv("USERPROFILE", os.environ["HOME"])
     user_config = Path.home() / ".config" / "aiw-ru.json"
     user_config.parent.mkdir(parents=True)
     doc = tmp_path / "doc.md"
