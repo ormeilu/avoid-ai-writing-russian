@@ -1130,7 +1130,10 @@ def split_marked(text: str) -> list[str]:
 def cmd_calibrate(a: Args) -> int:
     if not a.reports or any(report.marked is None and report.share is None for report in a.reports):
         raise UsageError("calibrate ждёт для каждого --doc ФАЙЛ разметку: --marked ФАЙЛ или --share ДОЛЯ")
-    path = a.config or ".aiw-ru.json"
+    # Тот же файл, откуда antiplagiat читает калибровку: --config, $AIW_RU_CONFIG,
+    # ./.aiw-ru.json, затем ~/.config/aiw-ru.json. Иначе образцы копились бы не в том файле,
+    # который читается, и калибровка из ~/.config терялась бы.
+    path = config_path(a) or ".aiw-ru.json"
     calibration_file = load_calibration(path if os.path.exists(path) else None) or empty_calibration_file()
     previous = calibration_file.get(a.system)
     samples = list(previous.samples) if previous else []
