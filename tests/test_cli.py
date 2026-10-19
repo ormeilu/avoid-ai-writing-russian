@@ -47,13 +47,15 @@ def cli(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp
     """Запуск `main()` в этом процессе: без цвета, без калибровки, в пустом каталоге.
 
     NO_COLOR включён, FORCE_COLOR выключен, пока тест не
-    попросит иначе. HOME подменён, чтобы не подхватить ~/.config/aiw-ru.json.
+    попросит иначе. HOME и USERPROFILE подменены, чтобы не подхватить ~/.config/aiw-ru.json:
+    на Windows `Path.home()` читает USERPROFILE, а не HOME.
     """
     monkeypatch.setenv("AIW_RU_CONFIG", "")
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.delenv("COLUMNS", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     # Модели из кэша Hugging Face разработчика не должны попадать в вывод.
     for model in models.MODELS.values():
         monkeypatch.setenv(model.env, str(tmp_path / "нет-модели"))
@@ -472,6 +474,40 @@ def test_config_flag_and_env(cli: Cli, tmp_path: Path):
     without = json.loads(cli("antiplagiat", "--json", str(doc)).out)
     assert with_flag["model"] == with_env["model"] == "calibrated"
     assert without["model"] == "default"
+
+
+def test_calibrate_writes_to_config_from_env(cli: Cli, tmp_path: Path):
+    """calibrate пишет в $AIW_RU_CONFIG — в тот же файл, откуда читает antiplagiat"""
+    doc = tmp_path / "doc.md"
+    doc.write_text(AI_VAK.read_text(encoding="utf-8"), encoding="utf-8")
+    config = tmp_path / "cal" / "aiw-ru.json"
+    config.parent.mkdir()
+    r = cli("calibrate", "--doc", str(doc), "--share", "10", env={"AIW_RU_CONFIG": str(config)})
+    assert r.code == 0
+    assert config.exists(), "калибровка должна лежать в файле, который читает antiplagiat"
+    assert not (Path.cwd() / ".aiw-ru.json").exists()
+    report = json.loads(cli("antiplagiat", "--json", str(doc), env={"AIW_RU_CONFIG": str(config)}).out)
+    assert report["model"] == "calibrated"
+
+
+def test_calibrate_accumulates_in_user_config(cli: Cli, tmp_path: Path):
+    """calibrate дописывает образцы в ~/.config/aiw-ru.json, а не в новый файл в текущей папке"""
+    user_config = Path.home() / ".config" / "aiw-ru.json"
+    user_config.parent.mkdir(parents=True)
+    doc = tmp_path / "doc.md"
+    marked = tmp_path / "marked.txt"
+    ai = AI_VAK.read_text(encoding="utf-8")
+    human = HUMAN_VAK.read_text(encoding="utf-8")
+    doc.write_text(f"{ai}\n\n{human}", encoding="utf-8")
+    marked.write_text(ai.split("\n\n")[1], encoding="utf-8")
+
+    assert cli("calibrate", "--doc", str(doc), "--marked", str(marked), "--config", str(user_config)).code == 0
+    first = json.loads(user_config.read_text(encoding="utf-8"))
+
+    assert cli("calibrate", "--doc", str(doc), "--marked", str(marked)).code == 0
+    assert not (Path.cwd() / ".aiw-ru.json").exists(), "калибровка ушла в файл, который antiplagiat не читает"
+    second = json.loads(user_config.read_text(encoding="utf-8"))
+    assert len(second["samples"]) == len(first["samples"]) * 2
 
 
 def test_broken_calibration_file_clear_error(cli: Cli, tmp_path: Path):
