@@ -474,6 +474,40 @@ def test_config_flag_and_env(cli: Cli, tmp_path: Path):
     assert without["model"] == "default"
 
 
+def test_calibrate_writes_to_config_from_env(cli: Cli, tmp_path: Path):
+    """calibrate пишет в $AIW_RU_CONFIG — в тот же файл, откуда читает antiplagiat"""
+    doc = tmp_path / "doc.md"
+    doc.write_text(AI_VAK.read_text(encoding="utf-8"), encoding="utf-8")
+    config = tmp_path / "cal" / "aiw-ru.json"
+    config.parent.mkdir()
+    r = cli("calibrate", "--doc", str(doc), "--share", "10", env={"AIW_RU_CONFIG": str(config)})
+    assert r.code == 0
+    assert config.exists(), "калибровка должна лежать в файле, который читает antiplagiat"
+    assert not (Path.cwd() / ".aiw-ru.json").exists()
+    report = json.loads(cli("antiplagiat", "--json", str(doc), env={"AIW_RU_CONFIG": str(config)}).out)
+    assert report["model"] == "calibrated"
+
+
+def test_calibrate_accumulates_in_user_config(cli: Cli, tmp_path: Path):
+    """calibrate дописывает образцы в ~/.config/aiw-ru.json, а не в новый файл в текущей папке"""
+    doc = tmp_path / "doc.md"
+    marked = tmp_path / "marked.txt"
+    ai = AI_VAK.read_text(encoding="utf-8")
+    human = HUMAN_VAK.read_text(encoding="utf-8")
+    doc.write_text(f"{ai}\n\n{human}", encoding="utf-8")
+    marked.write_text(ai.split("\n\n")[1], encoding="utf-8")
+    user_config = Path(os.environ["HOME"]) / ".config" / "aiw-ru.json"
+    user_config.parent.mkdir(parents=True)
+
+    assert cli("calibrate", "--doc", str(doc), "--marked", str(marked), "--config", str(user_config)).code == 0
+    first = json.loads(user_config.read_text(encoding="utf-8"))
+
+    assert cli("calibrate", "--doc", str(doc), "--marked", str(marked)).code == 0
+    assert not (Path.cwd() / ".aiw-ru.json").exists(), "калибровка ушла в файл, который antiplagiat не читает"
+    second = json.loads(user_config.read_text(encoding="utf-8"))
+    assert len(second["samples"]) == len(first["samples"]) * 2
+
+
 def test_broken_calibration_file_clear_error(cli: Cli, tmp_path: Path):
     """битый файл калибровки — понятная ошибка"""
     (tmp_path / ".aiw-ru.json").write_text("{не json", encoding="utf-8")
