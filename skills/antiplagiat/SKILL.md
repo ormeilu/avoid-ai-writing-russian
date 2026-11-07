@@ -26,8 +26,6 @@ metadata:
   language: ru
   tags: russian antiplagiat domate academic ai-detection dissertation vak calibration
   parent_skill: avoid-ai-writing-russian
-  openclaw:
-    emoji: "🎓"
   agentskills_spec: "1.0"
 ---
 
@@ -71,7 +69,7 @@ metadata:
 ### 2. Замер
 
 <!-- repo-only:start -->
-Если `aiw-ru` есть в PATH (`command -v aiw-ru`), зови его напрямую, без `uv run --project ../.. --extra ml`. Иначе пиши через uv, как в примерах ниже. То же верно для команд в `references/`.
+Если `aiw-ru` есть в PATH (`command -v aiw-ru`), зови его напрямую, без `uv run --project ../.. --extra ml`. Иначе пиши через uv, как в примерах ниже. То же верно для команд в `references/`. Путь `../..` считается от папки этого SKILL.md, а оболочка агента обычно стоит в папке пользователя, поэтому подставь абсолютный путь: `uv run --project <папка скилла>/../.. aiw-ru antiplagiat <файл>`. Файл оставь относительно рабочей папки: `--project` её не меняет.
 <!-- repo-only:end -->
 
 Если доступен `aiw-ru` или uv, запусти оценку по фрагментам (проект детектора лежит в корне репозитория, `../..` от этого файла):

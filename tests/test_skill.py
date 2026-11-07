@@ -2,6 +2,7 @@
 каталога с детектором и примеры из каталога.
 """
 
+import json
 import re
 import shlex
 import textwrap
@@ -114,6 +115,8 @@ class TestSkill:
         assert 100 < len(data["description"]) <= 1024
         assert data["license"] == "MIT"
         assert data["version"] == PYPROJECT["project"]["version"]
+        # По спецификации metadata — строки по строковым ключам; Hermes пропускает скилл с вложенной картой.
+        assert all(isinstance(v, str) for v in data["metadata"].values()), data["metadata"]
 
     def test_description_has_russian_triggers(self, skill_dir: str):
         """описание содержит русские фразы-триггеры"""
@@ -153,6 +156,8 @@ class TestSkill:
         hint = re.search(r"<!-- repo-only:start -->\n(.*?)\n<!-- repo-only:end -->", body, re.DOTALL)
         assert hint, skill_dir
         assert "command -v aiw-ru" in hint[1] and "uv run --project ../.." in hint[1]
+        # Оболочка pi, Kimi и Hermes стоит в папке пользователя: относительный ../.. там не находит проект.
+        assert "uv run --project <папка скилла>/../.. aiw-ru" in hint[1]
 
     def test_passes_own_detector_without_p0_p1(self, skill_dir: str):
         """проходит собственный детектор без P0 и P1"""
@@ -579,3 +584,51 @@ def test_main_mentions_reports_when_switching():
     """основной скилл упоминает отчёты при переходе к antiplagiat"""
     assert "Он попросит у пользователя отчёт с подсветкой" in MAIN
     assert "«Антиплагиат» или «Думейт»" in MAIN
+
+
+# ─── манифесты агентных сред ────────────────────────────────────────────
+
+# Поля корневого plugin.json по Agent Plugins v1: Hermes отвергает манифест с любым другим полем верхнего уровня.
+AGENT_PLUGINS_FIELDS = {
+    "$schema",
+    "name",
+    "version",
+    "description",
+    "author",
+    "homepage",
+    "repository",
+    "license",
+    "keywords",
+    "extensions",
+}
+
+
+def manifest(path: str) -> dict[str, Any]:
+    return json.loads(read(ROOT / path))
+
+
+def test_kimi_manifest_points_at_skills():
+    """плагин Kimi ссылается на skills/, а не на копию"""
+    data = manifest(".kimi-plugin/plugin.json")
+    assert data["name"] == "avoid-ai-writing-russian"
+    assert data["skills"] == "./skills/"
+    assert not (ROOT / "kimi.plugin.json").exists(), "корневой kimi.plugin.json перебил бы .kimi-plugin/"
+
+
+def test_pi_package_points_at_skills():
+    """пакет pi объявляет только скиллы и не публикуется в npm"""
+    data = manifest("package.json")
+    assert data["pi"] == {"skills": ["./skills"]}
+    assert "pi-package" in data["keywords"]
+    assert data["private"] is True
+    # С зависимостями pi после клонирования запускал бы npm install.
+    assert not {"dependencies", "scripts", "main"} & data.keys()
+
+
+def test_hermes_manifest_is_agent_plugins_v1():
+    """корневой plugin.json для Hermes — Agent Plugins v1 без лишних полей; скиллы Hermes ищет в skills/"""
+    data = manifest("plugin.json")
+    assert set(data) <= AGENT_PLUGINS_FIELDS
+    assert data["$schema"] == "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
+    assert re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", data["name"])
+    assert set(data["author"]) <= {"name", "email", "url"}

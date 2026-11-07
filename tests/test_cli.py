@@ -17,7 +17,7 @@ from typing import Any, Protocol
 
 import pytest
 
-from aiw_ru import models, skills
+from aiw_ru import __version__, models, skills
 from aiw_ru.cli import USAGE, Col, layout, main
 
 ROOT = Path(__file__).parent.parent
@@ -209,6 +209,15 @@ def test_help(cli: Cli):
     r = cli("--help")
     assert r.code == 0
     assert r.out == USAGE + "\n"
+
+
+@pytest.mark.parametrize("argv", [["--version"], ["scan", "--version"]])
+def test_version(cli: Cli, argv: list[str]):
+    """--version печатает версию пакета и выходит с кодом 0, даже рядом с командой"""
+    r = cli(*argv)
+    assert r.code == 0
+    assert r.out == f"aiw-ru {__version__}\n"
+    assert "--version" in USAGE
 
 
 def test_min_hides_lower_levels(cli: Cli):

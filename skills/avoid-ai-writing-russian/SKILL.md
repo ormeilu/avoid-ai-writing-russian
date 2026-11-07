@@ -24,8 +24,6 @@ metadata:
   language: ru
   tags: russian writing editing style ai-detection kantselyarit calques typography academic vak
   related_skills: antiplagiat
-  openclaw:
-    emoji: "✍️"
   agentskills_spec: "1.0"
 ---
 
@@ -130,7 +128,7 @@ metadata:
 ## Детектор (если доступен)
 
 <!-- repo-only:start -->
-Если `aiw-ru` есть в PATH (`command -v aiw-ru`), зови его напрямую: `aiw-ru scan <файл> --context vak`, без `uv run --project ../.. --extra ml`. Иначе пиши через uv, как в примерах ниже. То же верно для команд в `references/`.
+Если `aiw-ru` есть в PATH (`command -v aiw-ru`), зови его напрямую: `aiw-ru scan <файл> --context vak`, без `uv run --project ../.. --extra ml`. Иначе пиши через uv, как в примерах ниже. То же верно для команд в `references/`. Путь `../..` считается от папки этого SKILL.md, а оболочка агента обычно стоит в папке пользователя, поэтому подставь абсолютный путь: `uv run --project <папка скилла>/../.. aiw-ru scan <файл>`. Файл оставь относительно рабочей папки: `--project` её не меняет.
 <!-- repo-only:end -->
 
 В репозитории есть детерминированный детектор на Python. Он не заменяет суждение редактора: ловит только то, что ловится регулярными выражениями и статистикой ритма. Запускай его до и после правки, если доступен `aiw-ru` или uv:
