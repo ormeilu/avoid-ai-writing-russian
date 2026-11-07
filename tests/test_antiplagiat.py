@@ -1,11 +1,16 @@
 """Оценка по фрагментам и калибровка в духе «Антиплагиата»."""
 
 import math
+import re
 from collections.abc import Callable
+
+import pytest
 
 from aiw_ru import (
     DEFAULT_MODEL,
+    FEATURE_NAMES,
     Issue,
+    Model,
     Sample,
     antiplagiat,
     balanced_accuracy,
@@ -13,10 +18,11 @@ from aiw_ru import (
     fit,
     fit_share,
     label_fragments,
+    predict,
     predict_share,
     share_error,
 )
-from aiw_ru.antiplagiat import features_for
+from aiw_ru.antiplagiat import features_for, green_below, typical_window, zone_of
 
 # ─── antiplagiat ────────────────────────────────────────────────────────
 
@@ -99,3 +105,108 @@ def test_jargon_is_not_clerical():
 
     assert features_for(text, [issue("jargon")] * 4)[3] == 0
     assert features_for(text, [issue("tier1-clarity")] * 4)[3] > 0
+
+
+# ─── карта детектора и --explain ────────────────────────────────────────
+
+# Модель, которая ставит ровную научную прозу у порога, как калибровка «Думейта» в задаче #20.
+BORDER = Model(bias=-1.0, weights=[0.3, 1.9, 0.75, 0.16, 0.15, 1.05, 1.0], threshold=0.44)
+
+OPENERS_TEXT = (
+    "Это растение любит тень и влажную почву у старого забора. Это видно по листьям, которые желтеют "
+    "на солнце уже к июлю. Это же объясняет, почему соседний куст растёт заметно быстрее. Садовник "
+    "пересадил его осенью ближе к яблоне, и весной листья остались зелёными."
+)
+
+
+def test_zones_around_threshold():
+    """красный — от порога, жёлтый — в 0,1 под ним, ниже — зелёный"""
+    assert zone_of(0.44, 0.44) == "red"
+    assert zone_of(0.36, 0.44) == "yellow"
+    assert zone_of(0.34, 0.44) == "yellow"
+    assert zone_of(0.33, 0.44) == "green"
+    assert green_below(0.44) == pytest.approx(0.34)
+
+
+def test_fragment_zone_without_explain(read_fixture: Callable[[str], str]):
+    """зона есть у каждого фрагмента, красная — ровно у помеченных как ИИ; explain только по запросу"""
+    report = antiplagiat(read_fixture("corpus/human/vak.md"), model=BORDER)
+    assert {fragment.zone for fragment in report.fragments} >= {"red", "yellow"}
+    for fragment in report.fragments:
+        assert (fragment.zone == "red") == fragment.ai
+        assert fragment.explain is None
+
+
+def test_typical_prose_at_border(read_fixture: Callable[[str], str]):
+    """typicalProse — где модель ставит ровную прозу: у BORDER в жёлтой зоне, у модели по умолчанию в зелёной"""
+    text = read_fixture("corpus/human/vak.md")
+    border = antiplagiat(text, model=BORDER)
+    assert border.typical_prose == pytest.approx(predict(BORDER, [0, 0, 1, 0, 0, 0, 0]), abs=1e-3)
+    assert zone_of(border.typical_prose, BORDER.threshold) == "yellow"
+    assert zone_of(antiplagiat(text).typical_prose, DEFAULT_MODEL.threshold) == "green"
+
+
+@pytest.mark.parametrize("model", [DEFAULT_MODEL, BORDER], ids=["default", "border"])
+def test_explain_contributions_add_up(model: Model, read_fixture: Callable[[str], str]):
+    """свободный член и вклады признаков дают логит фрагмента, вклады идут по убыванию"""
+    for fragment in antiplagiat(read_fixture("corpus/ai/vak.md"), model=model, explain=True).fragments:
+        explanation = fragment.explain
+        assert explanation is not None
+        contributions = [item.contribution for item in explanation.contributions]
+        assert model.bias + sum(contributions) == pytest.approx(explanation.logit, abs=0.01)
+        assert 1 / (1 + math.exp(-explanation.logit)) == pytest.approx(fragment.probability, abs=0.002)
+        assert contributions == sorted(contributions, reverse=True)
+        assert explanation.target_probability == pytest.approx(model.threshold - 0.1)
+
+
+def test_explain_single_goal_reaches_green(read_fixture: Callable[[str], str]):
+    """цель признака, которого хватает одного, уводит фрагмент в зелёную зону"""
+    report = antiplagiat(read_fixture("corpus/human/vak.md"), model=BORDER, explain=True)
+    checked = 0
+    for fragment in report.fragments:
+        assert fragment.explain is not None
+        for item in fragment.explain.contributions:
+            if fragment.zone == "green" or not item.enough:
+                continue
+            features = list(fragment.features)
+            features[FEATURE_NAMES.index(item.feature)] = item.goal
+            assert predict(BORDER, features) <= fragment.explain.target_probability + 0.005
+            assert item.target
+            checked += 1
+    assert checked > 0
+
+
+def test_explain_plan_only_for_hot_fragments(read_fixture: Callable[[str], str]):
+    """план правки есть у красных и жёлтых фрагментов; у зелёных нет ни плана, ни целей"""
+    for name in ("corpus/ai/vak.md", "corpus/human/blog.md"):
+        for fragment in antiplagiat(read_fixture(name), model=BORDER, explain=True).fragments:
+            assert fragment.explain is not None
+            if fragment.zone == "green":
+                assert fragment.explain.plan == []
+                assert all(not item.target for item in fragment.explain.contributions)
+            else:
+                assert fragment.explain.plan
+                assert fragment.explain.reachable
+
+
+def test_explain_names_repeated_openers():
+    """explain называет первые слова, с которых начинается несколько предложений"""
+    fragment = antiplagiat(OPENERS_TEXT, model=BORDER, explain=True).fragments[0]
+    assert fragment.explain is not None
+    assert fragment.explain.measures.repeated_openers == {"это": 3}
+    openers = next(item for item in fragment.explain.contributions if item.feature == "однообразные начала предложений")
+    assert "«это» ×3" in openers.now
+
+
+@pytest.mark.parametrize("goal", [0.9, 0.5, 0.3, 0.1])
+def test_typical_window_bounds(goal: float):
+    """средняя длина из цели: на границах признак «типичная длина» не больше цели, шагом ближе к 19 — уже больше"""
+
+    def typical(length: float) -> float:
+        return math.exp(-(((length - 19) / 7) ** 2))
+
+    found = re.fullmatch(r"средняя длина не больше (\d+) или не меньше (\d+) слов", typical_window(goal))
+    assert found
+    low, high = int(found[1]), int(found[2])
+    assert typical(low) <= goal < typical(low + 1)
+    assert typical(high) <= goal < typical(high - 1)

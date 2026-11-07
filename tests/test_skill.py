@@ -552,6 +552,29 @@ def test_ap_uncalibrated_marker_in_cli_output(
     assert re.search(rf"^ {{2}}Модель +{re.escape(m[1])}", capsys.readouterr().out, re.MULTILINE)
 
 
+def test_ap_detector_map_loop():
+    """без отчёта правка идёт циклом по карте детектора с --explain; validate на каждом проходе, лимита в два нет"""
+    loop = AP.split("### 5.", 1)[1].split("### 6.", 1)[0]
+    assert "--explain" in AP
+    assert "--explain" in USAGE
+    assert parse(["antiplagiat", "--explain", "a.md"]).explain is True
+    assert "ai: true" in AP and 'zone: "yellow"' in AP
+    assert "против исходного текста" in loop
+    assert "Цель — 0 %" in loop
+    assert "не снизил ни долю" in loop
+    assert "Лимит проходов тот же" not in AP
+    for stopper in ("ничего не доказывает", "остаётся сгенерированным"):
+        assert stopper not in AP
+    assert "../antiplagiat/SKILL.md): там цикл идёт" in MAIN
+
+
+def test_ap_keeps_ban_on_technical_tricks():
+    """запрет технических уловок на месте: невидимые символы, подмена букв, текст картинкой"""
+    section = AP.split("## Почему здесь нет приёмов обхода", 1)[1].split("## Порядок работы", 1)[0]
+    for trick in ("невидимые символы", "подмена букв", "текст картинкой"):
+        assert trick in section
+
+
 def test_main_mentions_reports_when_switching():
     """основной скилл упоминает отчёты при переходе к antiplagiat"""
     assert "Он попросит у пользователя отчёт с подсветкой" in MAIN
