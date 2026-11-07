@@ -84,10 +84,10 @@ pi (pi coding agent): пакет ставится из git, скиллы выз�
 pi install git:github.com/ormeilu/avoid-ai-writing-russian
 ```
 
-Hermes Agent читает корневой `plugin.json` в формате Agent Plugins v1. Такие плагины ставятся выключенными, поэтому вторая команда включает его:
+Hermes Agent читает корневой `plugin.json` в формате Agent Plugins v1. Сканер Hermes помечает в репозитории команды `uv run` из документации и скиллов и без `--force` установку из стороннего источника не пропускает: посмотрите его отчёт и ставьте, если согласны. Такие плагины ставятся выключенными, поэтому вторая команда включает его. При включении Hermes ставит детектор в своё окружение по `pyproject.toml`.
 
 ```bash
-hermes plugins install ormeilu/avoid-ai-writing-russian
+hermes plugins install ormeilu/avoid-ai-writing-russian --force
 ```
 
 ```bash
