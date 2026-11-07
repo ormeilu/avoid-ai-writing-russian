@@ -1,7 +1,7 @@
 """aiw-ru — командная строка детектора.
 
     aiw-ru scan [файл…] [--context РЕЖИМ] [--json | --jsonl] [--min P0|P1|P2]
-    aiw-ru antiplagiat [файл] [--system СИСТЕМА] [--config ПУТЬ] [--json | --jsonl]
+    aiw-ru antiplagiat [файл] [--system СИСТЕМА] [--config ПУТЬ] [--explain] [--json | --jsonl]
     aiw-ru validate ИСХОДНЫЙ ИСПРАВЛЕННЫЙ [--context РЕЖИМ] [--marked ФАЙЛ] [--json]
     aiw-ru calibrate --doc ФАЙЛ (--marked ФАЙЛ | --share ДОЛЯ) [--doc … ] [--system СИСТЕМА] [--config ПУТЬ]
     aiw-ru judge [файл] | judge score ФАЙЛ --answers ФАЙЛ [--answers …] [--marked ФАЙЛ] [--json]
@@ -37,8 +37,12 @@ from aiw_ru.antiplagiat import (
     DEFAULT_MODEL,
     FEATURE_NAMES,
     SYSTEMS,
+    TYPICAL_PROSE,
+    YELLOW_BAND,
+    AntiplagiatReport,
     Calibration,
     CalibrationFile,
+    Fragment,
     Model,
     System,
     antiplagiat,
@@ -49,7 +53,9 @@ from aiw_ru.antiplagiat import (
     fit_share,
     label_fragments,
     marked_from_heatmap,
+    predict,
     share_error,
+    zone_of,
 )
 from aiw_ru.categories import TYPE_TO_SECTION
 from aiw_ru.compat import js_round, jsre, num_str, to_fixed, trim
@@ -64,7 +70,8 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
 Команды:
   scan [файл…]                 найти приметы (без файла — читать stdin)
   antiplagiat [файл]           оценка по фрагментам в духе модуля ИИ-детекции «Антиплагиата»
-                               или «Думейта» (--system domate)
+                               или «Думейта» (--system domate); --explain — что тянет каждый
+                               красный и жёлтый фрагмент вверх и до каких замеров его править
   validate ИСХОДНЫЙ НОВЫЙ      проверить, что правка не повредила код, числа, цитаты, ссылки,
                                не сняла оговорки и не добавила имён, чисел и дат; с --marked
                                ещё и назвать абзацы под красной подсветкой отчёта без правки
@@ -109,6 +116,8 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
   --model ИМЯ       scan, antiplagiat, classify: modernbert, transformer, mini-frida или lightgbm
                     (по умолчанию первая установленная в этом порядке)
   --no-model        scan, antiplagiat: не показывать вероятность от модели, даже если она есть
+  --explain         antiplagiat: вклад признаков во фрагмент и цели правки до зелёной зоны
+                    (ниже порога на 0,1); в JSON — поле explain у каждого фрагмента
   --no-fragments    classify: только вероятность по началу текста, без фрагментов
   --max-fragments N classify: проверить не больше N первых фрагментов (0 — все)
   -h, --help        справка
@@ -148,6 +157,8 @@ class Args:
     max_fragments: int | None = None
     # antiplagiat, calibrate: система проверки, под которую калибруется оценка.
     system: System = "antiplagiat"
+    # antiplagiat: вклад признаков и цели правки у каждого фрагмента.
+    explain: bool = False
     # judge score: файлы с ответами судьи (по одному на прогон); judge score и validate: разметка отчёта.
     answers: list[str] = field(default_factory=list)
     judge_marked: str | None = None
@@ -173,6 +184,8 @@ def parse(argv: list[str]) -> Args:
             args.jsonl = True
         elif arg == "--no-model":
             args.no_model = True
+        elif arg == "--explain":
+            args.explain = True
         elif arg == "--all":
             args.all_models = True
         elif arg == "--no-fragments":
@@ -1010,10 +1023,13 @@ def cmd_antiplagiat(a: Args) -> int:
     mode = a.context or "academic"
     if a.jsonl:
         return jsonl(
-            a, lambda text: with_signal(antiplagiat(text, mode, model, a.system).to_dict(), model_signal(a, text))
+            a,
+            lambda text: with_signal(
+                antiplagiat(text, mode, model, a.system, explain=a.explain).to_dict(), model_signal(a, text)
+            ),
         )
     text = read(a.files[0] if a.files else None)
-    report = antiplagiat(text, mode, model, a.system)
+    report = antiplagiat(text, mode, model, a.system, explain=a.explain)
     sig = model_signal(a, text)
     if a.json:
         sys.stdout.write(dump(with_signal(report.to_dict(), sig)) + "\n")
@@ -1021,12 +1037,19 @@ def cmd_antiplagiat(a: Args) -> int:
     share = report.ai_share
     share_style = "green" if share < 20 else "yellow" if share < 50 else "red"
     ai_fragments = sum(1 for fragment in report.fragments if fragment.ai)
+    yellow_fragments = sum(1 for fragment in report.fragments if fragment.zone == "yellow")
     heading(a.files[0] if a.files and a.files[0] != "-" else "stdin")
     facts(
         [
             ("Доля ИИ-текста", Text.styled(f"{ru(share)} %", share_style)),
             light_fact(report.light),
-            ("Фрагменты", f"{len(report.fragments)}, похожи на ИИ: {ai_fragments} (порог {ru(report.threshold)})"),
+            (
+                "Фрагменты",
+                (
+                    f"{len(report.fragments)}, похожи на ИИ: {ai_fragments}, у порога: {yellow_fragments} "
+                    f"(порог {ru(report.threshold)})"
+                ),
+            ),
             (
                 "Модель",
                 f"откалибрована по вашим отчётам, образцов: {len(calibration.samples) if calibration else 0}"
@@ -1062,13 +1085,16 @@ def cmd_antiplagiat(a: Args) -> int:
                     "dim",
                 ),
                 str(fragment.words),
-                Text.styled(f"{js_round(fragment.probability * 100)} %", "red" if fragment.ai else "green"),
+                Text.styled(f"{js_round(fragment.probability * 100)} %", fragment.zone),
                 f"{fragment.preview}…",
                 ", ".join(fragment.reasons) if fragment.ai else "",
             ]
             for fragment in report.fragments
         ],
     )
+    typical_prose_warning(report)
+    if a.explain:
+        explain_fragments(report)
     out()
     genitive = SYSTEMS[a.system][1]
     flag = "" if a.system == "antiplagiat" else f" --system {a.system}"
@@ -1078,6 +1104,72 @@ def cmd_antiplagiat(a: Args) -> int:
         f"Точнее станет после калибровки по вашим отчётам (aiw-ru calibrate{flag})."
     )
     return 0
+
+
+ZONE_NAMES: dict[str, str] = {"red": "красный", "yellow": "у порога", "green": "зелёный"}
+
+
+def typical_prose_warning(report: AntiplagiatReport) -> None:
+    """Предупреждение, если модель ставит ровную научную прозу у порога или выше."""
+    if zone_of(report.typical_prose, report.threshold) == "green":
+        return
+    out()
+    warn(
+        f"Модель ставит ровную научную прозу у порога: фрагмент со средней длиной предложения около 19 слов "
+        f"и без других признаков получает {js_round(report.typical_prose * 100)} % при пороге "
+        f"{js_round(report.threshold * 100)} %. Такие фрагменты переходят порог от правки пары слов, поэтому "
+        f"правьте до зелёной зоны (ниже {js_round((report.threshold - YELLOW_BAND) * 100)} %), а не до порога: "
+        "что для этого менять, покажет --explain.",
+        "yellow",
+    )
+
+
+def explain_fragments(report: AntiplagiatReport) -> None:
+    """Для каждого красного и жёлтого фрагмента: что тянет его вверх и до каких замеров править."""
+    hot = [fragment for fragment in report.fragments if fragment.zone != "green" and fragment.explain]
+    out()
+    if not hot:
+        note("Красных и жёлтых фрагментов нет: править по карте детектора нечего.")
+        return
+    for fragment in hot:
+        explain_fragment_block(fragment)
+
+
+def explain_fragment_block(fragment: Fragment) -> None:
+    explanation = fragment.explain
+    if explanation is None:
+        return
+    lines = (
+        f"Строка {fragment.line}"
+        if fragment.line == fragment.end_line
+        else f"Строки {fragment.line}–{fragment.end_line}"
+    )
+    out()
+    heading(
+        f"{lines}: {js_round(fragment.probability * 100)} %, {ZONE_NAMES[fragment.zone]}, "
+        f"зелёная зона ниже {js_round(explanation.target_probability * 100)} %"
+    )
+    plan = "; ".join(explanation.plan)
+    if not explanation.reachable:
+        plan += " (и этого мало: даже без всех признаков фрагмент не уходит в зелёную зону)"
+    facts([("Цель", Text.styled(plan, fragment.zone))])
+    table(
+        [
+            Col("Признак", flex=True, wrap=True, min=16),
+            Col("Вклад", justify="right"),
+            Col("Сейчас", flex=True, wrap=True, min=20),
+            Col("Хватит одного", flex=True, wrap=True, min=16),
+        ],
+        [
+            [
+                contribution.feature,
+                f"+{ru(contribution.contribution)}",
+                contribution.now,
+                contribution.target or Text.styled("нет", "dim"),
+            ]
+            for contribution in explanation.contributions
+        ],
+    )
 
 
 def cmd_validate(a: Args) -> int:
@@ -1182,6 +1274,8 @@ def cmd_calibrate(a: Args) -> int:
         return "н/д" if math.isnan(value) else f"{ru(value, 1)} п.п."
 
     positives = sum(1 for sample in samples if sample.y == 1)
+    # Вероятность ровной научной прозы: фрагмент только с типичной длиной предложения.
+    typical = predict(model, TYPICAL_PROSE)
     heading("Калибровка")
     facts(
         [
@@ -1196,11 +1290,20 @@ def cmd_calibrate(a: Args) -> int:
             ),
             ("Ошибка доли ИИ", f"{pp(share_error(DEFAULT_MODEL, documents))} → {pp(share_error(model, documents))}"),
             ("Порог", ru(model.threshold)),
+            ("Ровная проза", Text.styled(f"{js_round(typical * 100)} %", zone_of(typical, model.threshold))),
             ("Веса", "; ".join(f"{FEATURE_NAMES[k]} {ru(weight)}" for k, weight in enumerate(model.weights))),
             ("Сохранено", path),
         ]
     )
     out()
+    if zone_of(typical, model.threshold) != "green":
+        warn(
+            f"Ровная научная проза (средняя длина предложения около 19 слов, других признаков нет) получает "
+            f"{js_round(typical * 100)} % при пороге {js_round(model.threshold * 100)} %: такие фрагменты будут "
+            "переходить порог от правки пары слов. Правьте их до зелёной зоны по antiplagiat --explain.",
+            "yellow",
+        )
+        out()
     note(
         "Точность и ошибка посчитаны на тех же отчётах, по которым шла калибровка, и поэтому завышены. Честная "
         "проверка: замер на отчёте, который в калибровку не входил. Файл содержит фрагменты вашего текста, не "

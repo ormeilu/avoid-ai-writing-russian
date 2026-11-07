@@ -17,15 +17,16 @@ import json
 import math
 import re
 from bisect import bisect_left, bisect_right
+from collections import Counter
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Literal
 
 from pydantic import Field
 
-from aiw_ru.compat import fixed, jsre, total, trim
+from aiw_ru.compat import fixed, jsre, num_str, to_fixed, total, trim
 from aiw_ru.detect import WEIGHTS, Internals, analyze_internal
-from aiw_ru.text import PLAIN_SPACES, cv, line_col, mattr, mean, sentences, words
+from aiw_ru.text import PLAIN_SPACES, cv, line_col, mattr, mean, plural, sentences, words
 from aiw_ru.types import ContextMode, Issue, Light, Record
 
 FEATURE_NAMES: tuple[str, ...] = (
@@ -57,6 +58,78 @@ class Model(Record):
 DEFAULT_MODEL = Model(bias=-4.4, weights=[1.1, 2.6, 1.4, 0.35, 1.2, 1.3, 1.6], threshold=0.5)
 
 
+# Ширина жёлтой зоны под порогом. Фрагмент в ней переходит порог от правки соседнего предложения
+# и между замерами, поэтому правка по карте детектора берёт и его, а цель правки — зелёная зона.
+YELLOW_BAND = 0.1
+
+Zone = Literal["red", "yellow", "green"]
+
+
+def zone_of(probability: float, threshold: float) -> Zone:
+    """Цвет фрагмента на карте детектора: красный — выше порога, жёлтый — в YELLOW_BAND под ним."""
+    if probability >= threshold:
+        return "red"
+    return "yellow" if probability >= threshold - YELLOW_BAND else "green"
+
+
+def green_below(threshold: float) -> float:
+    """Верх зелёной зоны: до этой вероятности правка по карте детектора доводит фрагмент."""
+    return max(threshold - YELLOW_BAND, 0.01)
+
+
+class FragmentMeasures(Record):
+    """Замеры фрагмента, из которых считаются признаки."""
+
+    sentences: int
+    mean_length: float
+    length_cv: float
+    lengths: list[int]
+    # Первые слова, с которых начинается больше одного предложения, и сколько раз.
+    repeated_openers: dict[str, int]
+    # Предложения с точкой с запятой, двоеточием, скобками, ! ? … или тире.
+    rare_punctuation: int
+    # MATTR по окну 50 слов; None, если слов меньше 30.
+    mattr: float | None
+    # Суммарный вес примет (без советов по стилю) и сами приметы.
+    signal: float
+    markers: list[str]
+    # Находки канцелярита.
+    clerical: list[str]
+
+
+class Contribution(Record):
+    """Вклад признака в логит фрагмента и цель, при которой фрагмент уходит в зелёную зону."""
+
+    feature: str
+    value: float
+    weight: float
+    contribution: float
+    # Замер, от которого зависит признак: «средняя длина 19,3 слова».
+    now: str
+    # Значение признака, при котором фрагмент уходит в зелёную зону, если менять только этот признак.
+    # Если одного признака мало (enough = False), это значение, где признак почти ничего не добавляет.
+    goal: float
+    enough: bool
+    # Цель в замерах, если менять только этот признак: «средняя длина не больше 12 или не меньше
+    # 26 слов». Пусто, если одного признака мало, и у зелёного фрагмента.
+    target: str
+
+
+class Explanation(Record):
+    """Что тянет фрагмент вверх (`antiplagiat --explain`)."""
+
+    logit: float
+    # Верх зелёной зоны: порог минус YELLOW_BAND.
+    target_probability: float
+    measures: FragmentMeasures
+    # Признаки с положительным вкладом, по убыванию вклада.
+    contributions: list[Contribution]
+    # Цели нескольких признаков сразу, если одного мало; пусто у зелёного фрагмента.
+    plan: list[str]
+    # План уводит фрагмент в зелёную зону; False, если не хватает даже всех признаков на нуле.
+    reachable: bool
+
+
 class Fragment(Record):
     start: int
     end: int
@@ -68,6 +141,8 @@ class Fragment(Record):
     ai: bool
     reasons: list[str]
     preview: str
+    zone: Zone = "green"
+    explain: Explanation | None = None
 
 
 class AntiplagiatReport(Record):
@@ -82,9 +157,15 @@ class AntiplagiatReport(Record):
     threshold: float
     # Система, под которую калибровалась модель (`--system`).
     system: System = "antiplagiat"
+    # Вероятность фрагмента, у которого из признаков только типичная длина предложения (около 19
+    # слов): куда модель ставит ровную научную прозу. Рядом с порогом такие фрагменты переходят
+    # его от правки пары слов.
+    typical_prose: float = 0
 
 
 MIN_FRAGMENT_WORDS = 40
+# Признаки ровной научной прозы: средняя длина предложения около 19 слов, остальные признаки нулевые.
+TYPICAL_PROSE = [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
 RARE_PUNCT_RE = jsre("[;:()!?…]|\\s—\\s")
 SPACES_RE = jsre("\\s+", "g")
 
@@ -100,29 +181,235 @@ def predict(model: Model, f: list[float]) -> float:
     return _sigmoid(logit)
 
 
-def features_for(text: str, fragment_issues: list[Issue]) -> list[float]:
-    text_words = words(text)
-    word_count = max(len(text_words), 1)
-    fragment_sentences = [sentence for sentence in sentences(text) if sentence.words >= 2]
-    lengths = [sentence.words for sentence in fragment_sentences]
+@dataclass(slots=True)
+class _Measures:
+    """Сырые замеры фрагмента; признаки считаются из них."""
 
-    signal = total(WEIGHTS.get(issue.type, 1) for issue in fragment_issues if not issue.style_only)
-    density = min(4, signal * 100 / word_count / 3)
-    uniformity = max(0, 1 - cv(lengths) / 0.6) if len(lengths) >= 3 else 0.3
-    mean_length = mean(lengths)
-    typical = math.exp(-(((mean_length - 19) / 7) ** 2)) if lengths else 0
+    word_count: int
+    lengths: list[int]
+    first_words: list[str]
+    rare: int
+    signal: float
+    markers: list[str]
+    clerical: list[str]
+    # MATTR; None, если слов меньше 30 и признак берёт значение по умолчанию.
+    diversity: float | None
+
+
+# Средняя длина предложения, на которой признак «типичная длина» равен 1, и его ширина.
+TYPICAL_LENGTH = 19
+TYPICAL_WIDTH = 7
+# При таком разбросе длин (cv) признак «однообразие» равен нулю.
+VARIED_CV = 0.6
+# Доля предложений с редкой пунктуацией, при которой признак «бедная пунктуация» равен нулю.
+RARE_SHARE = 0.5
+# MATTR, начиная с которого словарь не считается бедным, и ширина перехода.
+RICH_MATTR = 0.85
+MATTR_SPAN = 0.2
+
+
+def _measure(text: str, fragment_issues: list[Issue]) -> _Measures:
+    text_words = words(text)
+    fragment_sentences = [sentence for sentence in sentences(text) if sentence.words >= 2]
+    signal_issues = [issue for issue in fragment_issues if not issue.style_only]
     # Признак «канцелярит» и веса калибровок подобраны под канцелярит и многословие; жаргон тоже
     # совет по стилю (style_only), но в этот признак не идёт.
-    clerical = min(
-        3, sum(1 for issue in fragment_issues if issue.style_only and issue.type != "jargon") * 100 / word_count / 2
+    clerical_issues = [issue for issue in fragment_issues if issue.style_only and issue.type != "jargon"]
+    return _Measures(
+        word_count=max(len(text_words), 1),
+        lengths=[sentence.words for sentence in fragment_sentences],
+        first_words=[(words(sentence.text) or [""])[0].lower() for sentence in fragment_sentences],
+        rare=sum(1 for sentence in fragment_sentences if RARE_PUNCT_RE.search(sentence.text)),
+        signal=total(WEIGHTS.get(issue.type, 1) for issue in signal_issues),
+        markers=[issue.text for issue in signal_issues],
+        clerical=[issue.text for issue in clerical_issues],
+        diversity=mattr(text_words, min(50, len(text_words))) if len(text_words) >= 30 else None,
     )
-    rare = sum(1 for sentence in fragment_sentences if RARE_PUNCT_RE.search(sentence.text))
-    poor_punct = max(0, 1 - rare / len(fragment_sentences) / 0.5) if len(fragment_sentences) >= 3 else 0.3
-    first_words = [(words(sentence.text) or [""])[0].lower() for sentence in fragment_sentences]
+
+
+def _features(measures: _Measures) -> list[float]:
+    lengths = measures.lengths
+    density = min(4, measures.signal * 100 / measures.word_count / 3)
+    uniformity = max(0, 1 - cv(lengths) / VARIED_CV) if len(lengths) >= 3 else 0.3
+    typical = math.exp(-(((mean(lengths) - TYPICAL_LENGTH) / TYPICAL_WIDTH) ** 2)) if lengths else 0
+    clerical = min(3, len(measures.clerical) * 100 / measures.word_count / 2)
+    poor_punct = max(0, 1 - measures.rare / len(lengths) / RARE_SHARE) if len(lengths) >= 3 else 0.3
+    first_words = measures.first_words
     opener_repeat = 1 - len(set(first_words)) / len(first_words) if len(first_words) >= 3 else 0
-    diversity = mattr(text_words, min(50, len(text_words))) if len(text_words) >= 30 else 0.8
-    poor_vocab = max(0, min(1, (0.85 - diversity) / 0.2))
+    diversity = 0.8 if measures.diversity is None else measures.diversity
+    poor_vocab = max(0, min(1, (RICH_MATTR - diversity) / MATTR_SPAN))
     return [density, uniformity, typical, clerical, poor_punct, opener_repeat, poor_vocab]
+
+
+def features_for(text: str, fragment_issues: list[Issue]) -> list[float]:
+    return _features(_measure(text, fragment_issues))
+
+
+def _logit(probability: float) -> float:
+    return math.log(probability / (1 - probability))
+
+
+def _num(value: float, digits: int = 2) -> str:
+    """Число для подсказки: десятичная запятая, без лишних нулей."""
+    return num_str(float(to_fixed(value, digits))).replace(".", ",")
+
+
+def _quoted(items: list[str], limit: int = 4) -> str:
+    unique = list(dict.fromkeys(item.strip() for item in items if item.strip()))
+    shown = ", ".join(f"«{item}»" for item in unique[:limit])
+    return f"{shown} и ещё {len(unique) - limit}" if len(unique) > limit else shown
+
+
+def _words(value: float) -> str:
+    """«15,3 слова» при дробном числе, «13 слов» при целом."""
+    text = _num(value, 1)
+    return f"{text} слова" if "," in text else plural(int(text), "слово", "слова", "слов")
+
+
+def typical_window(goal: float) -> str:
+    """Средняя длина, при которой признак «типичная длина» не больше goal."""
+    spread = TYPICAL_WIDTH * math.sqrt(-math.log(goal))
+    low, high = math.floor(TYPICAL_LENGTH - spread), math.ceil(TYPICAL_LENGTH + spread)
+    if low < 3:
+        return f"средняя длина не меньше {high} слов"
+    return f"средняя длина не больше {low} или не меньше {high} слов"
+
+
+def _now(k: int, measures: _Measures) -> str:
+    """Замер, от которого зависит признак k."""
+    lengths = measures.lengths
+    if k == 0:
+        return f"приметы {_quoted(measures.markers)}, вес {_num(measures.signal)}"
+    if k == 1:
+        if len(lengths) < 3:
+            return "меньше трёх предложений, признак постоянный"
+        shown = ", ".join(map(str, lengths[:12])) + (", …" if len(lengths) > 12 else "")
+        return f"cv длин {_num(cv(lengths))} ({shown} слов)"
+    if k == 2:
+        return f"средняя длина {_words(mean(lengths))}"
+    if k == 3:
+        return f"канцелярит {_quoted(measures.clerical)}"
+    if k == 4:
+        if len(lengths) < 3:
+            return "меньше трёх предложений, признак постоянный"
+        return f"предложений с ; : ( ) ! ? … или тире: {measures.rare} из {len(lengths)}"
+    if k == 5:
+        repeated = Counter(measures.first_words)
+        return "начала повторяются: " + ", ".join(
+            f"«{word}» ×{count}" for word, count in repeated.most_common() if count > 1
+        )
+    if measures.diversity is None:
+        return "меньше 30 слов, признак постоянный"
+    return f"MATTR {_num(measures.diversity)}"
+
+
+def _target(k: int, measures: _Measures, goal: float) -> str:
+    """Цель в замерах: при ней признак k не больше goal."""
+    sentence_count = len(measures.lengths)
+    if k == 0:
+        allowed = goal * 3 * measures.word_count / 100
+        return "убери приметы" if allowed < 0.5 else f"вес примет не больше {_num(allowed, 1)}"
+    if k == 1:
+        need = math.ceil(VARIED_CV * (1 - goal) * 100) / 100
+        prefix = "три предложения и больше, " if sentence_count < 3 else ""
+        return f"{prefix}cv длин от {_num(need)}"
+    if k == 2:
+        return typical_window(goal)
+    if k == 3:
+        allowed_count = math.floor(goal * 2 * measures.word_count / 100)
+        return "убери канцелярит" if allowed_count == 0 else f"канцелярита не больше {allowed_count}"
+    if k == 4:
+        if sentence_count < 3:
+            return "три предложения и больше, половина с ; : ( ) или тире"
+        need = math.ceil(RARE_SHARE * (1 - goal) * sentence_count)
+        return f"предложений с ; : ( ) или тире не меньше {need} из {sentence_count}"
+    if k == 5:
+        allowed_repeats = math.floor(goal * sentence_count + 1e-9)
+        return "все начала разные" if allowed_repeats == 0 else f"повторов начал не больше {allowed_repeats}"
+    if measures.diversity is None:
+        return "больше 30 слов с разнообразным словарём"
+    need = math.ceil((RICH_MATTR - MATTR_SPAN * goal) * 100) / 100
+    return f"MATTR от {_num(need)}"
+
+
+# Признак «типичная длина» не бывает нулём: дальше этого значения цель его не ведёт
+# (средняя длина не больше 8 или не меньше 30 слов).
+TYPICAL_FLOOR = 0.1
+
+
+# Наименьшее снижение логита, ради которого признак попадает в план правки.
+PLAN_MIN_SHARE = 0.05
+
+
+def _floor(k: int) -> float:
+    return TYPICAL_FLOOR if k == 2 else 0
+
+
+def explain_fragment(model: Model, measures: _Measures, threshold: float) -> Explanation:
+    """Вклад признаков в логит и цели, при которых фрагмент уходит в зелёную зону.
+
+    У каждого признака своя цель на случай, если менять только его. План делит снижение логита
+    между признаками пропорционально тому, сколько каждый может снять: так ни один признак не
+    уходит в крайность (средняя длина в 8 слов), пока остальные стоят на месте.
+    """
+    features = _features(measures)
+    weights = [model.weights[k] if k < len(model.weights) else 0 for k in range(len(features))]
+    logit = model.bias + total(weight * value for weight, value in zip(weights, features, strict=True))
+    target_probability = green_below(threshold)
+    excess = logit - _logit(target_probability)
+    pulling = sorted(
+        (k for k, value in enumerate(features) if weights[k] > 0 and value > 0),
+        key=lambda k: -weights[k] * features[k],
+    )
+    contributions: list[Contribution] = []
+    for k in pulling:
+        value, weight = features[k], weights[k]
+        goal = value - excess / weight
+        enough = excess <= 0 or goal > _floor(k)
+        contributions.append(
+            Contribution(
+                feature=FEATURE_NAMES[k],
+                value=fixed(value, 3),
+                weight=fixed(weight, 4),
+                contribution=fixed(value * weight, 3),
+                now=_now(k, measures),
+                goal=fixed(min(goal, value) if enough else _floor(k), 3),
+                enough=enough,
+                target=_target(k, measures, goal) if enough and excess > 0 else "",
+            )
+        )
+    reducible = {k: max(0, (features[k] - _floor(k)) * weights[k]) for k in pulling}
+    # Признаки, которые снимают меньше PLAN_MIN_SHARE логита, в план не идут, если хватает остальных.
+    movers = [k for k in pulling if reducible[k] >= PLAN_MIN_SHARE]
+    if total(reducible[k] for k in movers) < excess:
+        movers = [k for k in pulling if reducible[k] > 0]
+    available = total(reducible[k] for k in movers)
+    plan: list[str] = []
+    if excess > 0 and available > 0:
+        fraction = min(1, excess / available)
+        for k in movers:
+            plan.append(_target(k, measures, features[k] - fraction * (features[k] - _floor(k))))
+    lengths = measures.lengths
+    repeated = Counter(measures.first_words)
+    return Explanation(
+        logit=fixed(logit, 3),
+        target_probability=fixed(target_probability, 3),
+        measures=FragmentMeasures(
+            sentences=len(lengths),
+            mean_length=fixed(mean(lengths), 1),
+            length_cv=fixed(cv(lengths), 3),
+            lengths=lengths,
+            repeated_openers={word: count for word, count in repeated.most_common() if count > 1},
+            rare_punctuation=measures.rare,
+            mattr=None if measures.diversity is None else fixed(measures.diversity, 3),
+            signal=fixed(measures.signal, 2),
+            markers=measures.markers,
+            clerical=measures.clerical,
+        ),
+        contributions=contributions,
+        plan=plan,
+        reachable=excess <= available,
+    )
 
 
 def _reasons_for(model: Model, features: list[float]) -> list[str]:
@@ -173,8 +460,14 @@ def _chars(text: str) -> int:
 
 
 def antiplagiat(
-    source: str, context: ContextMode = "academic", model: Model | None = None, system: System = "antiplagiat"
+    source: str,
+    context: ContextMode = "academic",
+    model: Model | None = None,
+    system: System = "antiplagiat",
+    *,
+    explain: bool = False,
 ) -> AntiplagiatReport:
+    """Доля ИИ-текста по фрагментам; с explain у каждого фрагмента вклад признаков и цели правки."""
     result, internals = analyze_internal(source, context)
     active_model = model or DEFAULT_MODEL
     prepared = internals.prepared
@@ -188,7 +481,8 @@ def antiplagiat(
     for raw in _fragments_of(internals):
         start, end = to_source(raw.start), to_source(raw.end)
         inside = [issue for issue in result.issues if start <= issue.index < end]
-        fragment_features = features_for(raw.text, inside)
+        measures = _measure(raw.text, inside)
+        fragment_features = _features(measures)
         probability = predict(active_model, fragment_features)
         chars = _chars(raw.text)
         all_chars += chars
@@ -207,6 +501,8 @@ def antiplagiat(
                 ai=ai,
                 reasons=_reasons_for(active_model, fragment_features),
                 preview=trim(SPACES_RE.sub(" ", prepared.source[start : min(end, start + 90)])),
+                zone=zone_of(probability, active_model.threshold),
+                explain=explain_fragment(active_model, measures, active_model.threshold) if explain else None,
             )
         )
 
@@ -224,6 +520,7 @@ def antiplagiat(
         model="calibrated" if model else "default",
         threshold=active_model.threshold,
         system=system,
+        typical_prose=fixed(predict(active_model, TYPICAL_PROSE), 3),
     )
 
 

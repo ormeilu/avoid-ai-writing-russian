@@ -350,6 +350,42 @@ def test_antiplagiat_json(cli: Cli):
     assert data["model"] == "default"
 
 
+def test_antiplagiat_explain(cli: Cli):
+    """antiplagiat --explain: цель и вклад признаков у красных фрагментов, в JSON — поле explain"""
+    r = cli("antiplagiat", "--explain", str(AI_VAK), env={"COLUMNS": "200"})
+    assert r.code == 0
+    assert "зелёная зона ниже 40 %" in r.out
+    assert re.search(r"^ {2}Цель +\S", r.out, re.MULTILINE)
+    assert "Хватит одного" in r.out
+    data = json.loads(cli("antiplagiat", "--json", "--explain", str(AI_VAK)).out)
+    fragment = data["fragments"][0]
+    assert fragment["zone"] == "red"
+    assert fragment["explain"]["plan"]
+    assert fragment["explain"]["targetProbability"] == 0.4
+    assert {"feature", "contribution", "now", "goal", "enough", "target"} <= set(
+        fragment["explain"]["contributions"][0]
+    )
+    plain = json.loads(cli("antiplagiat", "--json", str(AI_VAK)).out)
+    assert "explain" not in plain["fragments"][0]
+    assert plain["fragments"][0]["zone"] == "red"
+    assert plain["typicalProse"] < plain["threshold"] - 0.1
+
+
+def test_antiplagiat_warns_typical_prose_at_border(cli: Cli, tmp_path: Path):
+    """модель, которая ставит ровную прозу у порога, получает предупреждение и в antiplagiat, и в calibrate"""
+    border = {"bias": -1.0, "weights": [0.3, 1.9, 0.75, 0.16, 0.15, 1.05, 1.0], "threshold": 0.44}
+    config = tmp_path / "aiw-ru.json"
+    config.write_text(
+        json.dumps({"version": 1, "model": border, "samples": [{"f": [0, 0, 1, 0, 0, 0, 0], "y": 1}]}),
+        encoding="utf-8",
+    )
+    wide = {"COLUMNS": "300"}
+    warned = cli("antiplagiat", "--config", str(config), str(HUMAN_VAK), env=wide)
+    assert "Модель ставит ровную научную прозу у порога" in warned.out
+    assert "правьте до зелёной зоны (ниже 34 %)" in warned.out
+    assert "ровную научную прозу" not in cli("antiplagiat", str(HUMAN_VAK), env=wide).out
+
+
 def test_validate_json(cli: Cli):
     """validate --json: поля в camelCase"""
     data = json.loads(cli("validate", "--json", HUMAN_BLOG, HUMAN_BLOG).out)
@@ -401,6 +437,7 @@ def test_calibrate_creates_file_antiplagiat_uses_it(cli: Cli, tmp_path: Path):
     cal = cli("calibrate", "--doc", str(doc), "--marked", str(marked), cwd=tmp_path)
     assert cal.code == 0
     assert "Фрагменты с разметкой" in cal.out
+    assert "Ровная проза" in cal.out
     assert config.exists()
     saved = json.loads(config.read_text(encoding="utf-8"))
     assert saved["version"] == 1
