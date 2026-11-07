@@ -111,6 +111,10 @@ SITES: list[VersionSite] = [
     VersionSite("pyproject.toml", read=_pyproject_read, write=_pyproject_write),
     _json_version(".claude-plugin/plugin.json"),
     _json_version(".codex-plugin/plugin.json"),
+    _json_version(".kimi-plugin/plugin.json"),
+    # Agent Plugins v1 для Hermes и пакет pi.
+    _json_version("plugin.json"),
+    _json_version("package.json"),
     VersionSite(
         ".claude-plugin/marketplace.json",
         read=_marketplace_read,

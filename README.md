@@ -68,6 +68,44 @@ claude plugin install avoid-ai-writing-russian@avoid-ai-writing-russian
 
 Плагин ставит оба скилла, `avoid-ai-writing-russian` и `antiplagiat`, вместе с детектором. Детектору нужен [uv](https://docs.astral.sh/uv/getting-started/installation/).
 
+### Kimi Code, pi, Hermes и DeepSeek Harness
+
+Во всех четырёх средах ставится весь репозиторий: скиллы ссылаются друг на друга, а детектор лежит в корне. Манифесты (`.kimi-plugin/plugin.json`, `package.json`, `plugin.json`) указывают на ту же папку `skills/`.
+
+Kimi Code: внутри сессии `kimi` выполните команду ниже, подтвердите установку стороннего плагина и перезапустите сессию через `/reload`. Скиллы появятся как `avoid-ai-writing-russian:avoid-ai-writing-russian` и `avoid-ai-writing-russian:antiplagiat`.
+
+```text
+/plugins install https://github.com/ormeilu/avoid-ai-writing-russian
+```
+
+pi (pi coding agent): пакет ставится из git, скиллы вызываются и как `/skill:avoid-ai-writing-russian`.
+
+```bash
+pi install git:github.com/ormeilu/avoid-ai-writing-russian
+```
+
+Hermes Agent читает корневой `plugin.json` в формате Agent Plugins v1. Сканер Hermes помечает в репозитории команды `uv run` из документации и скиллов и без `--force` установку из стороннего источника не пропускает: посмотрите его отчёт и ставьте, если согласны. Такие плагины ставятся выключенными, поэтому вторая команда включает его. При включении Hermes ставит детектор в своё окружение по `pyproject.toml`.
+
+```bash
+hermes plugins install ormeilu/avoid-ai-writing-russian --force
+```
+
+```bash
+hermes plugins enable avoid-ai-writing-russian
+```
+
+DeepSeek Harness (`dsh`) не ставит скиллы из плагинов: он читает папки `~/.dsh/skills/` и `~/.agents/skills/`, только на один уровень вглубь. Клонируйте репозиторий, как в следующем разделе, и сделайте ссылки:
+
+```bash
+ln -s ~/src/avoid-ai-writing-russian/skills/avoid-ai-writing-russian ~/.dsh/skills/avoid-ai-writing-russian
+```
+
+```bash
+ln -s ~/src/avoid-ai-writing-russian/skills/antiplagiat ~/.dsh/skills/antiplagiat
+```
+
+Папку `~/.agents/skills/` читают ещё pi и Codex: ссылки там подхватят все три агента сразу.
+
 ### Claude Code, Codex и другие агенты: папка скилла
 
 Клонируйте репозиторий и скопируйте папки скиллов туда, где агент их ищет. Детектор лежит в корне репозитория, а скиллы зовут его командой `uv run --project ../.. aiw-ru …`, поэтому удобнее ссылка, а не копия:
@@ -96,7 +134,7 @@ ln -s ~/src/avoid-ai-writing-russian/skills/antiplagiat ~/.claude/skills/antipla
 uv tool install aiw-ru
 ```
 
-Или запускается без установки: `uvx aiw-ru scan статья.md`. Подойдёт и `pip install aiw-ru`.
+Или запускается без установки: `uvx aiw-ru scan статья.md`. Подойдёт и `pip install aiw-ru`. Какая версия стоит, покажет `aiw-ru --version`.
 
 ### Только команда, без плагина
 

@@ -10,7 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.13.5",
     "regex>=2026.9.10",
-    "rich>=15.0.0",
+    "rich>=14.3",
 ]
 keywords = ["russian", "ai-detection", "ai-writing", "antiplagiat", "канцелярит", "editing", "style", "claude-code"]
 classifiers = [

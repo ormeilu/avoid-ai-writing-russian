@@ -1,0 +1,17 @@
+{
+  "name": "avoid-ai-writing-russian",
+  "version": "2.6.0",
+  "private": true,
+  "description": "Аудит и правка русских текстов от ИИ-стиля; под-скилл antiplagiat. Пакет скиллов для pi.",
+  "keywords": ["pi-package", "agent-skills", "russian", "writing", "antiplagiat"],
+  "homepage": "https://github.com/ormeilu/avoid-ai-writing-russian",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ormeilu/avoid-ai-writing-russian.git"
+  },
+  "license": "MIT",
+  "author": "Ilya Lubenets <lubenets.ilya.igorevich@gmail.com> (https://github.com/ormeilu)",
+  "pi": {
+    "skills": ["./skills"]
+  }
+}

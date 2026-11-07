@@ -7,6 +7,7 @@
     aiw-ru judge [файл] | judge score ФАЙЛ --answers ФАЙЛ [--answers …] [--marked ФАЙЛ] [--json]
     aiw-ru classify [файл…] [--json | --jsonl]
     aiw-ru models [install]
+    aiw-ru --version
 
 Коды выхода: 0 — успех; 1 — validate нашёл повреждения или scan с --fail-above
 превысил порог; 2 — ошибка использования или ввода-вывода, нет нужной модели.
@@ -32,7 +33,7 @@ from rich.padding import Padding
 from rich.table import Table
 from rich.text import Text
 
-from aiw_ru import models, skills
+from aiw_ru import __version__, models, skills
 from aiw_ru.antiplagiat import (
     DEFAULT_MODEL,
     FEATURE_NAMES,
@@ -121,6 +122,7 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
   --no-fragments    classify: только вероятность по началу текста, без фрагментов
   --max-fragments N classify: проверить не больше N первых фрагментов (0 — все)
   -h, --help        справка
+  --version         версия aiw-ru
 """
 
 
@@ -163,6 +165,7 @@ class Args:
     answers: list[str] = field(default_factory=list)
     judge_marked: str | None = None
     help: bool = False
+    version: bool = False
 
 
 def parse(argv: list[str]) -> Args:
@@ -178,6 +181,8 @@ def parse(argv: list[str]) -> Args:
         arg = argv[i]
         if arg in ("-h", "--help"):
             args.help = True
+        elif arg == "--version":
+            args.version = True
         elif arg == "--json":
             args.json = True
         elif arg == "--jsonl":
@@ -1699,6 +1704,9 @@ def main(argv: list[str]) -> int:
     told_outdated.clear()
     try:
         args = parse(argv)
+        if args.version:
+            sys.stdout.write(f"aiw-ru {__version__}\n")
+            return 0
         if args.help or not args.cmd:
             sys.stdout.write(USAGE + "\n")
             return 0 if args.help else 2
