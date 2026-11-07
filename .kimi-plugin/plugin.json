@@ -1,7 +1,7 @@
 {
   "$schema": "https://kimi.com/schemas/kimi.plugin.schema.json",
   "name": "avoid-ai-writing-russian",
-  "version": "2.6.0",
+  "version": "2.7.0",
   "description": "Аудит и правка русских текстов от ИИ-стиля: канцелярит, кальки, шаблонная структура. Под-скилл antiplagiat готовит текст к проверке «Антиплагиатом» и «Думейтом».",
   "author": {
     "name": "Ilya Lubenets",

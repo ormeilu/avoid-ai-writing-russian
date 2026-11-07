@@ -4,6 +4,8 @@
 
 ## [Не выпущено]
 
+## [2.7.0] — 2026-11-07
+
 ### Добавлено
 
 - Плагины для Kimi Code (`.kimi-plugin/plugin.json`), pi (`package.json` с ключом `pi`) и Hermes Agent (корневой `plugin.json` в формате Agent Plugins v1). Все три ставят весь репозиторий и указывают на ту же папку `skills/`. Для DeepSeek Harness в README описаны ссылки в `~/.dsh/skills/`: формата плагина со скиллами у него нет. `release.py` и `check_versions.py` обновляют и сверяют версии в новых манифестах.

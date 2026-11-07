@@ -1,6 +1,6 @@
 {
   "name": "avoid-ai-writing-russian",
-  "version": "2.6.0",
+  "version": "2.7.0",
   "private": true,
   "description": "Аудит и правка русских текстов от ИИ-стиля; под-скилл antiplagiat. Пакет скиллов для pi.",
   "keywords": ["pi-package", "agent-skills", "russian", "writing", "antiplagiat"],
