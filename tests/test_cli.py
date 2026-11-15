@@ -729,7 +729,7 @@ def test_skill_lists_skills(cli: Cli):
         )
     ]
     assert data[1]["description"].startswith("Подготовка русского текста")
-    assert data[1]["files"] == ["references/domate.md"]
+    assert data[1]["files"] == ["references/antiplagiat.md", "references/domate.md"]
 
 
 def test_skill_files_in_hidden_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -752,6 +752,7 @@ def test_skill_files_in_hidden_directory(tmp_path: Path, monkeypatch: pytest.Mon
         ("avoid-ai-writing-russian", "references/review.md"),
         ("avoid-ai-writing-russian", "references/judge.md"),
         ("antiplagiat", "references/domate.md"),
+        ("antiplagiat", "references/antiplagiat.md"),
     ],
 )
 def test_skill_text_needs_no_repository(cli: Cli, args: tuple[str, ...]):
@@ -762,7 +763,7 @@ def test_skill_text_needs_no_repository(cli: Cli, args: tuple[str, ...]):
     # Подсказка «aiw-ru из PATH или uv» нужна только при работе из репозитория.
     assert "repo-only" not in r.out and "command -v aiw-ru" not in r.out
     # Справка под-скилла ссылается на его SKILL.md, остальные файлы — на основной скилл.
-    owner = "antiplagiat" if args[1:] == ("references/domate.md",) else "avoid-ai-writing-russian"
+    owner = "antiplagiat" if args[0] == "antiplagiat" and len(args) > 1 else "avoid-ai-writing-russian"
     assert f"aiw-ru skill {owner}" in r.out
 
 

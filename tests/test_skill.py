@@ -319,6 +319,17 @@ def test_ap_covers_domate():
     assert "aiw-ru calibrate --system domate" in domate
 
 
+def test_ap_covers_antiplagiat_levels():
+    """Антиплагиат: справка об уровнях признаков ИИ, в процент входят только сильные"""
+    assert "](references/antiplagiat.md)" in AP
+    assert "сильные признаки" in AP
+    antiplagiat = read(SKILLS / "antiplagiat" / "references" / "antiplagiat.md")
+    for level in ("сильные", "умеренные", "слабые", "признаки ИИ не обнаружены"):
+        assert level in antiplagiat
+    assert "входят только сильные" in antiplagiat
+    assert "версия модели" in antiplagiat.lower()
+
+
 def test_ap_report_first_and_judge():
     """отчёт с подсветкой — первый шаг; без отчёта абзацы выбирает слепой судья, итог — проверяющий"""
     steps = re.findall(r"^### (\d)\. (.+)$", AP, re.MULTILINE)
