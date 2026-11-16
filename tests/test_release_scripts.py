@@ -22,6 +22,7 @@ from versions import (
     lock_version,
     read_text,
     read_versions,
+    write_release_date,
     write_versions,
 )
 
@@ -73,6 +74,16 @@ def test_write_versions_changes_only_version(tmp_path: Path) -> None:
         assert changed, s.file
         for line in changed:
             assert "version" in line, s.file
+
+
+def test_write_release_date_changes_only_date(tmp_path: Path) -> None:
+    """write_release_date ставит дату выпуска в CITATION.cff и больше ничего не меняет"""
+    shutil.copyfile(ROOT / "CITATION.cff", tmp_path / "CITATION.cff")
+    before = read_text(tmp_path / "CITATION.cff").split("\n")
+    write_release_date("2031-02-03", tmp_path)
+    after = read_text(tmp_path / "CITATION.cff").split("\n")
+    changed = [line for old, line in zip(before, after, strict=True) if line != old]
+    assert changed == ['date-released: "2031-02-03"']
 
 
 def test_pyproject_touches_only_project_table() -> None:

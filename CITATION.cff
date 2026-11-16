@@ -12,7 +12,7 @@ authors:
     email: lubenets.ilya.igorevich@gmail.com
 license: MIT
 version: 2.8.0
-date-released: "2026-09-23"
+date-released: "2026-11-16"
 repository-code: "https://github.com/ormeilu/avoid-ai-writing-russian"
 url: "https://github.com/ormeilu/avoid-ai-writing-russian"
 keywords:
@@ -43,3 +43,82 @@ references:
     url: "https://huggingface.co/datasets/iitolstykh/LLMTrace_classification"
     license: Apache-2.0
     year: 2025
+  - type: data
+    title: LLMTrace_detection
+    authors:
+      - family-names: Tolstykh
+        given-names: Irina
+      - family-names: Tsybina
+        given-names: Aleksandra
+      - family-names: Yakubson
+        given-names: Sergey
+      - family-names: Kuprashevich
+        given-names: Maksim
+    url: "https://huggingface.co/datasets/iitolstykh/LLMTrace_detection"
+    license: Apache-2.0
+    year: 2025
+  - type: conference-paper
+    title: "GigaCheck: Detecting LLM-generated Content via Object-Centric Span Localization"
+    authors:
+      - family-names: Tolstykh
+        given-names: Irina
+      - family-names: Tsybina
+        given-names: Aleksandra
+      - family-names: Yakubson
+        given-names: Sergey
+      - family-names: Gordeev
+        given-names: Aleksandr
+      - family-names: Dokholyan
+        given-names: Vladimir
+      - family-names: Kuprashevich
+        given-names: Maksim
+    collection-title: "Findings of the Association for Computational Linguistics: ACL 2026"
+    url: "https://arxiv.org/abs/2410.23728"
+    year: 2026
+  - type: report
+    title: Pangram 4 Technical Report
+    authors:
+      - name: Pangram Labs
+    url: "https://pangram-public.s3.us-east-1.amazonaws.com/pdf/pangram_4_technical_report.pdf"
+    year: 2026
+  - type: website
+    title: "Wikipedia: Signs of AI writing"
+    authors:
+      - name: Wikipedia contributors
+    url: "https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing"
+  - type: software
+    title: openai-conversations
+    authors:
+      - alias: sanand0
+    repository-code: "https://github.com/sanand0/openai-conversations"
+  - type: software
+    title: humanizer-ru
+    authors:
+      - family-names: Utov
+        given-names: Ilya
+    repository-code: "https://github.com/ilyautov/humanizer-ru"
+    license: MIT
+  - type: software
+    title: rubert-tiny2
+    authors:
+      - family-names: Dale
+        given-names: David
+    url: "https://huggingface.co/cointegrated/rubert-tiny2"
+    license: MIT
+  - type: software
+    title: rubert-mini-frida
+    authors:
+      - alias: sergeyzh
+    url: "https://huggingface.co/sergeyzh/rubert-mini-frida"
+    license: MIT
+  - type: software
+    title: RuModernBERT-small
+    authors:
+      - family-names: Spirin
+        given-names: Egor
+      - family-names: Malashenko
+        given-names: Boris
+      - family-names: Sokolov
+        given-names: Andrey
+    url: "https://huggingface.co/deepvk/RuModernBERT-small"
+    license: Apache-2.0
