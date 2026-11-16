@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 from grade import Checks, EvalCase, extract_final, grade
@@ -230,3 +233,98 @@ def test_golden_antiplagiat_asks_reports() -> None:
 def test_golden_domate_asks_heatmap() -> None:
     """эталон: по одной доле «Думейта» скилл правит каркас абзаца и просит отчёт с тепловой картой"""
     assert grade(by_id("domate-asks-heatmap"), golden("domate-asks-heatmap.md")).failures == []
+
+
+# ── запуск агента: тайм-аут, сбой, частичный ответ, рабочая папка ──
+
+FAKE_AGENT = """
+import os, shutil, subprocess, sys, time
+mode = sys.argv[1]
+prompt = sys.stdin.read()
+golden = open(sys.argv[2], encoding="utf-8").read()
+if mode == "ok":
+    print(golden)
+elif mode == "slow":
+    print("Начал думать", flush=True)
+    time.sleep(30)
+elif mode == "crash":
+    print("Половина ответа", flush=True)
+    sys.exit(3)
+elif mode == "workspace":
+    exe = shutil.which("aiw-ru")
+    for args in (["skill", "avoid-ai-writing-russian"], ["skill", "avoid-ai-writing-russian", "references/vocabulary.md"], ["scan", "text.md"]):
+        subprocess.run([exe, *args], capture_output=True, check=True)
+    assert open("text.md", encoding="utf-8").read().startswith("Первую неделю"), "текст пользователя в рабочей папке"
+    assert "<file" not in prompt, "в рабочем режиме каталог не вклеивается в промпт"
+    print(golden)
+"""
+
+
+@pytest.fixture
+def fake_agent(tmp_path: Path) -> Callable[[str], str]:
+    """Команда фальшивого агента для --agent; папка с пробелом проверяет разбор кавычек."""
+    folder = tmp_path / "папка агента"
+    folder.mkdir()
+    script = folder / "agent.py"
+    script.write_text(FAKE_AGENT, encoding="utf-8")
+    answer = DIR / "golden" / "clean-noop.md"
+    return lambda mode: f'"{sys.executable}" "{script}" {mode} "{answer}"'
+
+
+def run_case(out: Path, agent: str, *extra: str) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
+    r = run_evals("--case", "clean-noop", "--agent", agent, "--out", str(out), *extra)
+    summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    return r, summary
+
+
+def test_agent_ok_saves_answer_and_summary(tmp_path: Path, fake_agent: Callable[[str], str]) -> None:
+    """успешный прогон: ответ, сведения о запуске и сводка лежат в папке результатов"""
+    r, summary = run_case(tmp_path / "out", fake_agent("ok"))
+    assert r.returncode == 0, r.stdout + r.stderr
+    (case,) = summary["cases"]
+    assert (case["id"], case["passed"], case["error"]) == ("clean-noop", True, None)
+    assert (tmp_path / "out" / "clean-noop.md").read_text(encoding="utf-8").startswith("**Итоговый текст**")
+    assert json.loads((tmp_path / "out" / "clean-noop.json").read_text(encoding="utf-8"))["returncode"] == 0
+
+
+def test_agent_timeout_keeps_partial_output(tmp_path: Path, fake_agent: Callable[[str], str]) -> None:
+    """агент завис: тайм-аут, частичный ответ сохранён, причина записана, код 1"""
+    r, summary = run_case(tmp_path / "out", fake_agent("slow"), "--timeout", "2")
+    assert r.returncode == 1
+    (case,) = summary["cases"]
+    assert case["timedOut"] is True and "тайм-аут 2 с" in case["error"]
+    assert "Начал думать" in (tmp_path / "out" / "clean-noop.md").read_text(encoding="utf-8")
+
+
+def test_agent_crash_keeps_partial_output(tmp_path: Path, fake_agent: Callable[[str], str]) -> None:
+    """агент упал: код его выхода и частичный ответ сохранены, случай не оценивается"""
+    r, summary = run_case(tmp_path / "out", fake_agent("crash"))
+    assert r.returncode == 1
+    (case,) = summary["cases"]
+    assert "код выхода 3" in case["error"] and case["passed"] is False
+    assert "Половина ответа" in (tmp_path / "out" / "clean-noop.md").read_text(encoding="utf-8")
+
+
+def test_missing_agent_is_reported(tmp_path: Path) -> None:
+    """агента нет: причина в сводке, а не трассировка"""
+    r, summary = run_case(tmp_path / "out", "нет-такого-агента-aiw --flag")
+    assert r.returncode == 1
+    assert "не запустился" in summary["cases"][0]["error"]
+    assert "Traceback" not in r.stderr
+
+
+def test_workspace_mode_logs_reads_and_commands(tmp_path: Path, fake_agent: Callable[[str], str]) -> None:
+    """рабочий режим: скилл и детектор только через aiw-ru, журнал показывает, что агент читал и запускал"""
+    r, summary = run_case(tmp_path / "out", fake_agent("workspace"), "--mode", "workspace")
+    assert r.returncode == 0, r.stdout + r.stderr
+    (case,) = summary["cases"]
+    assert case["mode"] == "workspace"
+    assert case["reads"] == ["SKILL.md", "references/vocabulary.md"]
+    assert case["commands"] == ["scan"]
+
+
+def test_dry_workspace_prompt_has_no_catalog() -> None:
+    """промпт рабочего режима не вклеивает каталог: агент читает его сам"""
+    r = run_evals("--dry", "--case", "clean-noop", "--mode", "workspace")
+    assert r.returncode == 0, r.stderr
+    assert "<file" not in r.stdout and "aiw-ru skill avoid-ai-writing-russian" in r.stdout
