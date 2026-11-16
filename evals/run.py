@@ -158,10 +158,21 @@ def _text(data: bytes | str | None) -> str:
     return data if isinstance(data, str) else data.decode("utf-8", errors="replace")
 
 
+def split_command(text: str, *, windows: bool) -> list[str]:
+    """Строка оболочки в список аргументов. На Windows обратная косая черта в путях остаётся, а кавычки
+    вокруг аргумента снимаются: shlex без posix их сохраняет, и путь в кавычках не находится."""
+    if not windows:
+        return shlex.split(text)
+    return [
+        token[1:-1] if len(token) >= 2 and token[0] == token[-1] == '"' else token
+        for token in shlex.split(text, posix=False)
+    ]
+
+
 def agent_command(agent: str | None, model: str | None, mode: Mode) -> list[str]:
     """Команда агента. --agent разбирается как строка оболочки: пути с пробелами берут в кавычки."""
     if agent:
-        return shlex.split(agent, posix=os.name != "nt")
+        return split_command(agent, windows=os.name == "nt")
     command = ["claude", "-p", *(["--model", model] if model else [])]
     if mode == "workspace":
         command += ["--allowedTools", "Bash(aiw-ru:*)"]

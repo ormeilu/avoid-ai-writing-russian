@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 from grade import Checks, EvalCase, extract_final, grade
-from run import build_prompt, load_cases
+from run import build_prompt, load_cases, split_command
 
 from aiw_ru.compat import jsre
 
@@ -272,6 +272,29 @@ elif mode == "workspace":
     assert "<file" not in prompt, "в рабочем режиме каталог не вклеивается в промпт"
     print(golden)
 """
+
+
+@pytest.mark.parametrize(
+    ("text", "windows", "expected"),
+    [
+        pytest.param(
+            '"C:\\Program Files\\Python\\python.exe" "D:\\папка агента\\agent.py" ok',
+            True,
+            ["C:\\Program Files\\Python\\python.exe", "D:\\папка агента\\agent.py", "ok"],
+            id="Windows: кавычки сняты, обратная косая черта цела",
+        ),
+        pytest.param(
+            '"/usr/bin/python3" "/tmp/папка агента/agent.py" ok',
+            False,
+            ["/usr/bin/python3", "/tmp/папка агента/agent.py", "ok"],
+            id="POSIX",
+        ),
+        pytest.param("claude -p --model sonnet", True, ["claude", "-p", "--model", "sonnet"], id="без кавычек"),
+    ],
+)
+def test_split_command(text: str, windows: bool, expected: list[str]) -> None:
+    """--agent разбирается как строка оболочки своей системы: путь с пробелом в кавычках — один аргумент"""
+    assert split_command(text, windows=windows) == expected
 
 
 @pytest.fixture

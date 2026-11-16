@@ -1210,7 +1210,7 @@ def test_calibrate_retries_after_concurrent_write(
         if len(calls) == 1:
             # Параллельный calibrate успевает записать свой отчёт по другому документу.
             parallel = real_import(
-                None, [calibration.ReportInput("glava2.md", other_doc.read_text(), share=0)], today="x"
+                None, [calibration.ReportInput("glava2.md", other_doc.read_text(encoding="utf-8"), share=0)], today="x"
             )
             data = empty_calibration_file().put("antiplagiat", parallel.calibration)
             config.write_bytes(calibration.serialize(data))
