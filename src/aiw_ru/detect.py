@@ -66,7 +66,6 @@ WEIGHTS: dict[str, float] = {
     "significance": 5,
     "tier1": 3,
     "tier1-clarity": 0.5,
-    "tier2": 1.5,
     "tier2-cluster": 3,
     "tier3": 1,
     "phrase3": 1,
@@ -139,7 +138,6 @@ TYPE_LABELS: dict[str, str] = {
     "significance": "Раздувание значимости",
     "tier1": "Слово-маркер ИИ",
     "tier1-clarity": "Канцелярит",
-    "tier2": "Слово уровня 2",
     "tier2-cluster": "Скопление слов уровня 2",
     "tier3": "Перегруженное слово",
     "phrase3": "Фразовый штамп",
@@ -197,7 +195,7 @@ SKIP_IN_CHAT = frozenset(
     (
         "straight-quotes english-quotes decimal-point hyphen-dash em-dash-splice title-case bold-overuse "
         "genitive-chain passive-run uniform-sentences uniform-paragraphs low-diversity same-opener staccato "
-        "bullet-np-list tier3 phrase3 tier2 tier2-cluster transition-run"
+        "bullet-np-list tier3 phrase3 tier2-cluster transition-run"
     ).split()
 )
 
@@ -648,7 +646,7 @@ def _detect_typography(ctx: _Ctx, text_blocks: list[Block]) -> None:
                 body,
                 "убрать эмодзи из заголовка",
             )
-    # Жирный: больше двух выделений в разделе прозы.
+    # Жирный: четыре и больше выделений в разделе прозы.
     section_start = 0
     bold: list[tuple[int, str]] = []
 
@@ -711,8 +709,10 @@ NXY_RE = jsre(
     "[^.!?\\n]{1,50}?(?:,|\\s—)\\s*(?:а|это|но)\\s)|(?<![\\p{L}])не\\s+просто\\s+[^.!?\\n]{1,50}?,\\s*(?:а|но и|это)\\s",
     "giu",
 )
+# Разнесённое «Дело не в X. Дело в Y», в том числе с отсчётом между ними: «Не в функциях. Не в сроках.»
 SPLIT_NXY_RE = jsre(
     "(?<![\\p{L}])(?:главное|дело|суть|проблема|секрет)\\s+(?:здесь\\s+|тут\\s+)?не\\s+в\\s+[^.!?\\n]{1,40}\\.\\s+"
+    "(?:не\\s+в\\s+[^.!?\\n]{1,40}\\.\\s+){0,3}"
     "(?:главное|дело|суть|настоящ\\p{L}*|все\\s+дело|всё\\s+дело)\\s",
     "giu",
 )
@@ -734,7 +734,6 @@ LIST_MARK_RE = jsre("^\\s*(?:[-*+•]|\\d+[.)])\\s+")
 BOLD_MARK_RE = jsre("\\*\\*", "g")
 HASHTAG_RE = jsre("(?<![\\p{L}\\d&/])#(?=[\\p{L}_]*\\p{L})[\\p{L}\\d_]{2,}", "gu")
 COLOR_RE = jsre("^#[0-9a-f]{6}$|^#[0-9a-f]{3}$", "i")
-DIGIT_RE = jsre("\\d")
 PRONOUNS = frozenset(("он", "она", "они", "я", "мы", "оно"))
 
 
@@ -964,12 +963,10 @@ def _detect_structure(ctx: _Ctx, text_blocks: list[Block], prose_sentences: list
                     "полные утверждения с данными из источника или проза",
                 )
 
-    # Хэштеги: 6+ (без номеров задач и цветов).
-    tags = [
-        match
-        for match in HASHTAG_RE.finditer(prose)
-        if not COLOR_RE.search(match.group()) or not DIGIT_RE.search(match.group())
-    ]
+    # Хэштеги: 6+ (без номеров задач и цветов). Номер задачи (#12) и цвет с цифрой в начале (#1a2b3c)
+    # отсекает HASHTAG_RE: тег начинается с буквы. Цвет из одних букв (#fff, #abcdef) отсекается здесь:
+    # тег из букв a–f («#decade») в русском тексте реже цвета.
+    tags = [match for match in HASHTAG_RE.finditer(prose) if not COLOR_RE.search(match.group())]
     if len(tags) >= 6:
         _add(
             ctx,
