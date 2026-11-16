@@ -32,7 +32,7 @@ REPO_PATH_RE = re.compile(r"[\w.-]+/(?:[\w.-]+/?)*")
 # Заглушка в команде: ИМЯ, ФАЙЛ, многоточие.
 PLACEHOLDER_RE = re.compile(r"\b[А-ЯЁ]{2,}\b|…")
 # Команды справки: работают без сети и без моделей, их README обещает выполнить как есть.
-READ_ONLY = (("skill",), ("models", "guide"), ("models", "info"), ("--version",))
+READ_ONLY = (("skill",), ("models", "guide"), ("models", "info"), ("--version",), ("--help",))
 
 
 def readme_commands() -> list[str]:
@@ -93,7 +93,7 @@ def test_readme_command_known_to_cli(command: str):
     """команда из README разбирается CLI: команда и параметры есть в справке"""
     args = parse(argv_of(command))
     commands = set(re.findall(r"^ {2}([a-z]+) ", USAGE.split("Параметры:")[0], re.MULTILINE))
-    assert args.version or args.cmd in commands, command
+    assert args.version or args.help or args.cmd in commands, command
     for flag in re.findall(r"(?<!\S)--?[a-z][a-z-]*", command):
         assert flag in USAGE, f"{command}: {flag}"
 

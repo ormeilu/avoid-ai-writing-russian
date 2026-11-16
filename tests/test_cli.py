@@ -18,6 +18,7 @@ from typing import Any, Protocol
 import pytest
 
 from aiw_ru import __version__, models, skills
+from aiw_ru import cli as cli_module
 from aiw_ru.cli import USAGE, Col, layout, main
 
 ROOT = Path(__file__).parent.parent
@@ -1285,3 +1286,303 @@ def test_antiplagiat_rejects_broken_model_numbers(cli: Cli, tmp_path: Path, mode
     r = cli("antiplagiat", "--config", str(config), str(AI_VAK))
     assert r.code == 2
     assert "model." in r.err
+
+
+# ─── применимость параметров ────────────────────────────────────────────
+
+# Значение для параметра с аргументом: проверяется применимость, а не само значение.
+FLAG_VALUES = {
+    "--context": "vak",
+    "--min": "P1",
+    "--fail-above": "50",
+    "--config": "cal.json",
+    "--system": "domate",
+    "--model": "lightgbm",
+    "--max-fragments": "2",
+    "--answers": "r1.txt",
+    "--marked": "m.txt",
+    "--doc": "d.md",
+    "--share": "10",
+    "--report-date": "2026-11-05",
+    "--system-version": "5.0",
+}
+# Параметры, которые относятся к предыдущему --doc у calibrate.
+AFTER_DOC = ("--marked", "--share", "--report-date", "--system-version")
+
+
+def option_argv(command: str, flag: str) -> list[str]:
+    head = ["--doc", "d.md"] if command == "calibrate" and flag in AFTER_DOC else []
+    value = [FLAG_VALUES[flag]] if flag in FLAG_VALUES else []
+    return [command, *head, flag, *value]
+
+
+@pytest.mark.parametrize("command", cli_module.COMMANDS)
+@pytest.mark.parametrize("option", [o for o in cli_module.OPTIONS if o.commands], ids=lambda option: option.flags[-1])
+def test_option_table_decides_applicability(command: str, option: cli_module.Option):
+    """таблица параметров решает, к каким командам относится параметр; чужой параметр — ошибка, а не тишина"""
+    argv = option_argv(command, option.flags[-1])
+    if command in option.commands:
+        cli_module.parse(argv)
+    else:
+        with pytest.raises(cli_module.UsageError, match="не относится к команде"):
+            cli_module.parse(argv)
+
+
+def test_every_option_in_help():
+    """каждый параметр таблицы есть в справке вместе с командами, к которым относится"""
+    for option in cli_module.OPTIONS:
+        for flag in option.flags:
+            assert re.search(rf"^ {{2}}{re.escape(flag)}\b", USAGE, re.MULTILINE) or f", {flag}" in USAGE, flag
+        if option.commands and not option.scope:
+            assert f"{', '.join(option.commands)}:" in USAGE, option.flags
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        pytest.param(["scan", "--json", "--jsonl"], "--json и --jsonl", id="json и jsonl"),
+        pytest.param(["scan", "--model", "lightgbm", "--no-model"], "--model и --no-model", id="model и no-model"),
+        pytest.param(["classify", "--all", "--model", "lightgbm"], "--all и --model", id="all и model"),
+        pytest.param(
+            ["classify", "--no-fragments", "--max-fragments", "2"], "--no-fragments и --max-fragments", id="фрагменты"
+        ),
+        pytest.param(
+            ["scan", "--context", "vak", "--context", "blog"], "--context указан дважды", id="контекст дважды"
+        ),
+        pytest.param(
+            ["antiplagiat", "--config", "a.json", "--config", "b.json"], "--config указан дважды", id="config дважды"
+        ),
+        pytest.param(
+            ["validate", "a", "b", "--marked", "m", "--marked", "n"], "--marked указан дважды", id="marked дважды"
+        ),
+        pytest.param(["scan", "--jsonl", AI_BLOG, HUMAN_BLOG], "--jsonl читает один поток", id="jsonl и два файла"),
+        pytest.param(["scan", "--fail-above", "inf"], "--fail-above ждёт конечное число", id="fail-above inf"),
+        pytest.param(["scan", "--fail-above", "-inf"], "--fail-above ждёт конечное число", id="fail-above -inf"),
+        pytest.param(["scan", "--answers", "not-a-file"], "--answers не относится к команде scan", id="answers у scan"),
+        pytest.param(
+            ["calibrate", "--context", "vak", "--doc", "d", "--share", "3"], "не относится", id="context у calibrate"
+        ),
+    ],
+)
+def test_conflicting_or_foreign_options_exit_2(cli: Cli, args: list[str], message: str):
+    """конфликтующие, повторённые и чужие параметры — код 2 с причиной, а не молчаливый выбор"""
+    r = cli(*args)
+    assert r.code == 2
+    assert message in r.err
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        pytest.param(
+            ["calibrate", "--doc", "a.md", "--marked", "a-ai.txt", "--doc", "b.md", "--share", "12"],
+            id="пары calibrate",
+        ),
+        pytest.param(
+            ["judge", "score", "d.md", "--answers", "r1.txt", "--answers", "r2.txt", "--marked", "h.json"],
+            id="два прогона судьи",
+        ),
+        pytest.param(["scan", "--json", "--json", "a.md"], id="повтор флага без значения"),
+        pytest.param(["classify", "--all", "--json", "a.md"], id="classify --all"),
+    ],
+)
+def test_documented_combinations_still_parse(args: list[str]):
+    """задокументированные сочетания разбираются как раньше"""
+    cli_module.parse(args)
+
+
+def test_help_wins_over_option_checks(cli: Cli):
+    """-h показывает справку даже рядом с чужими параметрами"""
+    r = cli("calibrate", "--json", "--context", "vak", "--help")
+    assert r.code == 0
+    assert r.out == USAGE + "\n"
+
+
+# ─── потоковый JSONL ────────────────────────────────────────────────────
+
+
+def test_jsonl_carries_id(cli: Cli):
+    """поле id входной строки переносится в результат первым полем; без id поля нет"""
+    stream = "\n".join(
+        [json.dumps({"id": "doc-7", "text": "Давайте разберёмся."}), json.dumps({"text": "Чайник сломался."})]
+    )
+    for command in ("scan", "antiplagiat"):
+        first, second = rows(cli(command, "--jsonl", stdin=stream).out)
+        assert next(iter(first)) == "id"
+        assert first["id"] == "doc-7"
+        assert "id" not in second
+
+
+def test_jsonl_keeps_results_before_bad_line(cli: Cli):
+    """ошибка в строке: результаты до неё уже напечатаны, причина в stderr, код 2"""
+    stream = f'{json.dumps({"id": 1, "text": "Раз."})}\n{json.dumps({"id": 2, "text": "Два."})}\n{{"body": 1}}\n'
+    r = cli("scan", "--jsonl", stdin=stream)
+    assert r.code == 2
+    assert [row["id"] for row in rows(r.out)] == [1, 2]
+    assert "строка 3: нет строкового поля text" in r.err
+
+
+def test_jsonl_prints_each_document_before_reading_next(monkeypatch: pytest.MonkeyPatch):
+    """JSONL читает вход по строке: результат первой строки напечатан раньше, чем прочитана вторая"""
+    printed = io.StringIO()
+    lines = [json.dumps({"id": index, "text": "Чайник сломался."}).encode() + b"\n" for index in range(3)]
+    seen_before_read: list[int] = []
+
+    class OneLinePerRead(io.RawIOBase):
+        def readable(self) -> bool:
+            return True
+
+        def readinto(self, buffer: Any) -> int:
+            if not lines:
+                return 0
+            seen_before_read.append(printed.getvalue().count("\n"))
+            line = lines.pop(0)
+            buffer[: len(line)] = line
+            return len(line)
+
+    monkeypatch.setenv("AIW_RU_CONFIG", "")
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BufferedReader(OneLinePerRead()), encoding="utf-8"))
+    monkeypatch.setattr(sys, "stdout", printed)
+    assert main(["scan", "--jsonl", "--no-model"]) == 0
+    assert seen_before_read == [0, 1, 2]
+    assert printed.getvalue().count("\n") == 3
+
+
+def test_jsonl_bad_encoding_after_results(cli: Cli, tmp_path: Path):
+    """неверная кодировка в середине потока: напечатанное остаётся, код 2"""
+    source = tmp_path / "batch.jsonl"
+    source.write_bytes(json.dumps({"id": 1, "text": "Раз."}).encode() + b"\n" + b'{"text": "\xff"}\n')
+    r = cli("scan", "--jsonl", str(source))
+    assert r.code == 2
+    assert [row["id"] for row in rows(r.out)] == [1]
+    assert "не удалось прочитать" in r.err
+
+
+def test_jsonl_closed_reader_is_not_an_error():
+    """читатель закрыл канал посреди JSONL: код 0 и без трассировки"""
+    p = subprocess.Popen(
+        [sys.executable, "-m", "aiw_ru", "scan", "--jsonl", "--no-model"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=clean_env(),
+    )
+    assert p.stdin is not None and p.stdout is not None and p.stderr is not None
+    # Вход целиком влезает в буфер канала: иначе запись в stdin ждала бы процесс, который сам ждёт читателя.
+    line = json.dumps({"text": "Давайте разберёмся, это играет ключевую роль."}) + "\n"
+    p.stdin.write(line.encode() * 200)
+    p.stdin.close()
+    p.stdout.readline()
+    p.stdout.close()
+    err = p.stderr.read().decode("utf-8")
+    assert p.wait(timeout=60) == 0, err
+    assert "Traceback" not in err
+
+
+# ─── JSON-контракт ──────────────────────────────────────────────────────
+
+NUMBER = (int, float)
+# Поля, которые читают скиллы, evals и чужие скрипты. Новые поля добавлять можно, эти — не трогать.
+CONTRACT: dict[str, dict[str, Any]] = {
+    "scan": {
+        "file": str,
+        "score": int,
+        "label": str,
+        "issues": list,
+        "suspicious": bool,
+        "light": dict,
+        "stats": dict,
+        "catalog": list,
+        "meta": dict,
+    },
+    "antiplagiat": {
+        "aiShare": NUMBER,
+        "fragments": list,
+        "suspicious": bool,
+        "suspiciousReasons": list,
+        "light": dict,
+        "model": str,
+        "threshold": NUMBER,
+        "system": str,
+        "typicalProse": NUMBER,
+        "meta": dict,
+    },
+    "validate": {
+        "ok": bool,
+        "violations": list,
+        "warnings": list,
+        "issuesBefore": int,
+        "issuesAfter": int,
+        "meta": dict,
+    },
+}
+ISSUE_CONTRACT = {
+    "type": str,
+    "rule": str,
+    "severity": str,
+    "text": str,
+    "index": int,
+    "line": int,
+    "column": int,
+    "hint": str,
+}
+FRAGMENT_CONTRACT = {
+    "start": int,
+    "end": int,
+    "line": int,
+    "endLine": int,
+    "words": int,
+    "probability": NUMBER,
+    "ai": bool,
+    "zone": str,
+    "features": list,
+    "reasons": list,
+    "preview": str,
+}
+
+
+def check_contract(data: dict[str, Any], contract: dict[str, Any]) -> None:
+    for key, kind in contract.items():
+        assert key in data, key
+        assert isinstance(data[key], kind), (key, data[key])
+
+
+@pytest.mark.parametrize(
+    ("command", "args"),
+    [
+        pytest.param("scan", ["scan", "--json", AI_BLOG], id="scan"),
+        pytest.param("antiplagiat", ["antiplagiat", "--json", str(AI_VAK)], id="antiplagiat"),
+        pytest.param("validate", ["validate", "--json", HUMAN_BLOG, HUMAN_BLOG], id="validate"),
+    ],
+)
+def test_json_contract(cli: Cli, command: str, args: list[str]):
+    """JSON-отчёты сохраняют прежние поля и типы и несут meta: схема, версия aiw-ru, калибровка"""
+    data = json.loads(cli(*args).out)
+    check_contract(data, CONTRACT[command])
+    assert data["meta"] == {"schema": cli_module.SCHEMA_VERSION, "aiwRu": __version__, "calibration": None}
+    if command == "scan":
+        check_contract(data["issues"][0], ISSUE_CONTRACT)
+    if command == "antiplagiat":
+        check_contract(data["fragments"][0], FRAGMENT_CONTRACT)
+
+
+def test_jsonl_rows_follow_contract(cli: Cli):
+    """строки JSONL — те же отчёты, что и в --json, с meta"""
+    stream = json.dumps({"text": Path(AI_BLOG).read_text(encoding="utf-8")})
+    (scan,) = rows(cli("scan", "--jsonl", stdin=stream).out)
+    check_contract(scan, {key: kind for key, kind in CONTRACT["scan"].items() if key != "file"})
+    (report,) = rows(cli("antiplagiat", "--jsonl", stdin=stream).out)
+    check_contract(report, CONTRACT["antiplagiat"])
+
+
+def test_meta_names_calibration_fingerprint(cli: Cli, tmp_path: Path):
+    """antiplagiat с калибровкой: в meta отпечаток калибровки, другой файл — другой отпечаток"""
+    doc = tmp_path / "doc.md"
+    doc.write_text(AI_VAK.read_text(encoding="utf-8"), encoding="utf-8")
+    config = tmp_path / "cal.json"
+    assert cli("calibrate", "--doc", str(doc), "--share", "10", "--config", str(config)).code == 0
+    first = json.loads(cli("antiplagiat", "--json", "--config", str(config), str(doc)).out)["meta"]["calibration"]
+    assert re.fullmatch(r"[0-9a-f]{16}", first)
+    assert cli("calibrate", "--replace", "--doc", str(doc), "--share", "40", "--config", str(config)).code == 0
+    second = json.loads(cli("antiplagiat", "--json", "--config", str(config), str(doc)).out)["meta"]["calibration"]
+    assert second != first

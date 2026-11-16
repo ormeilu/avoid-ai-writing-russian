@@ -808,6 +808,24 @@ def test_outdated_unknown_for_folder_from_env(model_dir: Path):
     assert models.outdated() is None
 
 
+def test_revision_is_snapshot_commit(hf_cache: Path):
+    """ревизия модели для JSON-отчёта — коммит снапшота, из которого она загружена"""
+    snapshot(hf_cache, OLD, OLD_BLOBS, main=True)
+    assert models.revision() == OLD
+    snapshot(hf_cache, NEW, NEW_BLOBS)
+    assert models.revision() == NEW
+
+
+def test_revision_unknown_without_model(hf_cache: Path):
+    """модели в кэше нет: ревизия неизвестна"""
+    assert models.revision() is None
+
+
+def test_revision_unknown_for_env_folder(model_dir: Path):
+    """папка модели задана переменной окружения: ревизия неизвестна"""
+    assert models.revision() is None
+
+
 def test_install_downloads_catalog_revision(model_dir: Path, monkeypatch: pytest.MonkeyPatch):
     """models install качает ревизию из каталога, с которой замерено качество, а не последнюю"""
     import huggingface_hub

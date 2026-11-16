@@ -261,6 +261,19 @@ def local_path(model: Model = LIGHTGBM) -> Path | None:
     return None
 
 
+def revision(model: Model = LIGHTGBM) -> str | None:
+    """Коммит на Hugging Face, из которого загружена модель: папка снапшота в кэше называется по нему.
+
+    None — модели нет или её папку задали переменной окружения, и откуда она, неизвестно.
+    """
+    if os.environ.get(model.env):
+        return None
+    path = local_path(model)
+    if path is None or path.parent.name != "snapshots":
+        return None
+    return path.name
+
+
 def outdated(model: Model = LIGHTGBM) -> bool | None:
     """Скачанная модель не та, с которой в каталоге замерено качество: её обновит models install.
 

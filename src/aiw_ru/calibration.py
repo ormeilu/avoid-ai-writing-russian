@@ -67,6 +67,11 @@ def doc_fingerprint(text: str) -> str:
     return _digest(_normalized(text))
 
 
+def calibration_fingerprint(calibration: Calibration) -> str:
+    """Отпечаток калибровки для JSON-отчёта: по нему видно, с какой калибровкой посчитан отчёт."""
+    return _digest(json.dumps(calibration.to_dict(), ensure_ascii=False, sort_keys=True))
+
+
 @dataclass(frozen=True, slots=True)
 class ReportInput:
     """Отчёт для импорта: документ и разметка из отчёта системы проверки."""

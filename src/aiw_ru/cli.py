@@ -21,11 +21,13 @@ import math
 import os
 import re
 import sys
-from collections.abc import Callable, Sequence
+import textwrap
+from collections.abc import Callable, Generator, Iterator, Sequence
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 from pydantic import ValidationError
 from rich import box
@@ -65,7 +67,7 @@ from aiw_ru.text import cyrillic_share, model_text, plural, words
 from aiw_ru.types import CONTEXT_MODES, PROFILE_TO_MODE, AnalysisResult, ContextMode, Light, Record, Severity
 from aiw_ru.validate import validate
 
-USAGE = """aiw-ru — приметы ИИ-стиля в русском тексте
+USAGE_COMMANDS = """aiw-ru — приметы ИИ-стиля в русском тексте
 
 Команды:
   scan [файл…]                 найти приметы (без файла — читать stdin)
@@ -105,35 +107,183 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
                                без имени — список скиллов, с именем — SKILL.md,
                                с файлом — файл скилла (references/vocabulary.md)
 
-Параметры:
-  --context РЕЖИМ   general | academic | technical | social | chat
-                    или профиль скилла: vak | docs | blog | telegram | business-email | chat
-  --json            вывод в JSON
-  --jsonl           scan, antiplagiat: на входе по документу в строке ({"text": "…"}),
-                    на выходе по строке JSON на документ; для прогонов по корпусам
-  --min P0|P1|P2    показывать находки не ниже уровня (scan)
-  --fail-above N    scan: код выхода 1, если оценка выше N (с --jsonl — хотя бы у одного документа)
-  --config ПУТЬ     файл калибровки (по умолчанию $AIW_RU_CONFIG, ./.aiw-ru.json, затем
-                    ~/.config/aiw-ru.json); calibrate создаёт его, а antiplagiat без файла
-                    из --config или $AIW_RU_CONFIG завершается с кодом 2
-  --system СИСТЕМА  antiplagiat, calibrate: antiplagiat (по умолчанию) или domate; у каждой
-                    системы своя калибровка в том же файле
-  --replace         calibrate: заменить разметку версии документа, которая уже есть в калибровке
-                    (фрагменты выписаны заново или отчёт сделан новой версией системы)
-  --report-date ДАТА
-                    calibrate: дата отчёта (ГГГГ-ММ-ДД) для предыдущего --doc
-  --system-version ВЕРСИЯ
-                    calibrate: версия модели системы из отчёта для предыдущего --doc
-  --model ИМЯ       scan, antiplagiat, classify: modernbert, transformer, mini-frida или lightgbm
-                    (по умолчанию первая установленная в этом порядке)
-  --no-model        scan, antiplagiat: не показывать вероятность от модели, даже если она есть
-  --explain         antiplagiat: вклад признаков во фрагмент и цели правки до зелёной зоны
-                    (ниже порога на 0,1); в JSON — поле explain у каждого фрагмента
-  --no-fragments    classify: только вероятность по началу текста, без фрагментов
-  --max-fragments N classify: проверить не больше N первых фрагментов (0 — все)
-  -h, --help        справка
-  --version         версия aiw-ru
 """
+
+
+@dataclass(frozen=True, slots=True)
+class Option:
+    """Параметр командной строки. Из таблицы OPTIONS собираются справка и проверка вызова."""
+
+    flags: tuple[str, ...]
+    # Подпись значения в справке; пусто у флагов без значения.
+    metavar: str
+    # Команды, к которым параметр относится; пусто — ко всем.
+    commands: tuple[str, ...]
+    help: str
+    # Подпись вместо перечня команд в справке.
+    scope: str = ""
+    # Команды, где значение можно повторить: по одному на отчёт или на прогон судьи.
+    repeatable: tuple[str, ...] = ()
+
+
+COMMANDS = ("scan", "antiplagiat", "validate", "calibrate", "judge", "classify", "models", "skill")
+WITH_MODEL = ("scan", "antiplagiat", "classify")
+OPTIONS: tuple[Option, ...] = (
+    Option(
+        ("--context",),
+        "РЕЖИМ",
+        ("scan", "antiplagiat", "validate", "judge"),
+        "general | academic | technical | social | chat\n"
+        "или профиль скилла: vak | docs | blog | telegram | business-email | chat",
+    ),
+    Option(
+        ("--json",),
+        "",
+        tuple(command for command in COMMANDS if command != "calibrate"),
+        "вывод в JSON; у отчётов scan, antiplagiat, classify, validate и judge score есть поле meta: "
+        "версия схемы, версия aiw-ru и отпечаток калибровки",
+        scope="все команды, кроме calibrate",
+    ),
+    Option(
+        ("--jsonl",),
+        "",
+        WITH_MODEL,
+        'на входе по документу в строке ({"text": "…"}; поле "id" переносится в результат), на выходе по '
+        "строке JSON на документ сразу после расчёта; при ошибке в строке напечатанное до неё остаётся, код 2",
+    ),
+    Option(("--min",), "P0|P1|P2", ("scan",), "показывать находки не ниже уровня"),
+    Option(
+        ("--fail-above",),
+        "N",
+        ("scan",),
+        "код выхода 1, если оценка выше N (с --jsonl — хотя бы у одного документа)",
+    ),
+    Option(
+        ("--config",),
+        "ПУТЬ",
+        ("antiplagiat", "calibrate"),
+        "файл калибровки (по умолчанию $AIW_RU_CONFIG, ./.aiw-ru.json, затем ~/.config/aiw-ru.json); "
+        "calibrate создаёт его, а antiplagiat без файла из --config или $AIW_RU_CONFIG завершается с кодом 2",
+    ),
+    Option(
+        ("--system",),
+        "СИСТЕМА",
+        ("antiplagiat", "calibrate"),
+        "antiplagiat (по умолчанию) или domate; у каждой системы своя калибровка в том же файле",
+    ),
+    Option(
+        ("--doc",),
+        "ФАЙЛ",
+        ("calibrate",),
+        "документ, по которому есть отчёт; за ним --marked ФАЙЛ или --share ДОЛЯ",
+        repeatable=("calibrate",),
+    ),
+    Option(
+        ("--marked",),
+        "ФАЙЛ",
+        ("validate", "calibrate", "judge"),
+        "разметка отчёта: фрагменты через пустую строку или тепловая карта в JSON; у calibrate относится "
+        "к предыдущему --doc, у judge — только к judge score",
+        repeatable=("calibrate",),
+    ),
+    Option(
+        ("--share",),
+        "ДОЛЯ",
+        ("calibrate",),
+        "итоговая доля ИИ-текста из отчёта, %, для предыдущего --doc",
+        repeatable=("calibrate",),
+    ),
+    Option(
+        ("--replace",),
+        "",
+        ("calibrate",),
+        "заменить разметку версии документа, которая уже есть в калибровке (фрагменты выписаны заново "
+        "или отчёт сделан новой версией системы)",
+    ),
+    Option(
+        ("--report-date",),
+        "ДАТА",
+        ("calibrate",),
+        "дата отчёта (ГГГГ-ММ-ДД) для предыдущего --doc",
+        repeatable=("calibrate",),
+    ),
+    Option(
+        ("--system-version",),
+        "ВЕРСИЯ",
+        ("calibrate",),
+        "версия модели системы из отчёта для предыдущего --doc",
+        repeatable=("calibrate",),
+    ),
+    Option(
+        ("--answers",), "ФАЙЛ", ("judge",), "ответы судьи для judge score, по файлу на прогон", repeatable=("judge",)
+    ),
+    Option(
+        ("--model",),
+        "ИМЯ",
+        WITH_MODEL,
+        "modernbert, transformer, mini-frida или lightgbm (по умолчанию первая установленная в этом порядке)",
+    ),
+    Option(("--no-model",), "", ("scan", "antiplagiat"), "не показывать вероятность от модели, даже если она есть"),
+    Option(
+        ("--explain",),
+        "",
+        ("antiplagiat",),
+        "вклад признаков во фрагмент и цели правки до зелёной зоны (ниже порога на 0,1); "
+        "в JSON — поле explain у каждого фрагмента",
+    ),
+    Option(("--all",), "", ("classify",), "вероятности всех установленных моделей рядом"),
+    Option(("--no-fragments",), "", ("classify",), "только вероятность по началу текста, без фрагментов"),
+    Option(("--max-fragments",), "N", ("classify",), "проверить не больше N первых фрагментов (0 — все)"),
+    Option(("-h", "--help"), "", (), "справка"),
+    Option(("--version",), "", (), "версия aiw-ru"),
+)
+OPTION_BY_FLAG = {flag: option for option in OPTIONS for flag in option.flags}
+# Пары, которые вместе не используются: одна из них молча проигрывала бы другой.
+CONFLICTS = (
+    ("--json", "--jsonl"),
+    ("--model", "--no-model"),
+    ("--all", "--model"),
+    ("--no-fragments", "--max-fragments"),
+)
+# Ширина справки и колонка, с которой начинаются описания параметров.
+HELP_WIDTH = 100
+HELP_COLUMN = 20
+
+
+def render_options() -> str:
+    """Раздел «Параметры» справки из таблицы OPTIONS: команды в начале описания, перенос по ширине."""
+    lines: list[str] = []
+    for option in OPTIONS:
+        head = "  " + ", ".join(option.flags) + (f" {option.metavar}" if option.metavar else "")
+        scope = option.scope or ", ".join(option.commands)
+        paragraphs = option.help.split("\n")
+        if scope:
+            paragraphs[0] = f"{scope}: {paragraphs[0]}"
+        body = [
+            line
+            for paragraph in paragraphs
+            for line in textwrap.wrap(
+                paragraph, HELP_WIDTH - HELP_COLUMN, break_long_words=False, break_on_hyphens=False
+            )
+        ]
+        if len(head) >= HELP_COLUMN - 1:
+            lines.append(head)
+        else:
+            lines.append(head.ljust(HELP_COLUMN) + body.pop(0))
+        lines += [" " * HELP_COLUMN + line for line in body]
+    pairs = ", ".join(f"{first} и {second}" for first, second in CONFLICTS)
+    lines += [
+        "",
+        *textwrap.wrap(f"Вместе не используются: {pairs}.", HELP_WIDTH, initial_indent="  ", subsequent_indent="  "),
+    ]
+    return "\n".join(lines)
+
+
+USAGE = f"{USAGE_COMMANDS}Параметры:\n{render_options()}\n"
+
+
+# Метка порядка байтов в начале файла: read и JSONL её отбрасывают.
+BOM = "\ufeff"
 
 
 class UsageError(Exception):
@@ -185,6 +335,10 @@ class Args:
 
 def parse(argv: list[str]) -> Args:
     args = Args()
+    # Параметры в порядке появления: по ним check_options проверяет применимость и повторы.
+    seen: list[str] = []
+    # Со справкой проверки не нужны: -h показывает её при любых других параметрах.
+    wants_help = "-h" in argv or "--help" in argv
 
     def need(i: int, flag: str) -> str:
         if i + 1 >= len(argv):
@@ -194,6 +348,10 @@ def parse(argv: list[str]) -> Args:
     i = 0
     while i < len(argv):
         arg = argv[i]
+        if arg in OPTION_BY_FLAG:
+            seen.append(arg)
+            if not wants_help and args.cmd in COMMANDS:
+                check_applies(arg, args.cmd)
         if arg in ("-h", "--help"):
             args.help = True
         elif arg == "--version":
@@ -242,8 +400,8 @@ def parse(argv: list[str]) -> Args:
                 args.fail_above = float(value)
             except ValueError:
                 args.fail_above = math.nan
-            if math.isnan(args.fail_above):
-                raise UsageError("--fail-above ждёт число")
+            if not math.isfinite(args.fail_above):
+                raise UsageError(f"--fail-above ждёт конечное число: {value}")
         elif arg == "--config":
             args.config = need(i, arg)
             i += 1
@@ -298,7 +456,30 @@ def parse(argv: list[str]) -> Args:
         else:
             args.files.append(arg)
         i += 1
+    check_options(args, seen)
     return args
+
+
+def check_applies(flag: str, command: str) -> None:
+    option = OPTION_BY_FLAG[flag]
+    if option.commands and command not in option.commands:
+        raise UsageError(f"{flag} не относится к команде {command}: его понимают {', '.join(option.commands)}")
+
+
+def check_options(args: Args, seen: list[str]) -> None:
+    """Параметр, который команда не читает, повтор значения и несовместимая пара — ошибка, а не тишина."""
+    if args.help or args.version or args.cmd not in COMMANDS:
+        return
+    for flag in dict.fromkeys(seen):
+        check_applies(flag, args.cmd)
+        option = OPTION_BY_FLAG[flag]
+        if option.metavar and seen.count(flag) > 1 and args.cmd not in option.repeatable:
+            raise UsageError(f"{flag} указан дважды: оставьте одно значение")
+    for first, second in CONFLICTS:
+        if first in seen and second in seen:
+            raise UsageError(f"{first} и {second} вместе не используются")
+    if args.jsonl and len(args.files) > 1:
+        raise UsageError("--jsonl читает один поток: передайте один файл или stdin")
 
 
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -519,22 +700,59 @@ def dump(value: Record | list[dict[str, Any]] | dict[str, Any], pretty: bool = T
     return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
 
+def _decoded(binary: IO[bytes], name: str) -> Iterator[str]:
+    """Строки потока по одной; каждая декодируется отдельно, так что ошибка называет свою строку."""
+    try:
+        for number, raw in enumerate(binary, 1):
+            try:
+                line = raw.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise UsageError(f"не удалось прочитать {name}: строка {number} не в UTF-8 ({error.reason})") from None
+            yield line.removeprefix(BOM) if number == 1 else line
+    except OSError as error:
+        raise UsageError(f"не удалось прочитать {name}: {error.strerror or error}") from None
+
+
+def jsonl_lines(file: str | None) -> Generator[str]:
+    """Строки JSONL по одной: поток не читается в память целиком. Кодировка — UTF-8, BOM отбрасывается."""
+    if file is None or file == "-":
+        yield from _decoded(sys.stdin.buffer, "stdin")
+        return
+    try:
+        with Path(file).open("rb") as handle:
+            yield from _decoded(handle, file)
+    except OSError as error:
+        raise UsageError(f"не удалось прочитать {file}: {error.strerror or error}") from None
+
+
 def jsonl(a: Args, run: Callable[[str], dict[str, Any]]) -> int:
-    """Пакетный режим: каждая строка входа — JSON с полем text, на выходе по строке результата."""
-    results: list[str] = []
-    for index, line in enumerate(read(a.files[0] if a.files else None).split("\n")):
+    """Пакетный режим: каждая строка входа — JSON с полем text, на выходе по строке результата.
+
+    Результат печатается сразу после расчёта, так что память не растёт с длиной потока. Поле id
+    входной строки переносится в результат. Ошибка в строке останавливает прогон с кодом 2, а
+    напечатанное до неё остаётся.
+    """
+    # closing: при обрыве канала поток входа закрывается сразу, а не при сборке мусора на выходе.
+    with closing(jsonl_lines(a.files[0] if a.files else None)) as lines:
+        return _jsonl_rows(lines, run)
+
+
+def _jsonl_rows(lines: Iterator[str], run: Callable[[str], dict[str, Any]]) -> int:
+    for number, line in enumerate(lines, 1):
         if not trim(line):
             continue
         try:
             doc = json.loads(line)
         except json.JSONDecodeError:
-            raise UsageError(f"строка {index + 1}: не JSON") from None
+            raise UsageError(f"строка {number}: не JSON") from None
         text = doc.get("text") if isinstance(doc, dict) else None
         if not isinstance(text, str):
-            raise UsageError(f"строка {index + 1}: нет строкового поля text")
-        results.append(dump(run(text), pretty=False))
-    if results:
-        sys.stdout.write("\n".join(results) + "\n")
+            raise UsageError(f"строка {number}: нет строкового поля text")
+        result = run(text)
+        if "id" in doc:
+            result = {"id": doc["id"], **result}
+        sys.stdout.write(dump(result, pretty=False) + "\n")
+        sys.stdout.flush()
     return 0
 
 
@@ -864,6 +1082,7 @@ def signal_json(sig: Signal) -> dict[str, Any]:
         "ai": None if sig.skipped else sig.ai,
         "nearThreshold": None if sig.skipped else sig.near_threshold,
         "repo": model.repo,
+        "revision": models.revision(model),
         "outdated": models.outdated(model),
         "read": None if sig.coverage is None else coverage_json(sig.coverage),
         "notRussianLines": [list(line_range) for line_range in sig.foreign],
@@ -932,11 +1151,21 @@ def catalog_refs(r: AnalysisResult) -> dict[str, list[str]]:
     return refs
 
 
+# Версия схемы JSON-отчётов: растёт, только если поле убирают или меняют его смысл; новые поля её не меняют.
+SCHEMA_VERSION = 1
+
+
+def meta(calibration_fingerprint: str | None = None) -> dict[str, Any]:
+    """Поле meta JSON-отчёта: версия схемы, версия aiw-ru и отпечаток калибровки (None — без неё)."""
+    return {"schema": SCHEMA_VERSION, "aiwRu": __version__, "calibration": calibration_fingerprint}
+
+
 def scan_json(r: AnalysisResult) -> dict[str, Any]:
     """Результат scan для JSON: с файлами каталога, где описаны найденные приметы."""
     return {
         **r.to_dict(),
         "catalog": [{"file": file, "sections": sections} for file, sections in catalog_refs(r).items()],
+        "meta": meta(),
     }
 
 
@@ -1094,21 +1323,26 @@ def cmd_antiplagiat(a: Args) -> int:
             f"нет файла калибровки {path} из {source}. Его создаёт calibrate; для оценки без калибровки уберите {source}"
         )
     calibration_file = load_calibration(config_path(a))
-    calibration = calibration_file.get(a.system) if calibration_file else None
-    model: Model | None = calibration.model if calibration else None
+    system_calibration = calibration_file.get(a.system) if calibration_file else None
+    model: Model | None = system_calibration.model if system_calibration else None
+    report_meta = meta(calibration.calibration_fingerprint(system_calibration) if system_calibration else None)
     mode = a.context or "academic"
+
+    def report_json(text: str, report: AntiplagiatReport, sig: Signal | None) -> dict[str, Any]:
+        return {**with_signal(report.to_dict(), sig), "meta": report_meta}
+
     if a.jsonl:
         return jsonl(
             a,
-            lambda text: with_signal(
-                antiplagiat(text, mode, model, a.system, explain=a.explain).to_dict(), model_signal(a, text)
+            lambda text: report_json(
+                text, antiplagiat(text, mode, model, a.system, explain=a.explain), model_signal(a, text)
             ),
         )
     text = read(a.files[0] if a.files else None)
     report = antiplagiat(text, mode, model, a.system, explain=a.explain)
     sig = model_signal(a, text)
     if a.json:
-        sys.stdout.write(dump(with_signal(report.to_dict(), sig)) + "\n")
+        sys.stdout.write(dump(report_json(text, report, sig)) + "\n")
         return 0
     share = report.ai_share
     share_style = "green" if share < 20 else "yellow" if share < 50 else "red"
@@ -1128,7 +1362,7 @@ def cmd_antiplagiat(a: Args) -> int:
             ),
             (
                 "Модель",
-                f"откалибрована по вашим отчётам, образцов: {len(calibration.samples) if calibration else 0}"
+                f"откалибрована по вашим отчётам, образцов: {len(system_calibration.samples) if system_calibration else 0}"
                 if report.model == "calibrated"
                 else "по умолчанию, без калибровки",
             ),
@@ -1254,7 +1488,7 @@ def cmd_validate(a: Args) -> int:
     marked = read_marked(a.judge_marked) if a.judge_marked else None
     result = validate(read(a.files[0]), read(a.files[1]), a.context or "general", marked)
     if a.json:
-        sys.stdout.write(dump(result) + "\n")
+        sys.stdout.write(dump({**result.to_dict(), "meta": meta()}) + "\n")
     else:
         rows: list[tuple[str, str | Text]] = [
             (
@@ -1481,7 +1715,7 @@ def cmd_judge_score(a: Args) -> int:
     marked = read_marked(a.judge_marked) if a.judge_marked else None
     report = judge_score(doc, [read(answers_file) for answers_file in a.answers], marked, a.context or "academic")
     if a.json:
-        sys.stdout.write(dump(report) + "\n")
+        sys.stdout.write(dump({**report.to_dict(), "meta": meta()}) + "\n")
         return 0
 
     def level(value: int | None) -> str:
@@ -1544,8 +1778,6 @@ def cmd_judge_score(a: Args) -> int:
 
 def cmd_classify_all(a: Args) -> int:
     """Вероятности всех установленных моделей рядом: видно, согласны ли они."""
-    if a.model_name:
-        raise UsageError("--all и --model вместе не используются: --all берёт все установленные модели")
     loaded = [models.load(model) for model in models.MODELS.values() if models.available(model)]
     if not loaded:
         raise models.ModelError(
@@ -1559,7 +1791,7 @@ def cmd_classify_all(a: Args) -> int:
     def doc(sigs: list[Signal]) -> dict[str, Any]:
         # agree пуст (null), если текст не на русском и модели его не оценивали.
         agree = None if sigs[0].skipped else len({sig.ai for sig in sigs}) == 1
-        return {"models": [signal_json(sig) for sig in sigs], "agree": agree}
+        return {"models": [signal_json(sig) for sig in sigs], "agree": agree, "meta": meta()}
 
     if a.jsonl:
         return jsonl(a, lambda text: doc(one(text)))
@@ -1609,7 +1841,7 @@ def cmd_classify(a: Args) -> int:
         return sig, models.scan_chunks(loaded, text, limit=a.max_fragments, progress=eta(loaded))
 
     def doc(sig: Signal, scan: models.ChunkScan | None) -> dict[str, Any]:
-        return {**signal_json(sig), **({"fragments": fragments_json(scan, loaded)} if scan else {})}
+        return {**signal_json(sig), **({"fragments": fragments_json(scan, loaded)} if scan else {}), "meta": meta()}
 
     if a.jsonl:
         return jsonl(a, lambda text: doc(*one(text)))
