@@ -131,6 +131,19 @@ def data_file(directory: Path, dataset: str, split: str) -> Path:
     return directory / f"ru-{dataset}-{split}.jsonl"
 
 
+def data_key(directory: Path, dataset: str, split: str) -> str:
+    """Отпечаток содержимого файла части корпуса для ключей кэша: замена данных по тому же пути
+    даёт другой ключ. Файла нет — пустой отпечаток: load сам скажет, что его нужно скачать."""
+    path = data_file(directory, dataset, split)
+    if not path.exists():
+        return ""
+    digest = hashlib.sha1()
+    with path.open("rb") as file:
+        for block in iter(lambda: file.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()[:12]
+
+
 def download(url: str) -> Iterator[bytes]:
     """Скачивает файл по кускам; оборванное соединение продолжается с того же байта."""
     offset = stalled = 0
@@ -272,7 +285,9 @@ def detect(
     """Строки корпуса и ответы детектора на них; ответы берутся из кэша, если исходники не менялись."""
     lines = load(directory, dataset, split, limit)
     stem = f"detector-{command}-{context}-{dataset}-{split}{f'-{limit}' if limit else ''}"
-    cache = directory / f"{stem}-{detector_key()}.jsonl"
+    # Ключ — исходники детектора и сами строки: другие данные по тому же пути дают другой кэш.
+    key = hashlib.sha1((detector_key() + "".join(lines)).encode("utf-8")).hexdigest()[:12]
+    cache = directory / f"{stem}-{key}.jsonl"
     if cache.exists():
         with cache.open(encoding="utf-8") as file:
             return lines, [json.loads(line) for line in file]
