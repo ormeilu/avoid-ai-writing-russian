@@ -25,11 +25,13 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import io
 import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -45,14 +47,33 @@ ROOT = HERE.parent
 Mode = Literal["inline", "workspace"]
 # Сколько секунд ждать агента на один случай по умолчанию.
 TIMEOUT = 900.0
+# Сколько секунд после тайм-аута ждать, пока закрытый агент отдаст остаток вывода.
+KILL_WAIT = 10.0
 
-# Обёртка aiw-ru в рабочем режиме: пишет вызов в журнал и запускает настоящую команду.
+# Обёртка aiw-ru в рабочем режиме: пишет вызов в журнал и запускает настоящую команду. Калибровка
+# разработчика в прогон не попадает: у aiw-ru свой домашний каталог в папке случая, $AIW_RU_CONFIG
+# снят, а --config в настоящем домашнем каталоге (совет скилла `--config ~/.config/aiw-ru.json`)
+# переносится в подставной. Кэш моделей Hugging Face остаётся прежним.
 SHIM = """import json, os, subprocess, sys, time
 from pathlib import Path
 
 with Path(os.environ["AIW_RU_EVAL_JOURNAL"]).open("a", encoding="utf-8") as journal:
     journal.write(json.dumps({"time": time.time(), "args": sys.argv[1:]}, ensure_ascii=False) + "\\n")
-sys.exit(subprocess.call([sys.executable, "-m", "aiw_ru", *sys.argv[1:]]))
+real_home = Path.home()
+home = Path(os.environ["AIW_RU_EVAL_HOME"])
+case_folder = home.parent
+env = {key: value for key, value in os.environ.items() if key != "AIW_RU_CONFIG"}
+env.setdefault("HF_HOME", str(Path(os.environ.get("XDG_CACHE_HOME") or real_home / ".cache") / "huggingface"))
+env["HOME"] = env["USERPROFILE"] = str(home)
+args = sys.argv[1:]
+for index in range(len(args) - 1):
+    if args[index] == "--config":
+        path = Path(args[index + 1]).expanduser().absolute()
+        if path.is_relative_to(real_home) and not path.is_relative_to(case_folder):
+            path = home / path.relative_to(real_home)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            args[index + 1] = str(path)
+sys.exit(subprocess.call([sys.executable, "-m", "aiw_ru", *args], env=env))
 """
 
 
@@ -154,27 +175,47 @@ def ask(
     # На Windows claude ставится как claude.cmd, а subprocess без which его не найдёт.
     exe = shutil.which(command[0], path=(env or os.environ).get("PATH")) or command[0]
     started = time.monotonic()
+    # Агент в своей группе процессов: по тайм-ауту закрывается вся группа. Иначе дочерний процесс
+    # (node за claude.cmd на Windows, команды агента) держит вывод открытым, и прогон ждёт его конца.
+    new_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [exe, *command[1:]],
-            input=prompt.encode("utf-8"),
-            capture_output=True,
-            timeout=timeout,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             cwd=cwd,
             env=env,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as error:
-        seconds = time.monotonic() - started
-        return AgentRun(
-            command, _text(error.stdout), _text(error.stderr), None, seconds, True, f"тайм-аут {timeout:g} с"
+            start_new_session=sys.platform != "win32",
+            creationflags=new_group,
         )
     except OSError as error:
         reason = error.strerror or str(error)
         return AgentRun(command, "", "", None, time.monotonic() - started, error=f"агент не запустился: {reason}")
-    out, err = _text(proc.stdout), _text(proc.stderr)
+    try:
+        stdout, stderr = proc.communicate(prompt.encode("utf-8"), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        try:
+            stdout, stderr = proc.communicate(timeout=KILL_WAIT)
+        except subprocess.TimeoutExpired as error:
+            stdout, stderr = error.stdout, error.stderr
+        seconds = time.monotonic() - started
+        return AgentRun(command, _text(stdout), _text(stderr), None, seconds, True, f"тайм-аут {timeout:g} с")
+    out, err = _text(stdout), _text(stderr)
     error = None if proc.returncode == 0 else f"код выхода {proc.returncode}: {(err or out).strip()[:300]}"
     return AgentRun(command, out, err, proc.returncode, time.monotonic() - started, error=error)
+
+
+def _kill_tree(proc: subprocess.Popen[bytes]) -> None:
+    """Закрыть агента вместе с его дочерними процессами."""
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, check=False)
+    else:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)
+    with contextlib.suppress(OSError):
+        proc.kill()
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,10 +227,15 @@ class Workspace:
 
 def prepare_workspace(c: EvalCase, folder: Path) -> Workspace:
     """Папка агента с text.md и обёрткой aiw-ru первой в PATH; журнал вызовов рядом, вне папки агента."""
+    # Папка случая принадлежит прогону: повторный запуск с тем же --out начинает её заново.
+    if folder.exists():
+        shutil.rmtree(folder)
     work = folder / "work"
     bin_dir = folder / "bin"
+    home = folder / "home"
     work.mkdir(parents=True)
     bin_dir.mkdir()
+    home.mkdir()
     (work / "text.md").write_text(c["input"], encoding="utf-8")
     shim = bin_dir / "aiw_ru_logged.py"
     shim.write_text(SHIM, encoding="utf-8")
@@ -203,7 +249,7 @@ def prepare_workspace(c: EvalCase, folder: Path) -> Workspace:
         **os.environ,
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
         "AIW_RU_EVAL_JOURNAL": str(journal),
-        "AIW_RU_CONFIG": "",
+        "AIW_RU_EVAL_HOME": str(home),
     }
     return Workspace(work, env, journal)
 

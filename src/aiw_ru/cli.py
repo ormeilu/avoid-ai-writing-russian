@@ -427,6 +427,9 @@ def parse(argv: list[str]) -> Args:
             i += 1
             if not args.reports:
                 raise UsageError(f"{arg} относится к предыдущему --doc: сначала --doc ФАЙЛ")
+            last = args.reports[-1]
+            if (last.date if arg == "--report-date" else last.system_version) is not None:
+                raise UsageError(f"{arg} указан дважды для {last.doc}: оставьте одно значение")
             if arg == "--report-date":
                 args.reports[-1].date = report_date(value)
             elif value:
@@ -1652,8 +1655,11 @@ def cmd_calibrate(a: Args) -> int:
     current = result.calibration
     model, samples, documents = current.model, current.samples, current.documents
     positives = sum(1 for sample in samples if sample.y == 1)
-    transfer = calibration.transfer_check(samples)
-    if transfer.accuracy is not None and transfer.default_accuracy is not None:
+    transfer = calibration.transfer_check(samples) if result.changed else None
+    if transfer is None:
+        # Перенос — до десяти обучений модели; без новых отчётов он прежний, пересчитывать незачем.
+        transfer_fact = "не пересчитан: калибровка не изменилась"
+    elif transfer.accuracy is not None and transfer.default_accuracy is not None:
         transfer_fact = (
             f"{pct(transfer.default_accuracy)} → {pct(transfer.accuracy)} на документах, отложенных целиком "
             f"(документов: {transfer.documents})"

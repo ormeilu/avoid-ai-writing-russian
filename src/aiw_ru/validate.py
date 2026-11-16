@@ -775,6 +775,8 @@ def _check_claims(before_prepared: Prepared, after_prepared: Prepared, warnings:
 NEGATIONS = frozenset({"не", "ни"})
 # Столько имён должны сменить падеж, чтобы правка выглядела как подмена ролей.
 ROLE_MIN_NAMES = 2
+# Связка однородных слов в перечне: запятая, «и», «или», «либо», «да».
+COORDINATION = r"\s*(?:,\s*|\s(?:и|или|либо|да)\s+)"
 # Слова после «не», с которыми снятое отрицание — правка штампа («не просто X, а Y»), а не смысла.
 NEGATION_IDIOMS = frozenset(
     {"просто", "только", "столько", "так", "менее", "более", "раз", "всегда", "совсем", "очень", "то", "же", "бы", "ли"}
@@ -931,12 +933,19 @@ def _capitalized(prepared: Prepared) -> list[tuple[str, bool]]:
     return found
 
 
+def _coordinated(text: str, first: str, second: str) -> bool:
+    """Два слова стоят одним перечнем: «Иванова и Петрова», «Казань, Самара», «Олег или Нина»."""
+    left, right = regex.escape(first.lower()), regex.escape(second.lower())
+    pattern = rf"(?<!\w)(?:{left}{COORDINATION}{right}|{right}{COORDINATION}{left})(?!\w)"
+    return regex.search(pattern, text.lower()) is not None
+
+
 def _check_roles(before_prepared: Prepared, after_prepared: Prepared, warnings: list[Violation]) -> None:
     """Имя осталось, но в другом падеже: «Олег передал ключ Нине» → «Нина передала ключ Олегу»."""
     before_words, after_words = _capitalized(before_prepared), _capitalized(after_prepared)
     # Имя — слово с заглавной не в начале предложения хотя бы в одном из текстов.
     names = [word.lower() for word, at_start in before_words + after_words if not at_start]
-    details: list[str] = []
+    changed: list[tuple[str, str]] = []
     seen: set[str] = set()
     for name in names:
         if any(_same_stem(name, done) for done in seen):
@@ -947,10 +956,26 @@ def _check_roles(before_prepared: Prepared, after_prepared: Prepared, warnings: 
         lost = [form for form in before_forms if form not in after_forms]
         new = [form for form in after_forms if form not in before_forms]
         if lost and new:
-            details.append(f"{lost[0]} → {new[0]}: имя в другом падеже, проверьте, кто что делает")
+            changed.append((lost[0], new[0]))
+    # Имена одного перечня играют одну роль и меняют падеж вместе («по данным Иванова и Петрова» →
+    # «Иванов и Петров показали»): такие считаются одним именем.
+    groups: list[list[tuple[str, str]]] = []
+    for pair in changed:
+        joined = [
+            group
+            for group in groups
+            if any(
+                _coordinated(before_prepared.source, pair[0], other[0])
+                or _coordinated(after_prepared.source, pair[1], other[1])
+                for other in group
+            )
+        ]
+        merged = [pair] + [other for group in joined for other in group]
+        groups = [group for group in groups if group not in joined] + [merged]
     # Одно имя в другом падеже — обычная правка («Москва» → «в Москве»); подмену ролей выдают
-    # хотя бы два имени, сменивших падеж в одной правке.
-    if len(details) >= ROLE_MIN_NAMES:
+    # хотя бы два имени в разных ролях, сменивших падеж в одной правке.
+    if len(groups) >= ROLE_MIN_NAMES:
+        details = [f"{lost} → {new}: имя в другом падеже, проверьте, кто что делает" for lost, new in changed]
         warnings.extend(Violation(kind="роль", detail=detail) for detail in details[:LIMIT])
 
 

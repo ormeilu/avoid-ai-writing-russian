@@ -235,6 +235,45 @@ def separable(doc: str, count: int = 6) -> list[Sample]:
     ]
 
 
+def test_samples_carry_paragraph_fingerprint(doc: str, red: list[str]):
+    """у каждого образца отпечаток абзаца: по нему видно, что правленая версия делит абзацы с прежней"""
+    samples = import_reports(None, [marked_report(doc, red)], today=TODAY).calibration.samples
+    parts = [sample.part for sample in samples]
+    assert all(part and len(part) == cal.FINGERPRINT_CHARS for part in parts)
+    assert len(set(parts)) == len(parts)
+
+
+def test_transfer_joins_edited_versions(doc: str, red: list[str]):
+    """правленая версия документа — тот же документ: перенос по одному документу не проверен"""
+    first = import_reports(None, [marked_report(doc, red)], today=TODAY).calibration
+    paragraphs = doc.split("\n\n")
+    paragraphs[0] = "Первый абзац переписан заново: автор коротко объяснил, зачем складу учёт остатков по сменам."
+    edited = "\n\n".join(paragraphs)
+    both = import_reports(first, [marked_report(edited, red)], today=TODAY).calibration
+    assert len(both.reports) == 2
+    transfer = transfer_check(both.samples)
+    assert (transfer.documents, transfer.accuracy) == (1, None)
+
+
+def test_transfer_keeps_unrelated_documents_apart():
+    """разные документы без общих абзацев остаются разными группами"""
+    samples = [
+        sample.model_copy(update={"part": f"{sample.doc}-{index}"})
+        for name in "abc"
+        for index, sample in enumerate(separable(name))
+    ]
+    assert transfer_check(samples).documents == 3
+
+
+def test_transfer_merges_documents_sharing_a_paragraph():
+    """два документа с общим абзацем — одна группа, третий отдельно"""
+    a, b, c = separable("a"), separable("b"), separable("c")
+    a = [sample.model_copy(update={"part": f"a{index}"}) for index, sample in enumerate(a)]
+    b = [sample.model_copy(update={"part": "a0" if index == 0 else f"b{index}"}) for index, sample in enumerate(b)]
+    c = [sample.model_copy(update={"part": f"c{index}"}) for index, sample in enumerate(c)]
+    assert transfer_check(a + b + c).documents == 2
+
+
 def test_transfer_needs_two_documents(doc: str, red: list[str]):
     """один документ — перенос не проверен"""
     samples = import_reports(None, [marked_report(doc, red)], today=TODAY).calibration.samples
@@ -322,6 +361,33 @@ def test_failed_replace_keeps_old_file(tmp_path: Path, monkeypatch: pytest.Monke
         write_file(path, calibration_with(5), old)
     assert path.read_bytes() == old
     assert [p.name for p in tmp_path.iterdir()] == ["cal.json"]
+
+
+def test_write_through_symlink(tmp_path: Path):
+    """файл калибровки — ссылка (например, в папку dotfiles): запись идёт в цель, ссылка остаётся ссылкой"""
+    target = tmp_path / "dotfiles" / "aiw-ru.json"
+    target.parent.mkdir()
+    target.write_bytes(serialize(calibration_with(1)))
+    link = tmp_path / "aiw-ru.json"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("система не даёт создать символическую ссылку")
+    write_file(link, calibration_with(2), target.read_bytes())
+    assert link.is_symlink()
+    assert len(json.loads(target.read_text(encoding="utf-8"))["samples"]) == 2
+    assert sorted(p.name for p in target.parent.iterdir()) == ["aiw-ru.json"]
+
+
+def test_file_round_trip_keeps_every_field(doc: str, red: list[str]):
+    """прочитанный и снова записанный файл совпадает байт в байт: ни одно поле не теряется"""
+    report = marked_report(doc, red, date="2026-11-05", system_version="5.0")
+    calibration = import_reports(None, [report], today=TODAY).calibration
+    data = empty_calibration_file().put("antiplagiat", calibration).put("domate", calibration)
+    raw = serialize(data)
+    assert serialize(CalibrationFile.model_validate_json(raw)) == raw
+    record = CalibrationFile.model_validate_json(raw).reports[0]
+    assert (record.date, record.system_version) == ("2026-11-05", "5.0")
 
 
 def test_read_old_file_without_reports(tmp_path: Path):

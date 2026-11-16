@@ -13,16 +13,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
+import unicodedata
 from bisect import bisect_left, bisect_right
 from collections import Counter
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Annotated, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import AliasChoices, Field, ValidationError
 
 from aiw_ru.compat import fixed, jsre, num_str, to_fixed, total, trim
 from aiw_ru.detect import WEIGHTS, Internals, analyze_internal
@@ -552,6 +554,9 @@ class Sample(Record):
     # Отпечаток текста документа, из отчёта по которому взят фрагмент (`calibration.doc_fingerprint`).
     # У образцов из файлов до версии с отпечатками его нет: они считаются одной группой без документа.
     doc: str | None = None
+    # Отпечаток текста самого фрагмента (`fragment_fingerprint`). Правленая версия документа делит
+    # с прежней неизменённые абзацы, и проверка переноса по ним считает обе версии одним документом.
+    part: str | None = None
 
 
 class DocFragment(Record):
@@ -589,8 +594,9 @@ class ReportRecord(Record):
     # Дата импорта и, если её назвали, дата самого отчёта (ГГГГ-ММ-ДД).
     imported: str
     date: str | None = None
-    # Версия модели системы проверки из отчёта, если её назвали (`--system-version`).
-    system_version: str | None = None
+    # Версия модели системы проверки из отчёта, если её назвали (`--system-version`). В файле поле
+    # называется systemVersion; имя из Python тоже принимается.
+    system_version: str | None = Field(default=None, validation_alias=AliasChoices("systemVersion", "system_version"))
 
 
 class Calibration(Record):
@@ -848,8 +854,20 @@ def label_fragments(source: str, marked: list[str]) -> list[Sample]:
     samples: list[Sample] = []
     for raw, mark in zip(_fragments_of(internals), marked_fragments(source, marked), strict=True):
         inside = [issue for issue in result.issues if mark.start <= issue.index < mark.end]
-        samples.append(Sample(f=features_for(raw.text, inside), y=1 if mark.marked else 0))
+        samples.append(
+            Sample(f=features_for(raw.text, inside), y=1 if mark.marked else 0, part=fragment_fingerprint(raw.text))
+        )
     return samples
+
+
+# Длина отпечатка фрагмента в шестнадцатеричных знаках, как у отпечатков документа и разметки.
+FRAGMENT_FINGERPRINT_CHARS = 16
+
+
+def fragment_fingerprint(text: str) -> str:
+    """Отпечаток фрагмента без различий в пробелах и переносах строк; сам текст в файл не попадает."""
+    normalized = " ".join(unicodedata.normalize("NFC", text).split())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:FRAGMENT_FINGERPRINT_CHARS]
 
 
 class HeatFragment(Record):

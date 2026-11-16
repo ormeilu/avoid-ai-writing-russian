@@ -46,6 +46,21 @@ def test_language(text: str, expected: str):
     assert models.language(text) == expected
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("Расход снизился на 5 %, т. е. вдвое, т. е. до уровня прошлого года.", id="т. е."),
+        pytest.param("Витамин Е и витамин С есть в овощах. Витамин Е нужен для кожи.", id="витамин Е"),
+        pytest.param("Пусть е — основание натурального логарифма, тогда е в степени нуль равно единице.", id="число е"),
+        pytest.param("Ну че, когда созвон? Че молчишь весь день?", id="разговорное че"),
+    ],
+)
+def test_russian_with_bulgarian_lookalike_words(text: str):
+    """«е» и «че» бывают и в русском: без других примет болгарского текст не считается болгарским"""
+    assert models.language(text) != "other"
+    assert models.is_russian(text)
+
+
 def test_long_text_without_russian_letters_is_not_russian():
     """длинный кириллический текст без ы, э и ё — не русский: в русском ы около 2 % букв"""
     bulgarian_without_hard_sign = ("Резултатите зависят от избрания метод и от данните. " * 12).strip()

@@ -1170,6 +1170,11 @@ def test_calibrate_report_date_and_system_version(cli: Cli, tmp_path: Path, heat
     assert cli("calibrate", *args, "--config", str(config)).code == 0
     (record,) = json.loads(config.read_text(encoding="utf-8"))["reports"]
     assert (record["date"], record["systemVersion"], record["kind"]) == ("2026-11-05", "5.0", "marked")
+    other = tmp_path / "glava2.md"
+    other.write_text(HUMAN_VAK.read_text(encoding="utf-8"), encoding="utf-8")
+    assert cli("calibrate", "--doc", str(other), "--share", "0", "--config", str(config)).code == 0
+    first, _ = json.loads(config.read_text(encoding="utf-8"))["reports"]
+    assert (first["date"], first["systemVersion"]) == ("2026-11-05", "5.0")
 
 
 @pytest.mark.parametrize(
@@ -1255,14 +1260,19 @@ def test_calibrate_unwritable_path_exit_2(cli: Cli, tmp_path: Path, heat_pair: t
 
 
 def test_calibrate_transfer_line(cli: Cli, tmp_path: Path, heat_pair: tuple[Path, Path]):
-    """строка «Перенос»: один документ — не проверен, отчёт по второму документу даёт проверку"""
+    """строка «Перенос»: один документ или его правленая версия — не проверен, второй документ даёт проверку"""
     doc, marked = heat_pair
     config = tmp_path / "cal.json"
     wide = {"COLUMNS": "200"}
     first = cli("calibrate", "--doc", str(doc), "--marked", str(marked), "--config", str(config), env=wide)
     assert re.search(r"Перенос\s+не проверен: нужна разметка отчётов хотя бы по двум документам", first.out)
+    edited = tmp_path / "glava1-v2.md"
+    edited.write_text(doc.read_text(encoding="utf-8") + "\n\nАвтор дописал короткий итог о сменах склада.", "utf-8")
+    again = cli("calibrate", "--doc", str(edited), "--marked", str(marked), "--config", str(config), env=wide)
+    assert again.code == 0
+    assert re.search(r"Перенос\s+не проверен: нужна разметка отчётов хотя бы по двум документам", again.out)
     second_doc = tmp_path / "glava2.md"
-    ai = AI_VAK.read_text(encoding="utf-8")
+    ai = Path(AI_BLOG).read_text(encoding="utf-8")
     second_doc.write_text(f"{ai}\n\n{Path(HUMAN_BLOG).read_text(encoding='utf-8')}", encoding="utf-8")
     second_marked = tmp_path / "glava2-ai.txt"
     second_marked.write_text(ai.split("\n\n")[1], encoding="utf-8")
@@ -1271,6 +1281,26 @@ def test_calibrate_transfer_line(cli: Cli, tmp_path: Path, heat_pair: tuple[Path
     )
     assert second.code == 0
     assert re.search(r"Перенос\s+.+ на документах, отложенных целиком \(документов: 2\)", second.out)
+
+
+def test_calibrate_repeat_skips_transfer_check(
+    cli: Cli, tmp_path: Path, heat_pair: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+):
+    """повтор тех же отчётов ничего не меняет и не пересчитывает перенос: на больших калибровках это долго"""
+    from aiw_ru import calibration
+
+    doc, marked = heat_pair
+    config = tmp_path / "cal.json"
+    args = ["calibrate", "--doc", str(doc), "--marked", str(marked), "--config", str(config)]
+    assert cli(*args).code == 0
+
+    def no_transfer(samples: list[object]) -> None:
+        raise AssertionError("перенос пересчитан без изменений")
+
+    monkeypatch.setattr(calibration, "transfer_check", no_transfer)
+    repeat = cli(*args, env={"COLUMNS": "200"})
+    assert repeat.code == 0
+    assert re.search(r"Перенос\s+не пересчитан: калибровка не изменилась", repeat.out)
 
 
 @pytest.mark.parametrize(
@@ -1355,6 +1385,16 @@ def test_every_option_in_help():
         ),
         pytest.param(
             ["validate", "a", "b", "--marked", "m", "--marked", "n"], "--marked указан дважды", id="marked дважды"
+        ),
+        pytest.param(
+            ["calibrate", "--doc", "d", "--share", "3", "--report-date", "2026-11-01", "--report-date", "2026-11-02"],
+            "--report-date указан дважды для d",
+            id="дата отчёта дважды",
+        ),
+        pytest.param(
+            ["calibrate", "--doc", "d", "--share", "3", "--system-version", "5", "--system-version", "6"],
+            "--system-version указан дважды для d",
+            id="версия системы дважды",
         ),
         pytest.param(["scan", "--jsonl", AI_BLOG, HUMAN_BLOG], "--jsonl читает один поток", id="jsonl и два файла"),
         pytest.param(["scan", "--fail-above", "inf"], "--fail-above ждёт конечное число", id="fail-above inf"),

@@ -67,15 +67,13 @@ FOREIGN_CYRILLIC = frozenset("іїєґўјљњђћџѓќѕәғқңөұүһ")
 RUSSIAN_ONLY = frozenset("ыэё")
 # Болгарский ъ стоит перед согласной и в конце слова; в русском ъ бывает только перед е, ё, ю, я.
 BULGARIAN_HARD_SIGN_RE = re.compile(r"ъ(?![еёюя])")
-# Болгарские служебные слова, которых в русском нет: «това е», «че», «са», «които».
+# Болгарские служебные слова, которых в русском нет: «това», «са», «които».
 BULGARIAN_WORDS = frozenset(
     {
         "това",
         "тези",
-        "че",
         "са",
         "ще",
-        "е",
         "във",
         "със",
         "към",
@@ -88,6 +86,9 @@ BULGARIAN_WORDS = frozenset(
         "сте",
     }
 )
+# Болгарские «е» и «че» встречаются и в русском тексте: «т. е.», «витамин Е», число е, разговорное «че».
+# Они считаются приметой, только если в тексте есть и другие приметы болгарского.
+BULGARIAN_WEAK_WORDS = frozenset({"е", "че"})
 CYRILLIC_WORD_RE = re.compile(r"[а-яёіїєґўјљњђћџѓќѕәғқңөұүһ]+")
 # Не меньше стольких примет другого языка: одно имя («Київ») в русском тексте язык не меняет.
 FOREIGN_MIN = 2
@@ -768,7 +769,10 @@ def language(text: str) -> Language:
     lower = text.lower()
     cyrillic, _ = letter_share(lower)
     foreign = sum(1 for char in lower if char in FOREIGN_CYRILLIC) + len(BULGARIAN_HARD_SIGN_RE.findall(lower))
-    foreign += sum(1 for word in CYRILLIC_WORD_RE.findall(lower) if word in BULGARIAN_WORDS)
+    cyrillic_words = CYRILLIC_WORD_RE.findall(lower)
+    foreign += sum(1 for word in cyrillic_words if word in BULGARIAN_WORDS)
+    if foreign:
+        foreign += sum(1 for word in cyrillic_words if word in BULGARIAN_WEAK_WORDS)
     russian_letters = sum(1 for char in lower if char in RUSSIAN_ONLY)
     if foreign >= FOREIGN_MIN and foreign >= FOREIGN_RATE * cyrillic:
         dominant = russian_letters < RUSSIAN_RATE * cyrillic or foreign >= FOREIGN_DOMINANCE * russian_letters

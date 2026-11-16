@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -28,14 +29,14 @@ def golden(name: str) -> str:
     return (DIR / "golden" / name).read_bytes().decode("utf-8")
 
 
-def run_evals(*args: str) -> subprocess.CompletedProcess[str]:
+def run_evals(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(DIR / "run.py"), *args],
         capture_output=True,
         text=True,
         encoding="utf-8",
         check=False,
-        env={**os.environ, "PYTHONUTF8": "1"},
+        env={**os.environ, "PYTHONUTF8": "1", **(env or {})},
     )
 
 
@@ -250,6 +251,19 @@ elif mode == "slow":
 elif mode == "crash":
     print("Половина ответа", flush=True)
     sys.exit(3)
+elif mode == "slow-child":
+    # Дочерний процесс держит вывод открытым: тайм-аут должен закрыть и его, а не ждать конца.
+    subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    print("Начал думать", flush=True)
+    time.sleep(60)
+elif mode == "isolation":
+    import json
+    exe = shutil.which("aiw-ru")
+    shown = subprocess.run([exe, "antiplagiat", "--json", "text.md"], capture_output=True, check=True, text=True)
+    assert json.loads(shown.stdout)["model"] == "default", "личная калибровка попала в evals"
+    real = os.path.expanduser("~/.config/aiw-ru.json")
+    subprocess.run([exe, "calibrate", "--doc", "text.md", "--share", "0", "--config", real], check=True)
+    print(golden)
 elif mode == "workspace":
     exe = shutil.which("aiw-ru")
     for args in (["skill", "avoid-ai-writing-russian"], ["skill", "avoid-ai-writing-russian", "references/vocabulary.md"], ["scan", "text.md"]):
@@ -271,8 +285,10 @@ def fake_agent(tmp_path: Path) -> Callable[[str], str]:
     return lambda mode: f'"{sys.executable}" "{script}" {mode} "{answer}"'
 
 
-def run_case(out: Path, agent: str, *extra: str) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
-    r = run_evals("--case", "clean-noop", "--agent", agent, "--out", str(out), *extra)
+def run_case(
+    out: Path, agent: str, *extra: str, env: dict[str, str] | None = None
+) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
+    r = run_evals("--case", "clean-noop", "--agent", agent, "--out", str(out), *extra, env=env)
     summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
     return r, summary
 
@@ -321,6 +337,45 @@ def test_workspace_mode_logs_reads_and_commands(tmp_path: Path, fake_agent: Call
     assert case["mode"] == "workspace"
     assert case["reads"] == ["SKILL.md", "references/vocabulary.md"]
     assert case["commands"] == ["scan"]
+
+
+def test_workspace_mode_rerun_same_out(tmp_path: Path, fake_agent: Callable[[str], str]) -> None:
+    """повторный прогон в ту же папку результатов: рабочая папка случая создаётся заново, журнал не копится"""
+    first, _ = run_case(tmp_path / "out", fake_agent("workspace"), "--mode", "workspace")
+    assert first.returncode == 0, first.stdout + first.stderr
+    again, summary = run_case(tmp_path / "out", fake_agent("workspace"), "--mode", "workspace")
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert summary["cases"][0]["commands"] == ["scan"]
+
+
+def test_workspace_mode_ignores_personal_calibration(tmp_path: Path, fake_agent: Callable[[str], str]) -> None:
+    """личная калибровка разработчика в evals не читается и не перезаписывается, даже по явному --config"""
+    home = tmp_path / "дом"
+    config = home / ".config" / "aiw-ru.json"
+    config.parent.mkdir(parents=True)
+    calibrated = {
+        "version": 1,
+        "model": {"bias": -1.0, "weights": [1.0] * 7, "threshold": 0.5},
+        "samples": [{"f": [0.1] * 7, "y": 1}],
+    }
+    config.write_text(json.dumps(calibrated), encoding="utf-8")
+    before = config.read_bytes()
+    env = {"HOME": str(home), "USERPROFILE": str(home), "AIW_RU_CONFIG": str(config)}
+    r, summary = run_case(tmp_path / "out", fake_agent("isolation"), "--mode", "workspace", env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert summary["cases"][0]["passed"], summary
+    assert config.read_bytes() == before
+    assert (tmp_path / "out" / "workspaces" / "clean-noop" / "home" / ".config" / "aiw-ru.json").is_file()
+
+
+def test_timeout_stops_agent_children(tmp_path: Path, fake_agent: Callable[[str], str]) -> None:
+    """тайм-аут закрывает и дочерние процессы агента: прогон не ждёт, пока они сами выйдут"""
+    started = time.monotonic()
+    r, summary = run_case(tmp_path / "out", fake_agent("slow-child"), "--timeout", "2")
+    assert time.monotonic() - started < 30
+    assert r.returncode == 1
+    assert summary["cases"][0]["timedOut"] is True
+    assert "Начал думать" in (tmp_path / "out" / "clean-noop.md").read_text(encoding="utf-8")
 
 
 def test_dry_workspace_prompt_has_no_catalog() -> None:

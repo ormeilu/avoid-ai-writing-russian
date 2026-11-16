@@ -215,13 +215,30 @@ def _balanced(pairs: list[tuple[bool, int]]) -> float | None:
 def transfer_check(samples: list[Sample]) -> Transfer:
     """Перенос калибровки на документ, которого не было в обучении.
 
-    Образцы группируются по документу (`Sample.doc`; образцы без отпечатка — одна группа). Каждый
-    блок групп откладывается целиком, модель обучается на остальных и предсказывает отложенные
-    фрагменты. Соседние абзацы того же документа в обучение не попадают.
+    Образцы группируются по документу (`Sample.doc`; образцы без отпечатка — одна группа). Версии
+    одного документа делят неизменённые абзацы (`Sample.part`), поэтому документы с общим абзацем
+    считаются одной группой: иначе отложенная версия проверялась бы на абзацах, которые модель уже
+    видела в другой. Каждый блок групп откладывается целиком, модель обучается на остальных и
+    предсказывает отложенные фрагменты.
     """
+    parent: dict[str, str] = {}
+
+    def root(key: str) -> str:
+        while parent.setdefault(key, key) != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    owner: dict[str, str] = {}
+    for sample in samples:
+        doc = root(sample.doc or "")
+        if sample.part is not None:
+            other = root(owner.setdefault(sample.part, doc))
+            if other != doc:
+                parent[other] = doc
     groups: dict[str, list[Sample]] = {}
     for sample in samples:
-        groups.setdefault(sample.doc or "", []).append(sample)
+        groups.setdefault(root(sample.doc or ""), []).append(sample)
     keys = sorted(groups)
     if len(keys) < 2:
         return Transfer(documents=len(keys))
@@ -274,6 +291,8 @@ def write_file(path: Path, data: CalibrationFile, expected: bytes | None) -> Non
     поднимается CalibrationConflict и ничего не пишется: обновление другого процесса не теряется.
     При ошибке записи прежний файл остаётся нетронутым, а временный удаляется.
     """
+    # Ссылку (файл в папке dotfiles) не заменяем обычным файлом: пишем в её цель, как прежняя запись.
+    path = path.resolve()
     try:
         current = path.read_bytes()
     except FileNotFoundError:
