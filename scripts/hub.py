@@ -374,7 +374,7 @@ below.
 Из командной строки:
 
 ```bash
-uv tool install "aiw-ru[ml] @ git+{GITHUB}"
+uv tool install "aiw-ru[ml]"
 aiw-ru models install lightgbm
 aiw-ru classify --model lightgbm текст.md
 ```

@@ -136,6 +136,15 @@ def write_versions(version: str, root: Path = ROOT) -> None:
         write_text(path, site.write(read_text(path), version))
 
 
+CFF_DATE = re.compile(r'^(date-released:\s*)"?[0-9-]+"?(\s*)$', re.MULTILINE)
+
+
+def write_release_date(date: str, root: Path = ROOT) -> None:
+    """Дата выпуска в CITATION.cff: без неё цитата называла бы новую версию старой датой."""
+    path = root / "CITATION.cff"
+    write_text(path, CFF_DATE.sub(lambda match: f'{match[1]}"{date}"{match[2]}', read_text(path), count=1))
+
+
 def lock_version(root: Path = ROOT) -> str | None:
     """Версия самого проекта в uv.lock: пакет, который ставится из корня (`source = { editable = "." }`)."""
     path = root / LOCK

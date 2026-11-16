@@ -17,13 +17,25 @@
 
 Правила детектора проверялись и уточнялись по этим работам:
 
-- LLMTrace: A Corpus for Classification and Fine-Grained Localization of AI-Written Text (Irina Tolstykh, Aleksandra Tsybina, Sergey Yakubson, Maksim Kuprashevich; Findings of EMNLP 2026, [arXiv:2509.21269](https://arxiv.org/abs/2509.21269)). Корпус текстов людей и моделей на русском и английском, [датасет](https://huggingface.co/datasets/iitolstykh/LLMTrace_classification) под лицензией Apache 2.0. На русской части тестового набора (21 417 человеческих текстов и 14 064 сгенерированных) мы мерили, как часто правила срабатывают на людях. Отсюда новое правило подмены букв и решение не учитывать технические отпечатки в оценке. Данные в репозиторий не входят: человеческие тексты корпуса собраны из сторонних источников со своими лицензиями.
+- LLMTrace: A Corpus for Classification and Fine-Grained Localization of AI-Written Text (Irina Tolstykh, Aleksandra Tsybina, Sergey Yakubson, Maksim Kuprashevich; Findings of EMNLP 2026, [arXiv:2509.21269](https://arxiv.org/abs/2509.21269)). Корпус текстов людей и моделей на русском и английском, [датасет](https://huggingface.co/datasets/iitolstykh/LLMTrace_classification) под лицензией Apache 2.0. Набор с разметкой ИИ-фрагментов [LLMTrace_detection](https://huggingface.co/datasets/iitolstykh/LLMTrace_detection) (тоже Apache 2.0) нужен для сверки фрагментов `antiplagiat` (`scripts/llmtrace.py spans`). На русской части тестового набора (21 417 человеческих текстов и 14 064 сгенерированных с нуля) мы мерили, как часто правила срабатывают на людях. Отсюда новое правило подмены букв и решение не учитывать технические отпечатки в оценке. Данные в репозиторий не входят: человеческие тексты корпуса собраны из сторонних источников со своими лицензиями.
 - GigaCheck: Detecting LLM-generated Content via Object-Centric Span Localization (те же авторы, Aleksandr Gordeev, Vladimir Dokholyan; Findings of ACL 2026, [arXiv:2410.23728](https://arxiv.org/abs/2410.23728)). Работа, из которой мы узнали о LLMTrace и о разметке ИИ-фрагментов с точностью до знака.
 - [Технический отчёт Pangram 4](https://pangram-public.s3.us-east-1.amazonaws.com/pdf/pangram_4_technical_report.pdf) (Pangram Labs, 2026). Идея держать технический мусор (невидимые символы, следы PDF и распознавания) отдельно от оценки стиля.
 - [Wikipedia: Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing), раздел о разметке ссылок ChatGPT (`turn0search0`, `oaicite`, `contentReference`), и [описание служебных символов U+E200–U+E204](https://github.com/sanand0/openai-conversations/blob/main/private-unicode-control-characters.md) из репозитория sanand0/openai-conversations.
+
+## Модели
+
+Модели для `classify` дообучены на русской части LLMTrace из открытых моделей. Веса базовых моделей в репозиторий не входят, дообученные лежат на Hugging Face в коллекции `aiw-ru` с карточками, где названа база:
+
+- `transformer` — из [cointegrated/rubert-tiny2](https://huggingface.co/cointegrated/rubert-tiny2) Давида Дале (David Dale), лицензия MIT;
+- `mini-frida` — из [sergeyzh/rubert-mini-frida](https://huggingface.co/sergeyzh/rubert-mini-frida), лицензия MIT; она получена дистилляцией [ai-forever/FRIDA](https://huggingface.co/ai-forever/FRIDA) (MIT) в [sergeyzh/rubert-mini-sts](https://huggingface.co/sergeyzh/rubert-mini-sts) (MIT);
+- `modernbert` — из [deepvk/RuModernBERT-small](https://huggingface.co/deepvk/RuModernBERT-small) (Egor Spirin, Boris Malashenko, Andrey Sokolov), лицензия Apache 2.0; RuModernBERT построен по схеме ModernBERT ([arXiv:2412.13663](https://arxiv.org/abs/2412.13663)).
+
+LightGBM обучен с нуля на признаках детектора.
 
 ## Идеи из других проектов
 
 - [humanizer-ru](https://github.com/ilyautov/humanizer-ru) Ильи Утова (Ilya Utov), лицензия MIT, Copyright (c) 2026 Ilya Utov. Из его «факт-замка» (`facts.py`) взята идея сверки фактов в `aiw-ru validate`: снятые оговорки, новые имена, числа словами, месяцы и слова-претензии. Код написан заново и без морфологии (pymorphy3 и razdel детектору недоступны): на словарях и регистре букв, со стопками оговорок и семействами синонимов. Оттуда же идеи проверки правки свежим агентом, который видит только исходник, итог и задание (`references/review.md`), теста на переносимость в SKILL.md и примет детектора «почерк модели» (`model-idiolect`), «обвязка ответа чата» (`chat-wrapper`) и «текст оборван на полуслове» (`truncated`). Тексты, словари и замеры на LLMTrace свои.
 
 «Антиплагиат» — товарный знак АО «Антиплагиат». Проект с ним не связан, использует только публично известные сведения о том, как устроен отчёт, и не воспроизводит его классификатор. Уровни признаков ИИ, версия модели в отчёте и цифры точности взяты из новостей разработчика за 2026 год, ссылки на них — в `skills/antiplagiat/references/antiplagiat.md`.
+
+С «Думейтом» (domate.ru) проект тоже не связан: сведения о его тепловой карте взяты из публикаций разработчика и проверок автора проекта, они собраны в `docs/domate.md` и `skills/antiplagiat/references/domate.md`.

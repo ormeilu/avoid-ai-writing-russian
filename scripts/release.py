@@ -31,6 +31,7 @@ from versions import (
     read_text,
     read_versions,
     utf8_output,
+    write_release_date,
     write_text,
     write_versions,
 )
@@ -132,6 +133,7 @@ def main(args: list[str]) -> int:
     sh("uv", "run", "--group", "dev", "--group", "train", "pytest")
     write_text(changelog_path, changelog)
     write_versions(next_version)
+    write_release_date(date)
     # uv.lock хранит версию проекта; без обновления `uv run --locked` в CI откажет.
     # check_versions.py сверяет и его.
     sh("uv", "lock")
