@@ -2,6 +2,7 @@
 
 import json
 import math
+import re
 from collections.abc import Callable
 
 import pytest
@@ -10,6 +11,7 @@ from aiw_ru import DEFAULT_MODEL, antiplagiat
 from aiw_ru.antiplagiat import (
     Calibration,
     CalibrationFile,
+    HeatMapError,
     Sample,
     empty_calibration_file,
     marked_fragments,
@@ -46,14 +48,80 @@ def test_heatmap_list_and_object_red_only():
     "raw",
     [
         pytest.param("Обычный текст из отчёта.\n\nВторой кусок.", id="текст"),
-        pytest.param("[не json", id="битый JSON"),
-        pytest.param('{"share": 0.4}', id="объект без fragments"),
-        pytest.param('[{"text": "без уровня"}]', id="фрагмент без уровня"),
+        pytest.param("[не json", id="скобка и текст"),
+        pytest.param("[1] Кладовщик сверил остатки с накладной и нашёл две лишние коробки.", id="ссылка в начале"),
+        pytest.param("", id="пустой файл"),
+        pytest.param('[{"level": 3, "text": "обрыв', id="оборванный JSON"),
+        pytest.param('{"fragments": [}', id="лишняя скобка"),
     ],
 )
 def test_heatmap_not_recognized(raw: str):
-    """не тепловая карта — None, файл читается как текст"""
+    """не разбирается как JSON — None, файл читается как текст, как до проверки формата карты"""
     assert marked_from_heatmap(raw) is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param("[]", id="пустой список"),
+        pytest.param('{"share": 0, "fragments": []}', id="объект без фрагментов"),
+        pytest.param('  \n[{"level": 2, "text": "оранжевый", "pages": [1, 2]}]', id="только оранжевый"),
+    ],
+)
+def test_heatmap_without_red_is_empty(raw: str):
+    """карта без красных фрагментов — пустая разметка: отчёт без подсветки ИИ"""
+    assert marked_from_heatmap(raw) == []
+
+
+@pytest.mark.parametrize(
+    ("raw", "reason"),
+    [
+        pytest.param(
+            '[{"level": "bad", "text": "т"}]', 'фрагмент 1: level — 1, 2 или 3, а не "bad"', id="level словом"
+        ),
+        pytest.param('[{"level": 4, "text": "т"}]', "фрагмент 1: level — 1, 2 или 3, а не 4", id="level больше 3"),
+        pytest.param('[{"level": 0, "text": "т"}]', "фрагмент 1: level — 1, 2 или 3, а не 0", id="level 0"),
+        pytest.param('[{"level": 2.5, "text": "т"}]', "фрагмент 1: level — 1, 2 или 3, а не 2.5", id="level дробный"),
+        pytest.param('[{"level": 3, "text": "т"}, {"text": "т"}]', "фрагмент 2: нет поля level", id="без уровня"),
+        pytest.param('[{"level": 3}]', "фрагмент 1: нет поля text", id="без текста"),
+        pytest.param('[{"level": 3, "text": 5}]', "фрагмент 1: text — строка, а не 5", id="text число"),
+        pytest.param('[{"level": 3, "text": "т", "pages": "1"}]', "фрагмент 1: pages", id="pages строкой"),
+        pytest.param('["красный"]', 'фрагмент 1: не объект {"level", "text"}, а "красный"', id="строка"),
+        pytest.param("[1]", "фрагмент 1: не объект", id="число вместо объекта"),
+        pytest.param('{"share": 0.4}', "нет списка fragments", id="объект без fragments"),
+        pytest.param('{"fragments": "текст"}', "нет списка fragments", id="fragments не список"),
+    ],
+)
+def test_heatmap_broken_raises(raw: str, reason: str):
+    """разобранный JSON, который не проходит формат тепловой карты, — ошибка с причиной, а не текстовая разметка"""
+    with pytest.raises(HeatMapError, match=re.escape(reason)):
+        marked_from_heatmap(raw)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param('[{"level": "3", "text": "красный"}]', ["красный"], id="уровень строкой"),
+        pytest.param('[{"level": 3.0, "text": "красный"}]', ["красный"], id="уровень 3.0"),
+        pytest.param('[{"level": 3, "text": "красный", "pages": ["2"]}]', ["красный"], id="страница строкой"),
+        pytest.param(
+            '{"share": 0.38, "fragments": [{"level": 3, "pages": [1, 2], "text": "красный"}], "extra": 1}',
+            ["красный"],
+            id="лишнее поле",
+        ),
+    ],
+)
+def test_heatmap_lenient_types_still_read(raw: str, expected: list[str]):
+    """что читалось до проверки формата карты, читается и теперь: числа строкой, 3.0, лишние поля"""
+    assert marked_from_heatmap(raw) == expected
+
+
+def test_heatmap_error_shows_long_value_shortened():
+    """длинное неверное значение в сообщении обрезается"""
+    with pytest.raises(HeatMapError) as error:
+        marked_from_heatmap(json.dumps([{"level": "x" * 200, "text": "т"}]))
+    assert len(str(error.value)) < 120
+    assert str(error.value).endswith("…")
 
 
 # ─── сопоставление с документом ─────────────────────────────────────────

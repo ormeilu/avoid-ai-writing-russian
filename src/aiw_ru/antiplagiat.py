@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from aiw_ru.compat import fixed, jsre, num_str, to_fixed, total, trim
 from aiw_ru.detect import WEIGHTS, Internals, analyze_internal
@@ -803,32 +803,72 @@ def label_fragments(source: str, marked: list[str]) -> list[Sample]:
 
 
 class HeatFragment(Record):
-    """Фрагмент тепловой карты отчёта: уровень 3 — красный, 2 — оранжевый, 1 — жёлтый."""
+    """Фрагмент тепловой карты отчёта: уровень 3 — красный, 2 — оранжевый, 1 — жёлтый.
 
-    level: int
+    Типы проверяются нестрого, как до проверки формата карты: уровень `"3"` или `3.0` читается как 3.
+    """
+
+    level: int = Field(ge=1, le=3)
     text: str
     pages: list[int] = Field(default_factory=list)
 
 
+# Что ждёт поле фрагмента: для сообщения об ошибке в карте.
+HEAT_FIELDS = {"level": "1, 2 или 3", "text": "строка", "pages": "список номеров страниц"}
+# Сколько знаков неверного значения показывать в сообщении.
+SHOWN_VALUE_CHARS = 60
+
+
+class HeatMapError(ValueError):
+    """JSON разобран, но это не тепловая карта: нет списка фрагментов, неверный уровень, текст или страницы."""
+
+
+def _shown(value: object) -> str:
+    shown = json.dumps(value, ensure_ascii=False)
+    return shown if len(shown) <= SHOWN_VALUE_CHARS else shown[: SHOWN_VALUE_CHARS - 1] + "…"
+
+
+def _heat_fragment(item: object, number: int) -> HeatFragment:
+    where = f"фрагмент {number}"
+    if not isinstance(item, dict):
+        raise HeatMapError(f'{where}: не объект {{"level", "text"}}, а {_shown(item)}')
+    try:
+        return HeatFragment.model_validate(item)
+    except ValidationError as error:
+        first = error.errors()[0]
+        field = str(first["loc"][0])
+        if first["type"] == "missing":
+            raise HeatMapError(f"{where}: нет поля {field}") from None
+        raise HeatMapError(f"{where}: {field} — {HEAT_FIELDS[field]}, а не {_shown(item.get(field))}") from None
+
+
 def marked_from_heatmap(raw: str, min_level: int = HEAT_RED) -> list[str] | None:
-    """Куски из тепловой карты в JSON; None, если это не она.
+    """Куски из тепловой карты в JSON; None, если файл не разбирается как JSON и читается как текст.
 
     Тепловая карта — список `{"level", "text"}` или объект с ним в поле `fragments` (так его
     отдаёт скрипт из `skills/antiplagiat/references/domate.md`). По умолчанию берутся только
-    красные фрагменты: в «Думейте» только они входят в процент ИИ-текста.
+    красные фрагменты: в «Думейте» только они входят в процент ИИ-текста. Пустой список —
+    отчёт без подсветки, все фрагменты документа человеческие.
+
+    Если JSON разобрался, но не проходит формат карты (нет `fragments`, уровень не 1–3, текста нет
+    или он не строка), поднимается HeatMapError: прочитанная как текст, такая карта дала бы калибровке
+    одни человеческие метки. Текстовый файл с фрагментами целиком JSON не бывает, поэтому в эту
+    ветку не попадает, даже если начинается со скобки («[1] Иванов…»).
     """
-    head = raw.lstrip()[:1]
-    if head not in ("[", "{"):
+    stripped = raw.strip()
+    if not stripped.startswith(("[", "{")):
         return None
     try:
-        data = json.loads(raw)
-        if isinstance(data, dict):
-            data = data.get("fragments")
-        if not isinstance(data, list):
-            return None
-        items = [HeatFragment.model_validate(item) for item in data]
-    except ValueError:
+        data = json.loads(stripped)
+    except json.JSONDecodeError:
         return None
+    if isinstance(data, dict):
+        data = data.get("fragments")
+        if not isinstance(data, list):
+            raise HeatMapError("в объекте нет списка fragments")
+    if not isinstance(data, list):
+        return None
+    items = [_heat_fragment(item, number) for number, item in enumerate(data, 1)]
     return [item.text for item in items if item.level >= min_level]
 
 

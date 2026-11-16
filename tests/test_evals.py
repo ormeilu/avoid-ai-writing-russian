@@ -7,7 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from grade import EvalCase, extract_final, grade
+import pytest
+from grade import Checks, EvalCase, extract_final, grade
 from run import build_prompt, load_cases
 
 from aiw_ru.compat import jsre
@@ -177,6 +178,48 @@ def test_golden_changed_quote_fails() -> None:
 def test_missing_final_fails_for_edit() -> None:
     """ответ без итогового текста — провал для правки"""
     assert "в ответе нет раздела «Итоговый текст»" in grade(by_id("vak-protected"), "Всё хорошо.").failures
+
+
+def only_check(checks: Checks) -> EvalCase:
+    """Случай с одной проверкой: ничто другое не требует итогового текста."""
+    return {
+        "id": "only-check",
+        "skill": "avoid-ai-writing-russian",
+        "request": "Убери хэштеги.",
+        "input": "Склад переехал в новое здание. #склад",
+        "checks": checks,
+    }
+
+
+FINAL_WITH_TAG = "**Итоговый текст:**\n\nСклад переехал в новое здание. #склад"
+FINAL_CLEAN = "**Итоговый текст:**\n\nСклад переехал в новое здание."
+
+
+@pytest.mark.parametrize(
+    ("checks", "response", "failure"),
+    [
+        pytest.param(
+            {"maxHashtags": 0}, "Готово #склад", "в ответе нет раздела «Итоговый текст»", id="хэштеги без итога"
+        ),
+        pytest.param({"maxHashtags": 0}, FINAL_WITH_TAG, "хэштегов 1, допустимо 0", id="хэштег в итоге"),
+        pytest.param({"maxGrowth": 0}, "Готово", "в ответе нет раздела «Итоговый текст»", id="рост без итога"),
+    ],
+)
+def test_zero_limit_is_still_a_check(checks: Checks, response: str, failure: str) -> None:
+    """отрицательный эталон: ограничение 0 — тоже проверка, ответ без итога или с хэштегом не проходит"""
+    g = grade(only_check(checks), response)
+    assert not g.passed
+    assert failure in g.failures
+
+
+def test_zero_hashtags_clean_final_passes() -> None:
+    """итог без хэштегов проходит maxHashtags: 0"""
+    assert grade(only_check({"maxHashtags": 0}), FINAL_CLEAN).failures == []
+
+
+def test_disabled_flag_needs_no_final() -> None:
+    """флаг false проверку выключает: итог не нужен"""
+    assert grade(only_check({"noNewNumbers": False}), "Готово").failures == []
 
 
 def test_golden_antiplagiat_asks_reports() -> None:

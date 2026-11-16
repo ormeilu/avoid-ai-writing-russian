@@ -167,6 +167,45 @@ def test_fail_above(cli: Cli):
     assert cli("scan", "--fail-above", "50", HUMAN_BLOG).code == 0
 
 
+@pytest.mark.parametrize(
+    ("files", "threshold", "code"),
+    [
+        pytest.param([AI_BLOG], "0", 1, id="один документ выше порога"),
+        pytest.param([HUMAN_BLOG], "50", 0, id="один документ ниже порога"),
+        pytest.param([HUMAN_BLOG, AI_BLOG], "50", 1, id="второй из двух выше порога"),
+        pytest.param([HUMAN_BLOG, HUMAN_BLOG], "50", 0, id="оба ниже порога"),
+    ],
+)
+def test_fail_above_same_code_in_every_output(cli: Cli, files: list[str], threshold: str, code: int):
+    """--fail-above: тот же код выхода в таблице, JSON и JSONL, а JSONL печатает все документы"""
+    stream = "\n".join(json.dumps({"text": Path(file).read_text(encoding="utf-8")}) for file in files)
+    assert cli("scan", "--fail-above", threshold, *files).code == code
+    assert cli("scan", "--json", "--fail-above", threshold, *files).code == code
+    batch = cli("scan", "--jsonl", "--fail-above", threshold, stdin=stream)
+    assert batch.code == code
+    assert len(rows(batch.out)) == len(files)
+
+
+def test_jsonl_fail_above_without_documents(cli: Cli):
+    """--jsonl --fail-above без документов: код 0, вывода нет"""
+    r = cli("scan", "--jsonl", "--fail-above", "0", stdin="\n\n")
+    assert r.code == 0
+    assert r.out == ""
+
+
+def test_jsonl_without_fail_above_keeps_exit_0(cli: Cli):
+    """--jsonl без --fail-above: код 0 при любой оценке"""
+    assert cli("scan", "--jsonl", stdin=json.dumps({"text": Path(AI_BLOG).read_text(encoding="utf-8")})).code == 0
+
+
+def test_jsonl_bad_line_wins_over_fail_above(cli: Cli):
+    """--jsonl --fail-above: ошибка в строке входа — код 2, даже если документ до неё выше порога"""
+    stream = f'{json.dumps({"text": Path(AI_BLOG).read_text(encoding="utf-8")})}\n{{"body": 1}}'
+    r = cli("scan", "--jsonl", "--fail-above", "0", stdin=stream)
+    assert r.code == 2
+    assert "строка 2" in r.err
+
+
 def test_antiplagiat(cli: Cli):
     """antiplagiat"""
     r = cli("antiplagiat", AI_BLOG)
@@ -522,6 +561,40 @@ def test_config_flag_and_env(cli: Cli, tmp_path: Path):
     assert without["model"] == "default"
 
 
+@pytest.mark.parametrize("output", [[], ["--json"], ["--jsonl"]], ids=["таблица", "json", "jsonl"])
+@pytest.mark.parametrize("source", ["--config", "$AIW_RU_CONFIG"])
+def test_antiplagiat_named_config_missing_exit_2(cli: Cli, tmp_path: Path, source: str, output: list[str]):
+    """antiplagiat: файл калибровки из --config или $AIW_RU_CONFIG не найден — код 2, а не оценка без калибровки"""
+    missing = tmp_path / "нет" / "aiw-ru.json"
+    text = AI_VAK.read_text(encoding="utf-8")
+    stdin = json.dumps({"text": text}) if output == ["--jsonl"] else text
+    if source == "--config":
+        r = cli("antiplagiat", *output, "--config", str(missing), stdin=stdin)
+    else:
+        r = cli("antiplagiat", *output, stdin=stdin, env={"AIW_RU_CONFIG": str(missing)})
+    assert r.code == 2
+    assert r.out == ""
+    assert f"нет файла калибровки {missing} из {source}" in r.err
+    assert "calibrate" in r.err
+    assert not missing.exists()
+
+
+def test_antiplagiat_without_named_config_uses_default(cli: Cli):
+    """antiplagiat без --config и $AIW_RU_CONFIG и без файлов по умолчанию: модель по умолчанию, код 0"""
+    r = cli("antiplagiat", "--json", str(AI_VAK))
+    assert r.code == 0
+    assert json.loads(r.out)["model"] == "default"
+
+
+def test_calibrate_creates_missing_named_config(cli: Cli, tmp_path: Path):
+    """calibrate создаёт файл, которого ещё нет, по --config: это не ошибка, как у antiplagiat"""
+    doc = tmp_path / "doc.md"
+    doc.write_text(AI_VAK.read_text(encoding="utf-8"), encoding="utf-8")
+    config = tmp_path / "новая.json"
+    assert cli("calibrate", "--doc", str(doc), "--share", "10", "--config", str(config)).code == 0
+    assert json.loads(config.read_text(encoding="utf-8"))["documents"]
+
+
 def test_calibrate_writes_to_config_from_env(cli: Cli, tmp_path: Path):
     """calibrate пишет в $AIW_RU_CONFIG — в тот же файл, откуда читает antiplagiat"""
     doc = tmp_path / "doc.md"
@@ -562,6 +635,187 @@ def test_broken_calibration_file_clear_error(cli: Cli, tmp_path: Path):
     r = cli("antiplagiat", str(AI_VAK), cwd=tmp_path)
     assert r.code == 2
     assert "калибровку" in r.err
+
+
+@pytest.fixture
+def report_doc(tmp_path: Path) -> Path:
+    """Документ для калибровки: ИИ-текст и человеческий в жанре ВАК подряд."""
+    doc = tmp_path / "doc.md"
+    doc.write_text(f"{AI_VAK.read_text(encoding='utf-8')}\n\n{HUMAN_VAK.read_text(encoding='utf-8')}", encoding="utf-8")
+    return doc
+
+
+BROKEN_HEATMAPS = [
+    pytest.param('[{"level": "bad", "text": "Уровень словом"}]', "level", id="level не число"),
+    pytest.param('{"fragements": []}', "fragments", id="опечатка в fragments"),
+    pytest.param('[{"level": 3, "pages": [1]}]', "нет поля text", id="фрагмент без текста"),
+]
+
+
+@pytest.mark.parametrize(("heat", "reason"), BROKEN_HEATMAPS)
+def test_calibrate_rejects_broken_heatmap(cli: Cli, tmp_path: Path, report_doc: Path, heat: str, reason: str):
+    """calibrate: неверная тепловая карта — код 2 с причиной, файл калибровки не создаётся"""
+    marked = tmp_path / "heat.json"
+    marked.write_text(heat, encoding="utf-8")
+    config = tmp_path / "cal.json"
+    r = cli("calibrate", "--doc", str(report_doc), "--marked", str(marked), "--config", str(config))
+    assert r.code == 2
+    assert f"не удалось прочитать тепловую карту {marked}" in r.err
+    assert reason in r.err
+    assert not config.exists()
+
+
+def test_calibrate_broken_heatmap_keeps_existing_calibration(cli: Cli, tmp_path: Path, report_doc: Path):
+    """неверная карта во втором отчёте того же вызова не трогает накопленную калибровку"""
+    good = tmp_path / "heat.json"
+    good.write_text(json.dumps([{"level": 3, "text": AI_VAK.read_text(encoding="utf-8").split("\n\n")[1]}]))
+    broken = tmp_path / "broken.json"
+    broken.write_text('[{"level": 7, "text": "Такого уровня нет"}]', encoding="utf-8")
+    config = tmp_path / "cal.json"
+    assert cli("calibrate", "--doc", str(report_doc), "--marked", str(good), "--config", str(config)).code == 0
+    before = config.read_bytes()
+    pair_args = ["--doc", str(report_doc), "--marked", str(good), "--doc", str(report_doc), "--marked", str(broken)]
+    r = cli("calibrate", *pair_args, "--config", str(config))
+    assert r.code == 2
+    assert "level" in r.err
+    assert config.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "heat", ["[]", '{"share": 0, "fragments": []}'], ids=["пустой список", "объект без фрагментов"]
+)
+def test_calibrate_empty_heatmap_is_human_report(cli: Cli, tmp_path: Path, report_doc: Path, heat: str):
+    """пустая тепловая карта — отчёт без подсветки: все фрагменты человеческие, код 0, без предупреждения"""
+    marked = tmp_path / "heat.json"
+    marked.write_text(heat, encoding="utf-8")
+    config = tmp_path / "cal.json"
+    r = cli(
+        "calibrate", "--system", "domate", "--doc", str(report_doc), "--marked", str(marked), "--config", str(config)
+    )
+    assert r.code == 0
+    assert "не найден в документе" not in r.out
+    samples = json.loads(config.read_text(encoding="utf-8"))["systems"]["domate"]["samples"]
+    assert samples
+    assert {sample["y"] for sample in samples} == {0}
+
+
+@pytest.mark.parametrize("command", ["validate", "judge score"])
+def test_broken_heatmap_rejected_by_validate_and_judge(cli: Cli, tmp_path: Path, report_doc: Path, command: str):
+    """validate и judge score с неверной тепловой картой в --marked — код 2, а не разметка из текста карты"""
+    marked = tmp_path / "heat.json"
+    marked.write_text('[{"text": "Фрагмент без уровня"}]', encoding="utf-8")
+    answers = tmp_path / "answers.txt"
+    answers.write_text("1: low", encoding="utf-8")
+    args = (
+        ["validate", str(report_doc), str(report_doc)]
+        if command == "validate"
+        else ["judge", "score", str(report_doc), "--answers", str(answers)]
+    )
+    r = cli(*args, "--marked", str(marked))
+    assert r.code == 2
+    assert "нет поля level" in r.err
+
+
+def test_calibrate_truncated_heatmap_read_as_text(cli: Cli, tmp_path: Path, report_doc: Path):
+    """неразобранный JSON (оборванный heat.json) читается как текст, как раньше: код 0 и предупреждение"""
+    marked = tmp_path / "heat.json"
+    marked.write_text(
+        '{"share": 0.4, "fragments": [{"level": 3, "pages": [1], "text": "Карта оборвана', encoding="utf-8"
+    )
+    r = cli("calibrate", "--doc", str(report_doc), "--marked", str(marked), "--config", str(tmp_path / "cal.json"))
+    assert r.code == 0
+    assert "не найден в документе" in r.out
+
+
+# ─── цикл калибровки по личным отчётам ──────────────────────────────────
+
+
+def old_calibration_file() -> dict[str, Any]:
+    """Файл прежней версии: «Антиплагиат» в полях верхнего уровня, «Думейт» в systems."""
+    model = {"bias": -2.0, "weights": [0.3, 1.9, 0.75, 0.16, 0.15, 1.05, 1.0], "threshold": 0.5}
+    return {
+        "version": 1,
+        "model": model,
+        "samples": [{"f": [0.1] * 7, "y": 1}, {"f": [0.0] * 7, "y": 0}],
+        "documents": [],
+        "systems": {"domate": {"model": model, "samples": [{"f": [0.2] * 7, "y": 1}], "documents": []}},
+    }
+
+
+def test_personal_reports_calibration_cycle(cli: Cli, tmp_path: Path):
+    """весь цикл по личным отчётам: старый файл калибровки, heat.json «Думейта», текстовая разметка
+    «Антиплагиата», antiplagiat с калибровкой; ошибочные и читающие вызовы не меняют файл ни на байт"""
+    ai = AI_VAK.read_text(encoding="utf-8")
+    paragraphs = ai.split("\n\n")
+    doc = tmp_path / "glava1.md"
+    doc.write_text(f"{HUMAN_VAK.read_text(encoding='utf-8')}\n\n{ai}", encoding="utf-8")
+    # Скилл советует калибровать в ~/.config/aiw-ru.json: antiplagiat читает этот файл и без --config.
+    config = Path.home() / ".config" / "aiw-ru.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps(old_calibration_file()), encoding="utf-8")
+    old = old_calibration_file()
+
+    # Тепловая карта в том виде, в каком её отдаёт скрипт из skills/antiplagiat/references/domate.md.
+    heat = tmp_path / "heat.json"
+    fragments = [
+        {"level": 3, "pages": [1], "text": paragraphs[1]},
+        {"level": 2, "pages": [1, 2], "text": paragraphs[2]},
+    ]
+    heat.write_text(json.dumps({"share": 0.38, "fragments": fragments}, ensure_ascii=False), encoding="utf-8")
+    domate = cli("calibrate", "--system", "domate", "--doc", str(doc), "--marked", str(heat), "--config", str(config))
+    assert domate.code == 0, domate.err
+    saved = json.loads(config.read_text(encoding="utf-8"))
+    assert saved["samples"] == old["samples"]
+    assert saved["systems"]["domate"]["samples"][:1] == old["systems"]["domate"]["samples"]
+    assert [sample["y"] for sample in saved["systems"]["domate"]["samples"][1:]] == [0, 0, 0, 1, 0]
+
+    # Сильные признаки из отчёта «Антиплагиата», выписанные текстом через пустую строку.
+    strong = tmp_path / "glava1-ai.txt"
+    strong.write_text(f"{paragraphs[1]}\n\n{paragraphs[2]}\n", encoding="utf-8")
+    antiplagiat_cal = cli("calibrate", "--doc", str(doc), "--marked", str(strong), "--config", str(config))
+    assert antiplagiat_cal.code == 0, antiplagiat_cal.err
+    assert "не найден в документе" not in antiplagiat_cal.out
+    saved = json.loads(config.read_text(encoding="utf-8"))
+    assert saved["samples"][:2] == old["samples"]
+    assert sum(sample["y"] for sample in saved["samples"][2:]) >= 1
+    assert len(saved["systems"]["domate"]["samples"]) == 6
+    # Прежние поля верхнего уровня на месте: старые версии aiw-ru читают файл как раньше.
+    assert {"version", "model", "samples", "documents", "systems"} <= set(saved)
+
+    calibrated = config.read_bytes()
+    answers = tmp_path / "r1.txt"
+    answers.write_text("1: none\n2: none\n3: none\n4: high\n5: medium", encoding="utf-8")
+    reading = [
+        ["antiplagiat", "--json", str(doc)],
+        ["antiplagiat", "--json", "--system", "domate", str(doc)],
+        ["validate", str(doc), str(doc), "--marked", str(heat)],
+        ["validate", str(doc), str(doc), "--marked", str(strong)],
+        ["judge", "score", str(doc), "--answers", str(answers), "--marked", str(heat)],
+        ["judge", "score", str(doc), "--answers", str(answers), "--marked", str(strong)],
+    ]
+    for args in reading:
+        r = cli(*args)
+        assert r.code != 2, (args, r.err)
+        assert config.read_bytes() == calibrated, args
+    assert json.loads(cli("antiplagiat", "--json", str(doc)).out)["model"] == "calibrated"
+    assert json.loads(cli("antiplagiat", "--json", "--system", "domate", str(doc)).out)["model"] == "calibrated"
+
+    broken = tmp_path / "broken.json"
+    broken.write_text('{"share": 0.4, "fragments": [{"level": "высокий", "text": "Уровень словом"}]}', encoding="utf-8")
+    failing = [
+        ["calibrate", "--system", "domate", "--doc", str(doc), "--marked", str(broken), "--config", str(config)],
+        ["calibrate", "--doc", str(doc), "--marked", str(strong), "--doc", str(doc), "--marked", str(broken)],
+        ["calibrate", "--doc", str(doc), "--marked", str(tmp_path / "нет.txt"), "--config", str(config)],
+        ["calibrate", "--doc", str(tmp_path / "нет.md"), "--marked", str(strong), "--config", str(config)],
+        ["calibrate", "--doc", str(doc), "--share", "150", "--config", str(config)],
+        ["antiplagiat", "--config", str(tmp_path / "нет.json"), str(doc)],
+        ["validate", str(doc), str(doc), "--marked", str(broken)],
+        ["judge", "score", str(doc), "--answers", str(answers), "--marked", str(broken)],
+    ]
+    for args in failing:
+        r = cli(*args)
+        assert r.code == 2, (args, r.out)
+        assert config.read_bytes() == calibrated, args
 
 
 # ─── таблицы rich ───────────────────────────────────────────────────────

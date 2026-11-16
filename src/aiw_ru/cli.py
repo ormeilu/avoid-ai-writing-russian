@@ -1,6 +1,6 @@
 """aiw-ru — командная строка детектора.
 
-    aiw-ru scan [файл…] [--context РЕЖИМ] [--json | --jsonl] [--min P0|P1|P2]
+    aiw-ru scan [файл…] [--context РЕЖИМ] [--json | --jsonl] [--min P0|P1|P2] [--fail-above N]
     aiw-ru antiplagiat [файл] [--system СИСТЕМА] [--config ПУТЬ] [--explain] [--json | --jsonl]
     aiw-ru validate ИСХОДНЫЙ ИСПРАВЛЕННЫЙ [--context РЕЖИМ] [--marked ФАЙЛ] [--json]
     aiw-ru calibrate --doc ФАЙЛ (--marked ФАЙЛ | --share ДОЛЯ) [--doc … ] [--system СИСТЕМА] [--config ПУТЬ]
@@ -44,6 +44,7 @@ from aiw_ru.antiplagiat import (
     Calibration,
     CalibrationFile,
     Fragment,
+    HeatMapError,
     Model,
     System,
     antiplagiat,
@@ -78,7 +79,8 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
                                ещё и назвать абзацы под красной подсветкой отчёта без правки
   calibrate --doc Ф --marked Ф подстроить модель antiplagiat под ваши отчёты: документ и файл
                                с фрагментами, которые отчёт подсветил как ИИ (текст через пустую
-                               строку или тепловая карта в JSON: из неё берутся красные фрагменты)
+                               строку или тепловая карта в JSON: из неё берутся красные фрагменты;
+                               карта не по формату — код 2, калибровка не меняется)
   calibrate --doc Ф --share N  то же, если известна только итоговая доля ИИ из отчёта, %
   judge [файл]                 задание для слепого судьи: свежий агент без контекста оценивает
                                пронумерованные фрагменты по шкале none/low/medium/high
@@ -110,8 +112,10 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
   --jsonl           scan, antiplagiat: на входе по документу в строке ({"text": "…"}),
                     на выходе по строке JSON на документ; для прогонов по корпусам
   --min P0|P1|P2    показывать находки не ниже уровня (scan)
-  --fail-above N    scan: код выхода 1, если оценка выше N
-  --config ПУТЬ     файл калибровки (по умолчанию ./.aiw-ru.json, затем ~/.config/aiw-ru.json)
+  --fail-above N    scan: код выхода 1, если оценка выше N (с --jsonl — хотя бы у одного документа)
+  --config ПУТЬ     файл калибровки (по умолчанию $AIW_RU_CONFIG, ./.aiw-ru.json, затем
+                    ~/.config/aiw-ru.json); calibrate создаёт его, а antiplagiat без файла
+                    из --config или $AIW_RU_CONFIG завершается с кодом 2
   --system СИСТЕМА  antiplagiat, calibrate: antiplagiat (по умолчанию) или domate; у каждой
                     системы своя калибровка в том же файле
   --model ИМЯ       scan, antiplagiat, classify: modernbert, transformer, mini-frida или lightgbm
@@ -901,13 +905,22 @@ def scan_json(r: AnalysisResult) -> dict[str, Any]:
 
 def cmd_scan(a: Args) -> int:
     mode = a.context or "general"
+
+    def above(result: AnalysisResult) -> bool:
+        return a.fail_above is not None and result.score > a.fail_above
+
     if a.jsonl:
+        # --fail-above действует и в пакетном режиме: печатаются все документы, код 1 — если хоть один выше порога.
+        failed = False
 
         def one(text: str) -> dict[str, Any]:
+            nonlocal failed
             result = analyze(text, mode)
+            failed = failed or above(result)
             return with_signal(scan_json(result), model_signal(a, text, result))
 
-        return jsonl(a, one)
+        code = jsonl(a, one)
+        return 1 if failed else code
     files = a.files or ["-"]
     texts = [(file, read(file)) for file in files]
     results = [(file, analyze(text, mode)) for file, text in texts]
@@ -920,7 +933,7 @@ def cmd_scan(a: Args) -> int:
         sys.stdout.write(dump(docs[0] if len(docs) == 1 else docs) + "\n")
     fail = False
     for index, ((file, result), sig) in enumerate(zip(results, signals, strict=True)):
-        if a.fail_above is not None and result.score > a.fail_above:
+        if above(result):
             fail = True
         if a.json:
             continue
@@ -994,11 +1007,19 @@ def cmd_scan(a: Args) -> int:
     return 1 if fail else 0
 
 
-def config_path(a: Args) -> str | None:
+def named_config(a: Args) -> tuple[str, str] | None:
+    """Файл калибровки, который назвал пользователь, и откуда взят путь: --config или $AIW_RU_CONFIG."""
     if a.config:
-        return a.config
+        return a.config, "--config"
     if os.environ.get("AIW_RU_CONFIG"):
-        return os.environ["AIW_RU_CONFIG"]
+        return os.environ["AIW_RU_CONFIG"], "$AIW_RU_CONFIG"
+    return None
+
+
+def config_path(a: Args) -> str | None:
+    named = named_config(a)
+    if named:
+        return named[0]
     local = ".aiw-ru.json"
     if os.path.exists(local):
         return local
@@ -1022,6 +1043,14 @@ def load_calibration(path: str | None) -> CalibrationFile | None:
 
 
 def cmd_antiplagiat(a: Args) -> int:
+    named = named_config(a)
+    # Файлов по умолчанию может не быть, а названный пользователем должен найтись: иначе опечатка
+    # в пути молча дала бы оценку без калибровки. calibrate такой файл создаёт.
+    if named and not os.path.exists(named[0]):
+        path, source = named
+        raise UsageError(
+            f"нет файла калибровки {path} из {source}. Его создаёт calibrate; для оценки без калибровки уберите {source}"
+        )
     calibration_file = load_calibration(config_path(a))
     calibration = calibration_file.get(a.system) if calibration_file else None
     model: Model | None = calibration.model if calibration else None
@@ -1180,7 +1209,7 @@ def explain_fragment_block(fragment: Fragment) -> None:
 def cmd_validate(a: Args) -> int:
     if len(a.files) != 2:
         raise UsageError("validate ждёт два файла: исходный и исправленный")
-    marked = split_marked(read(a.judge_marked)) if a.judge_marked else None
+    marked = read_marked(a.judge_marked) if a.judge_marked else None
     result = validate(read(a.files[0]), read(a.files[1]), a.context or "general", marked)
     if a.json:
         sys.stdout.write(dump(result) + "\n")
@@ -1217,11 +1246,22 @@ MARKED_SPLIT_RE = jsre("\\n\\s*(?:---+\\s*)?\\n")
 
 
 def split_marked(text: str) -> list[str]:
-    """Куски из отчёта: тепловая карта в JSON (красные фрагменты) или текст через пустую строку."""
+    """Куски из отчёта: тепловая карта в JSON (красные фрагменты) или текст через пустую строку.
+
+    Неверная тепловая карта поднимает HeatMapError, а не читается как текст.
+    """
     heat = marked_from_heatmap(text)
     if heat is not None:
         return heat
     return [piece for piece in (trim(part) for part in MARKED_SPLIT_RE.split(text)) if piece]
+
+
+def read_marked(file: str | None) -> list[str]:
+    """Разметка отчёта из файла --marked (None — stdin); неверная тепловая карта — ошибка до записи калибровки."""
+    try:
+        return split_marked(read(file))
+    except HeatMapError as error:
+        raise UsageError(f"не удалось прочитать тепловую карту {file or 'stdin'}: {error}") from None
 
 
 def cmd_calibrate(a: Args) -> int:
@@ -1243,7 +1283,7 @@ def cmd_calibrate(a: Args) -> int:
             documents.append(doc_sample)
             rows.append([report.doc, f"доля {ru(report.share)} %", str(len(doc_sample.fragments)), "—"])
             continue
-        marked = split_marked(read(report.marked))
+        marked = read_marked(report.marked)
         labeled = label_fragments(doc, marked)
         positives = sum(1 for sample in labeled if sample.y == 1)
         rows.append([report.doc, report.marked or "", str(len(labeled)), str(positives)])
@@ -1344,7 +1384,7 @@ def cmd_judge_score(a: Args) -> int:
     if not a.answers:
         raise UsageError("judge score ждёт ответы судьи: --answers ФАЙЛ на каждый прогон")
     doc = read(a.files[1])
-    marked = split_marked(read(a.judge_marked)) if a.judge_marked else None
+    marked = read_marked(a.judge_marked) if a.judge_marked else None
     report = judge_score(doc, [read(answers_file) for answers_file in a.answers], marked, a.context or "academic")
     if a.json:
         sys.stdout.write(dump(report) + "\n")

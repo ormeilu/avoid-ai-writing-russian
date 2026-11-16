@@ -99,7 +99,8 @@ def _numbers(s: str) -> list[str]:
 def grade(c: EvalCase, response: str) -> Grade:
     f: list[str] = []
     ch = c["checks"]
-    # Истинность как в JS: пустой список — тоже проверка, а maxHashtags: 0 — нет.
+    # Списки и пределы проверяются, если ключ есть: пустой список и maxHashtags: 0 — тоже проверки.
+    # Флаги включают проверку значением true, false её выключает.
     needs_final = (
         ch.get("preserve") is not None
         or ch.get("forbid") is not None
@@ -107,8 +108,8 @@ def grade(c: EvalCase, response: str) -> Grade:
         or bool(ch.get("unchanged"))
         or bool(ch.get("validate"))
         or bool(ch.get("scoreDrop"))
-        or bool(ch.get("maxGrowth"))
-        or bool(ch.get("maxHashtags"))
+        or ch.get("maxGrowth") is not None
+        or ch.get("maxHashtags") is not None
         or ch.get("finalMatches") is not None
     )
     final = extract_final(response)
@@ -133,7 +134,7 @@ def grade(c: EvalCase, response: str) -> Grade:
             if after >= before:
                 f.append(f"оценка не снизилась: {before} → {after}")
         growth = ch.get("maxGrowth")
-        if growth and len(final) > len(c["input"]) * growth:
+        if growth is not None and len(final) > len(c["input"]) * growth:
             f.append(f"текст вырос в {to_fixed(len(final) / len(c['input']), 1)} раза")
         max_tags = ch.get("maxHashtags")
         if max_tags is not None:
