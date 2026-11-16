@@ -8,6 +8,8 @@ permissions:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    # Обычный прогон занимает минуты; зависший тест иначе держит job до шести часов.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:

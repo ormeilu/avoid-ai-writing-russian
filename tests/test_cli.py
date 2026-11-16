@@ -4,6 +4,7 @@
 там, где проверяется сама точка входа: `python -m aiw_ru`, консольная команда и обрыв канала.
 """
 
+import contextlib
 import io
 import json
 import os
@@ -11,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -1508,15 +1510,28 @@ def test_jsonl_closed_reader_is_not_an_error():
         stderr=subprocess.PIPE,
         env=clean_env(),
     )
-    assert p.stdin is not None and p.stdout is not None and p.stderr is not None
-    # Вход целиком влезает в буфер канала: иначе запись в stdin ждала бы процесс, который сам ждёт читателя.
+    stdin = p.stdin
+    assert stdin is not None and p.stdout is not None and p.stderr is not None
     line = json.dumps({"text": "Давайте разберёмся, это играет ключевую роль."}) + "\n"
-    p.stdin.write(line.encode() * 200)
-    p.stdin.close()
+
+    def feed() -> None:
+        # Вход пишется в отдельном потоке: канал на Windows вмещает около 4 КБ, и запись из основного
+        # потока ждала бы процесс, который сам ждёт, пока прочитают его вывод.
+        try:
+            stdin.write(line.encode() * 200)
+        except OSError:
+            pass
+        finally:
+            with contextlib.suppress(OSError):
+                stdin.close()
+
+    writer = threading.Thread(target=feed, daemon=True)
+    writer.start()
     p.stdout.readline()
     p.stdout.close()
     err = p.stderr.read().decode("utf-8")
     assert p.wait(timeout=60) == 0, err
+    writer.join(timeout=60)
     assert "Traceback" not in err
 
 
