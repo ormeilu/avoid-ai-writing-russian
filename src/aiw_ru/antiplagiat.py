@@ -164,6 +164,10 @@ class AntiplagiatReport(Record):
     # Светофор символов и следов чата, как у scan.
     light: Light
     model: Literal["default", "calibrated"]
+    # Что за число вероятность фрагмента: эвристика с весами, подобранными вручную, или логистическая
+    # модель, подогнанная под отчёты пользователя. Ни то ни другое не проверено как вероятность на
+    # независимых данных (Brier, надёжность по диапазонам).
+    score_kind: Literal["heuristic", "fitted-to-reports"] = "heuristic"
     threshold: float
     # Система, под которую калибровалась модель (`--system`).
     system: System = "antiplagiat"
@@ -532,6 +536,7 @@ def antiplagiat(
         suspicious_reasons=reasons,
         light=result.light,
         model="calibrated" if model else "default",
+        score_kind="fitted-to-reports" if model else "heuristic",
         threshold=active_model.threshold,
         system=system,
         typical_prose=fixed(predict(active_model, TYPICAL_PROSE), 3),

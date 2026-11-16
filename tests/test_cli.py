@@ -464,7 +464,8 @@ def test_validate_warnings_keep_exit_0(cli: Cli, tmp_path: Path):
     files = pair(tmp_path, "Мы сделали сервис мониторинга.", "Мы впервые сделали сервис мониторинга.")
     r = cli("validate", *files)
     assert r.code == 0
-    assert "в порядке" in r.out
+    assert "автоматические проверки пройдены" in r.out
+    assert "Смысл целиком он не проверяет" in " ".join(r.out.split())
     assert re.search(r"Проверить\s+1", r.out)
     assert "утверждение" in r.out
     assert "появилось: впервые" in r.out
@@ -1586,3 +1587,38 @@ def test_meta_names_calibration_fingerprint(cli: Cli, tmp_path: Path):
     assert cli("calibrate", "--replace", "--doc", str(doc), "--share", "40", "--config", str(config)).code == 0
     second = json.loads(cli("antiplagiat", "--json", "--config", str(config), str(doc)).out)["meta"]["calibration"]
     assert second != first
+
+
+# ─── что за число: эвристика, подгонка или классификатор ────────────────
+
+
+def test_antiplagiat_score_kind(cli: Cli, tmp_path: Path):
+    """antiplagiat говорит, чья это оценка: эвристика с весами вручную или модель, подогнанная под отчёты"""
+    plain = json.loads(cli("antiplagiat", "--json", str(AI_VAK)).out)
+    assert (plain["model"], plain["scoreKind"]) == ("default", "heuristic")
+    text = " ".join(cli("antiplagiat", str(AI_VAK), env={"COLUMNS": "200"}).out.split())
+    assert "по умолчанию, без калибровки: веса подобраны вручную" in text
+    doc = tmp_path / "doc.md"
+    doc.write_text(AI_VAK.read_text(encoding="utf-8"), encoding="utf-8")
+    config = tmp_path / "cal.json"
+    assert cli("calibrate", "--doc", str(doc), "--share", "10", "--config", str(config)).code == 0
+    fitted = json.loads(cli("antiplagiat", "--json", "--config", str(config), str(doc)).out)
+    assert (fitted["model"], fitted["scoreKind"]) == ("calibrated", "fitted-to-reports")
+
+
+def test_judge_json_and_score_name_prompt_version(cli: Cli, tmp_path: Path):
+    """judge --json и judge score называют версию задания и документ, а сводка — лишние номера и разногласия"""
+    prompt = json.loads(cli("judge", "--json", str(AI_VAK)).out)
+    assert prompt["promptVersion"] == cli_module.PROMPT_VERSION
+    assert re.fullmatch(r"[0-9a-f]{16}", prompt["documentHash"])
+    first, second = tmp_path / "r1.txt", tmp_path / "r2.txt"
+    first.write_text("# model: свежий агент\nP1 none\nP1 high\nP42 low", encoding="utf-8")
+    second.write_text("P1 high", encoding="utf-8")
+    r = cli("judge", "score", str(AI_VAK), "--answers", str(first), "--answers", str(second), env={"COLUMNS": "200"})
+    out = " ".join(r.out.split())
+    assert f"версия {cli_module.PROMPT_VERSION}, документ {prompt['documentHash']}" in out
+    assert "номера, которых нет в документе: 42" in out
+    assert "два разных ответа, взят первый" in out
+    assert "Прогоны разошлись на два уровня и больше: фрагменты 1" in out
+    data = json.loads(cli("judge", "score", "--json", str(AI_VAK), "--answers", str(first)).out)
+    assert data["runMeta"] == [{"model": "свежий агент"}]

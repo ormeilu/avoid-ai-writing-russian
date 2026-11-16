@@ -17,7 +17,7 @@ from aiw_ru.antiplagiat import (
     marked_fragments,
     marked_from_heatmap,
 )
-from aiw_ru.judge import PROMPT, auc, judge_fragments, judge_prompt, judge_score, parse_answer
+from aiw_ru.judge import PROMPT, PROMPT_VERSION, auc, judge_fragments, judge_prompt, judge_score, parse_answer
 
 Read = Callable[[str], str]
 
@@ -266,3 +266,54 @@ def test_score_without_marked_and_missing(doc: str):
     r = judge_score(doc, ["P1 none\nP2 low"])
     assert r.auc is None and r.detector_auc is None and r.agreement is None
     assert r.missing == [3, 4, 5]
+
+
+# ─── проверяемость судьи ────────────────────────────────────────────────
+
+
+def test_prompt_levels_are_ordinal():
+    """шкала судьи порядковая: без неизмеренных частот вроде «менее 1 % человеческих текстов»"""
+    assert "%" not in PROMPT
+    assert PROMPT_VERSION == 2
+
+
+def test_prompt_json_names_version_and_document(doc: str):
+    """задание в JSON несёт версию задания и отпечаток документа"""
+    from aiw_ru.calibration import doc_fingerprint
+
+    report = judge_score(doc, ["P1 none"])
+    assert (report.prompt_version, report.document_hash) == (PROMPT_VERSION, doc_fingerprint(doc))
+    assert judge_score(doc + "\n\nДописанный абзац.", ["P1 none"]).document_hash != report.document_hash
+
+
+def test_run_reports_coverage_extra_and_duplicates(doc: str):
+    """покрытие ответа, лишние номера, повторы и повторы с разными уровнями видны в сводке"""
+    count = len(fragments(doc))
+    answer = "# model: свежий агент\n# temperature: 0\nP1 high\nP1 low\nP2 none\nP2 none\nP99 medium\n"
+    report = judge_score(doc, [answer])
+    assert report.coverage == [round(2 / count, 3)]
+    assert report.extra == [[99]]
+    assert report.duplicates == [[1, 2]]
+    assert report.conflicts == [[1]]
+    assert report.run_meta == [{"model": "свежий агент", "temperature": "0"}]
+    assert report.fragments[0].levels == [3], "повтор номера берёт первый ответ, как раньше"
+
+
+def test_disagreements_between_runs(doc: str):
+    """фрагменты, где прогоны разошлись на два уровня и больше, перечислены отдельно"""
+    report = judge_score(doc, ["P1 none\nP2 low\nP3 high", "P1 high\nP2 medium\nP3 high"])
+    assert report.disagreements == [1]
+
+
+def test_clean_runs_have_no_problems(doc: str):
+    """полные ответы без повторов: всё покрыто, лишнего и разногласий нет"""
+    answer = "\n".join(f"P{n} none" for n in range(1, len(fragments(doc)) + 1))
+    report = judge_score(doc, [answer, answer])
+    assert report.coverage == [1.0, 1.0]
+    assert (report.extra, report.duplicates, report.conflicts, report.disagreements) == (
+        [[], []],
+        [[], []],
+        [[], []],
+        [],
+    )
+    assert report.run_meta == [{}, {}]

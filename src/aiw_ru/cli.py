@@ -62,7 +62,7 @@ from aiw_ru.calibration import CalibrationConflict, CalibrationError, ReportInpu
 from aiw_ru.categories import TYPE_TO_SECTION
 from aiw_ru.compat import js_round, jsre, num_str, to_fixed, trim
 from aiw_ru.detect import TYPE_LABELS, analyze
-from aiw_ru.judge import judge_fragments, judge_prompt, judge_score
+from aiw_ru.judge import PROMPT_VERSION, judge_fragments, judge_prompt, judge_score
 from aiw_ru.text import cyrillic_share, model_text, plural, words
 from aiw_ru.types import CONTEXT_MODES, PROFILE_TO_MODE, AnalysisResult, ContextMode, Light, Record, Severity
 from aiw_ru.validate import validate
@@ -756,7 +756,8 @@ def _jsonl_rows(lines: Iterator[str], run: Callable[[str], dict[str, Any]]) -> i
     return 0
 
 
-# Вероятность ближе к порогу, чем на столько, модель не решает: помечается «близко к порогу».
+# Вероятность ближе к порогу, чем на столько, модель не решает: помечается «близко к порогу». Это
+# постоянная полоса, а не доверительный интервал: калибровку вероятностей моделей ещё не замеряли.
 NEAR_THRESHOLD = 0.15
 
 
@@ -773,6 +774,8 @@ class Signal:
     cyrillic: float | None = None
     # Строки абзацев не на русском, которые модель не читала: (первая, последняя).
     foreign: tuple[tuple[int, int], ...] = ()
+    # Модель текст прочитала, но язык неясен: короткая строка без опознавательных букв или два языка.
+    uncertain_language: bool = False
 
     @property
     def skipped(self) -> bool:
@@ -816,10 +819,12 @@ def signal(loaded: models.Loaded, text: str, result: AnalysisResult | None = Non
     # Доля по тексту до вырезания абзацев не на русском: её видит пользователь. Решает доля в том, что
     # осталось модели: русские абзацы английского документа модель оценивает.
     share = cyrillic_share(model_text(text))
-    if not models.is_russian(clean):
+    language = models.language(clean)
+    if language == "other":
         return Signal(loaded, None, None, share, foreign)
     reuse = None if foreign else result
-    return Signal(loaded, loaded.probability(clean, reuse), loaded.coverage(clean), share, foreign)
+    probability = loaded.probability(clean, reuse)
+    return Signal(loaded, probability, loaded.coverage(clean), share, foreign, language == "uncertain")
 
 
 # Модели, о старой версии которых уже сказано в этом запуске.
@@ -1075,6 +1080,8 @@ def signal_json(sig: Signal) -> dict[str, Any]:
     return {
         "name": model.name,
         "language": "other" if sig.skipped else "ru",
+        # Язык неясен (короткая строка, два языка), но модель текст прочитала.
+        "languageUncertain": sig.uncertain_language,
         "skipped": sig.skipped,
         "cyrillicShare": None if sig.cyrillic is None else round(sig.cyrillic, 4),
         "probability": None if sig.probability is None else round(sig.probability, 4),
@@ -1083,6 +1090,8 @@ def signal_json(sig: Signal) -> dict[str, Any]:
         "nearThreshold": None if sig.skipped else sig.near_threshold,
         "repo": model.repo,
         "revision": models.revision(model),
+        # Проверена ли вероятность как вероятность (Brier, надёжность по диапазонам) на независимых данных.
+        "calibrationMeasured": models.pinned(model).get("calibration") is not None,
         "outdated": models.outdated(model),
         "read": None if sig.coverage is None else coverage_json(sig.coverage),
         "notRussianLines": [list(line_range) for line_range in sig.foreign],
@@ -1104,6 +1113,11 @@ def skip_fact(sigs: list[Signal]) -> tuple[str, Text]:
     label, what = ("Модель", "не применима") if one else ("Модели", "не применимы")
     if share is None:
         why = f"в нём нет букв (шапка, код и служебные части статьи {'ей' if one else 'им'} не показываются)"
+    elif models.russian(share):
+        why = (
+            "кириллица в нём не русская (украинский, болгарский, сербский или другой язык), а "
+            f"{'модель обучена' if one else 'модели обучены'} на русском"
+        )
     else:
         why = f"кириллицы {js_round(share * 100)} % букв, а {'модель обучена' if one else 'модели обучены'} на русском"
     title = f" ({sigs[0].loaded.model.title})" if one else ""
@@ -1120,6 +1134,8 @@ def signal_fact(sig: Signal, label: str | None = None) -> tuple[str, Text]:
     if label and sig.truncated and sig.coverage is not None:
         source += f", прочитано {read_words(sig.coverage)}"
     label = label or "Вероятность ИИ"
+    if sig.uncertain_language:
+        source += ", язык текста не определён уверенно"
     text = f"{js_round(sig.probability * 100)} % ({source}"
     if sig.near_threshold:
         return (label, Text.styled(text + ", близко к порогу: модель не уверена)", "yellow"))
@@ -1364,7 +1380,8 @@ def cmd_antiplagiat(a: Args) -> int:
                 "Модель",
                 f"откалибрована по вашим отчётам, образцов: {len(system_calibration.samples) if system_calibration else 0}"
                 if report.model == "calibrated"
-                else "по умолчанию, без калибровки",
+                else "по умолчанию, без калибровки: веса подобраны вручную, вероятность фрагмента — оценка эвристики, "
+                "а не проверенная вероятность",
             ),
             *([signal_fact(sig)] if sig is not None else []),
             *read_facts(sig),
@@ -1482,6 +1499,13 @@ def explain_fragment_block(fragment: Fragment) -> None:
     )
 
 
+# Что validate не обещает: его проверки ловят повреждения, но не доказывают, что смысл сохранился.
+VALIDATE_SCOPE = (
+    "validate сверяет код, формулы, числа, цитаты, ссылки, таблицы, оговорки и имена. Смысл целиком он не "
+    "проверяет: отрицания, единицы и роли участников сверяются только предупреждениями, перечитайте правку."
+)
+
+
 def cmd_validate(a: Args) -> int:
     if len(a.files) != 2:
         raise UsageError("validate ждёт два файла: исходный и исправленный")
@@ -1493,7 +1517,7 @@ def cmd_validate(a: Args) -> int:
         rows: list[tuple[str, str | Text]] = [
             (
                 "Сохранность",
-                Text.styled("в порядке", "green")
+                Text.styled("автоматические проверки пройдены", "green")
                 if result.ok
                 else Text.styled(f"нарушена ({len(result.violations)})", "red"),
             )
@@ -1515,6 +1539,8 @@ def cmd_validate(a: Args) -> int:
                 [[Text.styled(warning.kind, "cyan"), warning.detail] for warning in result.warnings],
             )
             note("Код выхода они не меняют: это может быть законной правкой, сверьте с исходником.")
+        out()
+        note(VALIDATE_SCOPE)
     return 0 if result.ok else 1
 
 
@@ -1699,6 +1725,8 @@ def cmd_judge(a: Args) -> int:
         data = {
             "prompt": judge_prompt(text, mode),
             "fragments": [fragment.to_dict() for fragment in judge_fragments(text, mode)],
+            "promptVersion": PROMPT_VERSION,
+            "documentHash": calibration.doc_fingerprint(text),
         }
         sys.stdout.write(dump(data) + "\n")
     else:
@@ -1725,7 +1753,11 @@ def cmd_judge_score(a: Args) -> int:
         return "dim" if mean is None else "red" if mean >= 1.5 else "yellow" if mean >= 0.5 else "green"
 
     heading(a.files[1])
-    rows: list[tuple[str, str | Text]] = [("Прогонов", str(report.runs))]
+    rows: list[tuple[str, str | Text]] = [
+        ("Задание", f"версия {report.prompt_version}, документ {report.document_hash}"),
+        ("Прогонов", str(report.runs)),
+        ("Покрытие", ", ".join(f"{js_round(coverage * 100)} %" for coverage in report.coverage)),
+    ]
     if report.agreement is not None:
         rows.append(("Совпадение прогонов", f"{ru(report.agreement * 100, 0)} % фрагментов"))
     rows.append(("Доля слов", f"medium и выше {ru(report.share_medium, 1)} %, low и выше {ru(report.share_low, 1)} %"))
@@ -1738,6 +1770,20 @@ def cmd_judge_score(a: Args) -> int:
     facts(rows)
     if report.missing:
         warn(f"Нет ответа судьи для фрагментов: {', '.join(map(str, report.missing))}.", "yellow")
+    for index, (extra, conflicts) in enumerate(zip(report.extra, report.conflicts, strict=True), 1):
+        if extra:
+            warn(f"Прогон {index}: номера, которых нет в документе: {', '.join(map(str, extra))}.", "yellow")
+        if conflicts:
+            warn(
+                f"Прогон {index}: на фрагменты {', '.join(map(str, conflicts))} два разных ответа, взят первый.",
+                "yellow",
+            )
+    if report.disagreements:
+        warn(
+            f"Прогоны разошлись на два уровня и больше: фрагменты {', '.join(map(str, report.disagreements))}. "
+            "Их средним не верьте, перечитайте сами.",
+            "yellow",
+        )
     out()
     table(
         [

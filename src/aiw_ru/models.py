@@ -33,7 +33,7 @@ from dataclasses import dataclass, replace
 from functools import cache, lru_cache
 from importlib.util import find_spec
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from aiw_ru.detect import analyze
 from aiw_ru.features import CONTEXT, FEATURE_NAMES, FEATURES_VERSION, features
@@ -59,6 +59,50 @@ RUSSIAN_SHARE = 0.5
 # аннотация или цитата посреди русского текста иначе попадает в русский фрагмент и тянет его вверх.
 # Короткие строки вроде «Python 3.12» или «Results» остаются: русский текст вокруг их перевешивает.
 FOREIGN_LETTERS = 20
+
+# Кириллица ещё не русский язык: украинский, болгарский, сербский и казахский текст модели не оценивают.
+# Буквы других кириллических языков, которых нет в русском.
+FOREIGN_CYRILLIC = frozenset("іїєґўјљњђћџѓќѕәғқңөұүһ")
+# Буквы, которые есть в русском и которых нет в украинском, болгарском и сербском.
+RUSSIAN_ONLY = frozenset("ыэё")
+# Болгарский ъ стоит перед согласной и в конце слова; в русском ъ бывает только перед е, ё, ю, я.
+BULGARIAN_HARD_SIGN_RE = re.compile(r"ъ(?![еёюя])")
+# Болгарские служебные слова, которых в русском нет: «това е», «че», «са», «които».
+BULGARIAN_WORDS = frozenset(
+    {
+        "това",
+        "тези",
+        "че",
+        "са",
+        "ще",
+        "е",
+        "във",
+        "със",
+        "към",
+        "които",
+        "която",
+        "който",
+        "което",
+        "съм",
+        "сме",
+        "сте",
+    }
+)
+CYRILLIC_WORD_RE = re.compile(r"[а-яёіїєґўјљњђћџѓќѕәғқңөұүһ]+")
+# Не меньше стольких примет другого языка: одно имя («Київ») в русском тексте язык не меняет.
+FOREIGN_MIN = 2
+# Доля примет другого языка среди кириллических букв, от которой текст не русский...
+FOREIGN_RATE = 0.01
+# ...если русских букв меньше этой доли или примет другого языка в FOREIGN_DOMINANCE раз больше, чем
+# русских букв (в казахском тоже есть ы). Иначе в тексте два языка, и язык неясен.
+RUSSIAN_RATE = 0.004
+FOREIGN_DOMINANCE = 3
+# Без ы, э и ё на столько кириллических букв русского текста почти не бывает: ы — около 2 % букв.
+NO_RUSSIAN_LETTERS = 400
+# Короче этого, без примет обоих языков, язык не определяется уверенно.
+SHORT_LETTERS = 40
+
+Language = Literal["ru", "other", "uncertain"]
 
 # Серия пропусков от 64 знаков. Так выглядят вырезанные YAML-шапка, код и служебные части: их
 # заменяют пробелами, чтобы номера строк и смещения остались как в исходнике. Правила нормализации
@@ -656,8 +700,8 @@ UNIT = 0.25
 
 
 def _foreign(text: str) -> list[tuple[int, int]]:
-    """Абзацы (строки подряд без пустой между ними), где кириллицы меньше RUSSIAN_SHARE букв, а букв
-    не меньше FOREIGN_LETTERS; отрезки [начало, конец) в text."""
+    """Абзацы (строки подряд без пустой между ними) не на русском: кириллицы меньше RUSSIAN_SHARE букв
+    или язык другой (украинский, болгарский), а букв не меньше FOREIGN_LETTERS; отрезки [начало, конец)."""
     foreign: list[tuple[int, int]] = []
     paragraph: tuple[int, int] | None = None
     pos = 0
@@ -665,8 +709,11 @@ def _foreign(text: str) -> list[tuple[int, int]]:
     def close() -> None:
         if paragraph is None:
             return
-        cyrillic, latin = letter_share(text[paragraph[0] : paragraph[1]])
-        if cyrillic + latin >= FOREIGN_LETTERS and cyrillic / (cyrillic + latin) < RUSSIAN_SHARE:
+        piece = text[paragraph[0] : paragraph[1]]
+        cyrillic, latin = letter_share(piece)
+        if cyrillic + latin >= FOREIGN_LETTERS and (
+            cyrillic / (cyrillic + latin) < RUSSIAN_SHARE or language(piece) == "other"
+        ):
             foreign.append(paragraph)
 
     for line in text.split("\n"):
@@ -709,8 +756,33 @@ def russian(share: float | None) -> bool:
     return share is not None and share >= RUSSIAN_SHARE
 
 
+def language(text: str) -> Language:
+    """Язык текста для моделей: ru, other (латиница, нет букв, другой кириллический язык) или uncertain.
+
+    uncertain — короткий текст без опознавательных букв или текст с приметами двух языков сразу.
+    Русский научный текст с английскими терминами и аббревиатурами остаётся ru: латиница в приметы
+    не входит, а доля кириллицы проверяется отдельно.
+    """
+    if not russian(cyrillic_share(text)):
+        return "other"
+    lower = text.lower()
+    cyrillic, _ = letter_share(lower)
+    foreign = sum(1 for char in lower if char in FOREIGN_CYRILLIC) + len(BULGARIAN_HARD_SIGN_RE.findall(lower))
+    foreign += sum(1 for word in CYRILLIC_WORD_RE.findall(lower) if word in BULGARIAN_WORDS)
+    russian_letters = sum(1 for char in lower if char in RUSSIAN_ONLY)
+    if foreign >= FOREIGN_MIN and foreign >= FOREIGN_RATE * cyrillic:
+        dominant = russian_letters < RUSSIAN_RATE * cyrillic or foreign >= FOREIGN_DOMINANCE * russian_letters
+        return "other" if dominant else "uncertain"
+    if russian_letters == 0 and cyrillic >= NO_RUSSIAN_LETTERS:
+        return "other"
+    if russian_letters == 0 and foreign == 0 and cyrillic < SHORT_LETTERS:
+        return "uncertain"
+    return "ru"
+
+
 def is_russian(text: str) -> bool:
-    return russian(cyrillic_share(text))
+    """Модель может читать текст: язык русский или неясный. Другой язык и текст без букв — нет."""
+    return language(text) != "other"
 
 
 @dataclass(frozen=True, slots=True)
