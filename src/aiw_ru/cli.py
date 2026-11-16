@@ -19,9 +19,11 @@ import errno
 import json
 import math
 import os
+import re
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +35,7 @@ from rich.padding import Padding
 from rich.table import Table
 from rich.text import Text
 
-from aiw_ru import __version__, models, skills
+from aiw_ru import __version__, calibration, models, skills
 from aiw_ru.antiplagiat import (
     DEFAULT_MODEL,
     FEATURE_NAMES,
@@ -41,7 +43,6 @@ from aiw_ru.antiplagiat import (
     TYPICAL_PROSE,
     YELLOW_BAND,
     AntiplagiatReport,
-    Calibration,
     CalibrationFile,
     Fragment,
     HeatMapError,
@@ -49,16 +50,13 @@ from aiw_ru.antiplagiat import (
     System,
     antiplagiat,
     balanced_accuracy,
-    document_sample,
     empty_calibration_file,
-    fit,
-    fit_share,
-    label_fragments,
     marked_from_heatmap,
     predict,
     share_error,
     zone_of,
 )
+from aiw_ru.calibration import CalibrationConflict, CalibrationError, ReportInput
 from aiw_ru.categories import TYPE_TO_SECTION
 from aiw_ru.compat import js_round, jsre, num_str, to_fixed, trim
 from aiw_ru.detect import TYPE_LABELS, analyze
@@ -81,7 +79,9 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
                                с фрагментами, которые отчёт подсветил как ИИ (текст через пустую
                                строку или тепловая карта в JSON: из неё берутся красные фрагменты;
                                карта не по формату — код 2, калибровка не меняется)
-  calibrate --doc Ф --share N  то же, если известна только итоговая доля ИИ из отчёта, %
+  calibrate --doc Ф --share N  то же, если известна только итоговая доля ИИ из отчёта, %;
+                               повтор того же отчёта по той же версии документа пропускается,
+                               отчёт по правленой версии добавляется рядом
   judge [файл]                 задание для слепого судьи: свежий агент без контекста оценивает
                                пронумерованные фрагменты по шкале none/low/medium/high
   judge score Ф --answers A    сводка ответов судьи (--answers на каждый прогон): средний уровень
@@ -118,6 +118,12 @@ USAGE = """aiw-ru — приметы ИИ-стиля в русском текс�
                     из --config или $AIW_RU_CONFIG завершается с кодом 2
   --system СИСТЕМА  antiplagiat, calibrate: antiplagiat (по умолчанию) или domate; у каждой
                     системы своя калибровка в том же файле
+  --replace         calibrate: заменить разметку версии документа, которая уже есть в калибровке
+                    (фрагменты выписаны заново или отчёт сделан новой версией системы)
+  --report-date ДАТА
+                    calibrate: дата отчёта (ГГГГ-ММ-ДД) для предыдущего --doc
+  --system-version ВЕРСИЯ
+                    calibrate: версия модели системы из отчёта для предыдущего --doc
   --model ИМЯ       scan, antiplagiat, classify: modernbert, transformer, mini-frida или lightgbm
                     (по умолчанию первая установленная в этом порядке)
   --no-model        scan, antiplagiat: не показывать вероятность от модели, даже если она есть
@@ -139,6 +145,9 @@ class Report:
     doc: str
     marked: str | None = None
     share: float | None = None
+    # Дата отчёта (ГГГГ-ММ-ДД) и версия модели системы проверки, если их назвали.
+    date: str | None = None
+    system_version: str | None = None
 
 
 @dataclass
@@ -153,6 +162,8 @@ class Args:
     config: str | None = None
     # Пары для calibrate: документ и разметка из отчёта.
     reports: list[Report] = field(default_factory=list)
+    # calibrate: заменить разметку версии документа, которая уже есть в калибровке.
+    replace: bool = False
     no_model: bool = False
     # Модель для вероятности: имя из models.MODELS или None — первая установленная.
     model_name: str | None = None
@@ -251,6 +262,19 @@ def parse(argv: list[str]) -> Args:
         elif arg == "--doc":
             args.reports.append(Report(need(i, arg)))
             i += 1
+        elif arg == "--replace":
+            args.replace = True
+        elif arg in ("--report-date", "--system-version"):
+            value = trim(need(i, arg))
+            i += 1
+            if not args.reports:
+                raise UsageError(f"{arg} относится к предыдущему --doc: сначала --doc ФАЙЛ")
+            if arg == "--report-date":
+                args.reports[-1].date = report_date(value)
+            elif value:
+                args.reports[-1].system_version = value
+            else:
+                raise UsageError("--system-version ждёт непустую версию")
         elif arg in ("--marked", "--share"):
             value = need(i, arg)
             i += 1
@@ -275,6 +299,19 @@ def parse(argv: list[str]) -> Args:
             args.files.append(arg)
         i += 1
     return args
+
+
+DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def report_date(value: str) -> str:
+    """Дата отчёта из --report-date в виде ГГГГ-ММ-ДД."""
+    try:
+        if DATE_RE.fullmatch(value):
+            return date.fromisoformat(value).isoformat()
+    except ValueError:
+        pass
+    raise UsageError(f"--report-date ждёт дату ГГГГ-ММ-ДД: {value}")
 
 
 def read(file: str | None) -> str:
@@ -1027,11 +1064,10 @@ def config_path(a: Args) -> str | None:
     return str(user_config) if user_config.exists() else None
 
 
-def load_calibration(path: str | None) -> CalibrationFile | None:
-    if not path or not os.path.exists(path):
-        return None
+def read_calibration(path: Path) -> calibration.Loaded:
+    """Файл калибровки с байтами на момент чтения; неверный формат — ошибка с полем и причиной."""
     try:
-        return CalibrationFile.model_validate_json(Path(path).read_bytes())
+        return calibration.read_file(path)
     except ValidationError as error:
         first_error = error.errors()[0]
         where = ".".join(map(str, first_error["loc"])) or "файл"
@@ -1040,6 +1076,12 @@ def load_calibration(path: str | None) -> CalibrationFile | None:
         ) from None
     except OSError as error:
         raise UsageError(f"не удалось прочитать калибровку {path}: {error}") from None
+
+
+def load_calibration(path: str | None) -> CalibrationFile | None:
+    if not path or not os.path.exists(path):
+        return None
+    return read_calibration(Path(path)).data
 
 
 def cmd_antiplagiat(a: Args) -> int:
@@ -1264,40 +1306,66 @@ def read_marked(file: str | None) -> list[str]:
         raise UsageError(f"не удалось прочитать тепловую карту {file or 'stdin'}: {error}") from None
 
 
+# Сколько раз calibrate перечитывает файл, если его записал другой процесс, пока шёл расчёт.
+CALIBRATE_ATTEMPTS = 3
+IMPORT_STATUS = {"added": "добавлен", "skipped": "уже в калибровке", "replaced": "заменён"}
+
+
 def cmd_calibrate(a: Args) -> int:
     if not a.reports or any(report.marked is None and report.share is None for report in a.reports):
         raise UsageError("calibrate ждёт для каждого --doc ФАЙЛ разметку: --marked ФАЙЛ или --share ДОЛЯ")
     # Тот же файл, откуда antiplagiat читает калибровку: --config, $AIW_RU_CONFIG,
     # ./.aiw-ru.json, затем ~/.config/aiw-ru.json.
-    path = config_path(a) or ".aiw-ru.json"
-    calibration_file = load_calibration(path if os.path.exists(path) else None) or empty_calibration_file()
-    previous = calibration_file.get(a.system)
-    samples = list(previous.samples) if previous else []
-    documents = list(previous.documents) if previous else []
+    path = Path(config_path(a) or ".aiw-ru.json")
+    # Документы и разметка читаются до файла калибровки: ошибка в них ничего не меняет.
+    inputs = [
+        ReportInput(
+            name=report.doc,
+            text=read(report.doc),
+            marked=read_marked(report.marked) if report.share is None else None,
+            share=report.share,
+            date=report.date,
+            system_version=report.system_version,
+        )
+        for report in a.reports
+    ]
+    # Дата импорта по местному времени пользователя.
+    today = datetime.now(UTC).astimezone().date().isoformat()
+    for _ in range(CALIBRATE_ATTEMPTS):
+        loaded = read_calibration(path)
+        calibration_file = loaded.data or empty_calibration_file()
+        try:
+            result = calibration.import_reports(calibration_file.get(a.system), inputs, today=today, replace=a.replace)
+        except CalibrationError as error:
+            raise UsageError(str(error)) from None
+        if not result.changed:
+            break
+        try:
+            calibration.write_file(path, calibration_file.put(a.system, result.calibration), loaded.raw)
+        except CalibrationConflict:
+            continue
+        except OSError as error:
+            reason = error.strerror or str(error)
+            raise UsageError(f"не удалось записать калибровку {path}: {reason}. Прежний файл не изменён") from None
+        break
+    else:
+        raise UsageError(
+            f"файл калибровки {path} всё время меняет другой процесс: прежние данные сохранены, "
+            "запустите calibrate ещё раз, когда он закончит"
+        )
+
     rows: list[list[str | Text]] = []
     warnings: list[str] = []
-    for report in a.reports:
-        doc = read(report.doc)
-        if report.share is not None:
-            doc_sample = document_sample(doc, report.share)
-            documents.append(doc_sample)
-            rows.append([report.doc, f"доля {ru(report.share)} %", str(len(doc_sample.fragments)), "—"])
-            continue
-        marked = read_marked(report.marked)
-        labeled = label_fragments(doc, marked)
-        positives = sum(1 for sample in labeled if sample.y == 1)
-        rows.append([report.doc, report.marked or "", str(len(labeled)), str(positives)])
-        if marked and positives == 0:
+    for report, outcome in zip(a.reports, result.outcomes, strict=True):
+        markup = f"доля {ru(report.share)} %" if report.share is not None else report.marked or ""
+        positives_cell = "—" if outcome.positives is None else str(outcome.positives)
+        status = Text.styled(IMPORT_STATUS[outcome.status], "dim" if outcome.status == "skipped" else "")
+        rows.append([report.doc, markup, str(outcome.fragments), positives_cell, status])
+        if outcome.unmatched:
             warnings.append(
                 f"{report.doc}: ни один кусок из {report.marked} не найден в документе. Проверьте, что текст "
                 "скопирован из отчёта без правок и документ той же версии."
             )
-        samples.extend(labeled)
-    start = previous.model if previous else DEFAULT_MODEL
-    model = fit_share(fit(samples, start), documents)
-    data = calibration_file.put(a.system, Calibration(model=model, samples=samples, documents=documents))
-    Path(path).write_text(dump(data) + "\n", encoding="utf-8")
-
     heading("Отчёты")
     table(
         [
@@ -1305,11 +1373,14 @@ def cmd_calibrate(a: Args) -> int:
             Col("Разметка", flex=True, min=16),
             Col("Фрагментов", justify="right"),
             Col("Подсвечено ИИ", justify="right"),
+            Col("Импорт"),
         ],
         rows,
     )
     for warning in warnings:
         warn(warning, "yellow")
+    if not result.changed:
+        note("Калибровка не изменилась: эти отчёты по этим версиям документов уже в ней.")
     out()
 
     def pct(value: float) -> str:
@@ -1318,7 +1389,20 @@ def cmd_calibrate(a: Args) -> int:
     def pp(value: float) -> str:
         return "н/д" if math.isnan(value) else f"{ru(value, 1)} п.п."
 
+    current = result.calibration
+    model, samples, documents = current.model, current.samples, current.documents
     positives = sum(1 for sample in samples if sample.y == 1)
+    transfer = calibration.transfer_check(samples)
+    if transfer.accuracy is not None and transfer.default_accuracy is not None:
+        transfer_fact = (
+            f"{pct(transfer.default_accuracy)} → {pct(transfer.accuracy)} на документах, отложенных целиком "
+            f"(документов: {transfer.documents})"
+        )
+    elif transfer.documents < 2:
+        transfer_fact = "не проверен: нужна разметка отчётов хотя бы по двум документам"
+    else:
+        transfer_fact = "не проверен: в отложенных документах нет и ИИ-, и человеческих фрагментов"
+    without_doc = sum(1 for sample in samples if sample.doc is None)
     # Вероятность ровной научной прозы: фрагмент только с типичной длиной предложения.
     typical = predict(model, TYPICAL_PROSE)
     heading("Калибровка")
@@ -1334,10 +1418,20 @@ def cmd_calibrate(a: Args) -> int:
                 else f"{pct(balanced_accuracy(DEFAULT_MODEL, samples))} → {pct(balanced_accuracy(model, samples))}",
             ),
             ("Ошибка доли ИИ", f"{pp(share_error(DEFAULT_MODEL, documents))} → {pp(share_error(model, documents))}"),
+            ("Перенос", transfer_fact),
+            (
+                "Отчёты",
+                f"{len(current.reports)}"
+                + (
+                    f", фрагментов из файла прежней версии, без отпечатка документа: {without_doc}"
+                    if without_doc
+                    else ""
+                ),
+            ),
             ("Порог", ru(model.threshold)),
             ("Ровная проза", Text.styled(f"{js_round(typical * 100)} %", zone_of(typical, model.threshold))),
             ("Веса", "; ".join(f"{FEATURE_NAMES[k]} {ru(weight)}" for k, weight in enumerate(model.weights))),
-            ("Сохранено", path),
+            ("Сохранено", str(path) if result.changed else f"{path} (не изменён)"),
         ]
     )
     out()
@@ -1350,9 +1444,9 @@ def cmd_calibrate(a: Args) -> int:
         )
         out()
     note(
-        "Точность и ошибка посчитаны на тех же отчётах, по которым шла калибровка, и поэтому завышены. Честная "
-        "проверка: замер на отчёте, который в калибровку не входил. Файл содержит фрагменты вашего текста, не "
-        "публикуйте его."
+        "Точность по фрагментам и ошибка доли посчитаны на тех же отчётах, по которым шла калибровка, и поэтому "
+        "завышены. «Перенос» — точность на документах, которые при обучении откладывались целиком: она ближе к "
+        "тому, что будет на новом тексте. Файл содержит признаки фрагментов вашего текста, не публикуйте его."
     )
     return 0
 

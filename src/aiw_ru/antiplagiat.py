@@ -20,7 +20,7 @@ from bisect import bisect_left, bisect_right
 from collections import Counter
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, ValidationError
 
@@ -49,10 +49,20 @@ SYSTEMS: dict[System, tuple[str, str]] = {
 }
 
 
+# Конечное число: NaN и бесконечность в калибровке ломают логит и выбор порога.
+Finite = Annotated[float, Field(allow_inf_nan=False)]
+
+
 class Model(Record):
-    bias: float
-    weights: list[float]
-    threshold: float
+    """Логистическая модель фрагмента: свободный член, по весу на признак и порог вероятности.
+
+    Файл калибровки проверяется до расчёта: числа конечные, весов столько же, сколько признаков,
+    порог строго между 0 и 1.
+    """
+
+    bias: Finite
+    weights: list[Finite] = Field(min_length=len(FEATURE_NAMES), max_length=len(FEATURE_NAMES))
+    threshold: Finite = Field(gt=0, lt=1)
 
 
 DEFAULT_MODEL = Model(bias=-4.4, weights=[1.1, 2.6, 1.4, 0.35, 1.2, 1.3, 1.6], threshold=0.5)
@@ -171,7 +181,11 @@ SPACES_RE = jsre("\\s+", "g")
 
 
 def _sigmoid(z: float) -> float:
-    return 1 / (1 + math.exp(-z))
+    """Логистическая функция без переполнения: exp берётся только от неположительного числа."""
+    if z >= 0:
+        return 1 / (1 + math.exp(-z))
+    exp_z = math.exp(z)
+    return exp_z / (1 + exp_z)
 
 
 def predict(model: Model, f: list[float]) -> float:
@@ -528,13 +542,16 @@ def antiplagiat(
 
 
 class Sample(Record):
-    f: list[float]
+    f: list[Finite]
     y: Literal[0, 1]
+    # Отпечаток текста документа, из отчёта по которому взят фрагмент (`calibration.doc_fingerprint`).
+    # У образцов из файлов до версии с отпечатками его нет: они считаются одной группой без документа.
+    doc: str | None = None
 
 
 class DocFragment(Record):
-    f: list[float]
-    chars: int
+    f: list[Finite]
+    chars: int = Field(ge=0)
 
 
 class DocSample(Record):
@@ -545,7 +562,30 @@ class DocSample(Record):
 
     fragments: list[DocFragment]
     # Доля ИИ-текста по отчёту, 0–100.
-    share: float
+    share: Finite = Field(ge=0, le=100)
+    # Отпечаток текста документа, как у `Sample.doc`.
+    doc: str | None = None
+
+
+class ReportRecord(Record):
+    """Отчёт, по которому шла калибровка: какой документ, какая разметка, когда и какой версией системы.
+
+    По отпечаткам `calibrate` узнаёт повторный импорт того же отчёта и не дублирует образцы.
+    Сам текст документа и разметки в файл не попадает.
+    """
+
+    # Отпечаток текста документа.
+    doc: str
+    # Отпечаток разметки (кусков или доли) вместе с версией системы.
+    report: str
+    kind: Literal["marked", "share"]
+    # Сколько фрагментов документа дал отчёт.
+    fragments: int = Field(ge=0)
+    # Дата импорта и, если её назвали, дата самого отчёта (ГГГГ-ММ-ДД).
+    imported: str
+    date: str | None = None
+    # Версия модели системы проверки из отчёта, если её назвали (`--system-version`).
+    system_version: str | None = None
 
 
 class Calibration(Record):
@@ -555,6 +595,8 @@ class Calibration(Record):
     samples: list[Sample] = Field(default_factory=list)
     # Документы с одной итоговой долей (`calibrate --share`).
     documents: list[DocSample] = Field(default_factory=list)
+    # Импортированные отчёты; у файлов до версии с отпечатками список пуст.
+    reports: list[ReportRecord] = Field(default_factory=list)
 
 
 class CalibrationFile(Record):
@@ -562,13 +604,15 @@ class CalibrationFile(Record):
 
     Поля верхнего уровня — калибровка «Антиплагиата», как в файлах до появления `--system`;
     калибровки других систем лежат в `systems` под их именем. Старые версии aiw-ru поле
-    `systems` пропускают и читают файл как раньше.
+    `systems` пропускают и читают файл как раньше. Поля `reports` и `doc` у образцов тоже
+    только добавлены: старые версии их пропускают, а образцы без `doc` читаются как прежде.
     """
 
     version: Literal[1]
     model: Model
     samples: list[Sample] = Field(default_factory=list)
     documents: list[DocSample] = Field(default_factory=list)
+    reports: list[ReportRecord] = Field(default_factory=list)
     systems: dict[str, Calibration] = Field(default_factory=dict)
 
     def get(self, system: System) -> Calibration | None:
@@ -577,11 +621,12 @@ class CalibrationFile(Record):
             return self.systems.get(system)
         if not self.samples and not self.documents:
             return None
-        return Calibration(model=self.model, samples=self.samples, documents=self.documents)
+        return Calibration(model=self.model, samples=self.samples, documents=self.documents, reports=self.reports)
 
     def put(self, system: System, cal: Calibration) -> CalibrationFile:
         if system == "antiplagiat":
-            return self.model_copy(update={"model": cal.model, "samples": cal.samples, "documents": cal.documents})
+            update = {"model": cal.model, "samples": cal.samples, "documents": cal.documents, "reports": cal.reports}
+            return self.model_copy(update=update)
         return self.model_copy(update={"systems": {**self.systems, system: cal}})
 
 

@@ -492,10 +492,12 @@ def test_calibrate_creates_file_antiplagiat_uses_it(cli: Cli, tmp_path: Path):
     assert len([s for s in saved["samples"] if s["y"] == 1]) == 1
     assert len(saved["samples"]) > 1
 
+    before = config.read_bytes()
     again = cli("calibrate", "--doc", str(doc), "--marked", str(marked), cwd=tmp_path)
-    saved_again = json.loads(config.read_text(encoding="utf-8"))
     assert again.code == 0
-    assert len(saved_again["samples"]) == len(saved["samples"]) * 2
+    assert "уже в калибровке" in again.out
+    assert "не изменён" in again.out
+    assert config.read_bytes() == before, "повтор того же отчёта не меняет файл"
 
     report = json.loads(cli("antiplagiat", "--json", str(doc), cwd=tmp_path).out)
     assert report["model"] == "calibrated"
@@ -623,10 +625,16 @@ def test_calibrate_accumulates_in_user_config(cli: Cli, tmp_path: Path):
     assert cli("calibrate", "--doc", str(doc), "--marked", str(marked), "--config", str(user_config)).code == 0
     first = json.loads(user_config.read_text(encoding="utf-8"))
 
+    # Отчёт по правленой версии того же документа: образцы добавляются рядом с прежними.
+    doc.write_text(
+        f"{ai}\n\n{human}\n\nПосле проверки автор дописал короткий вывод о складском учёте.", encoding="utf-8"
+    )
     assert cli("calibrate", "--doc", str(doc), "--marked", str(marked)).code == 0
     assert not (Path.cwd() / ".aiw-ru.json").exists(), "калибровка ушла в файл, который antiplagiat не читает"
     second = json.loads(user_config.read_text(encoding="utf-8"))
-    assert len(second["samples"]) == len(first["samples"]) * 2
+    assert second["samples"][: len(first["samples"])] == first["samples"]
+    assert len(second["samples"]) > len(first["samples"])
+    assert len(second["reports"]) == 2
 
 
 def test_broken_calibration_file_clear_error(cli: Cli, tmp_path: Path):
@@ -1119,3 +1127,161 @@ def test_judge_score_table_and_json(cli: Cli, tmp_path: Path):
 def test_judge_usage_errors_exit_2(cli: Cli, args: list[str]):
     """judge без нужных аргументов — код 2"""
     assert cli(*args).code == 2
+
+
+# ─── надёжность калибровки ──────────────────────────────────────────────
+
+
+@pytest.fixture
+def heat_pair(tmp_path: Path, report_doc: Path) -> tuple[Path, Path]:
+    """Документ и разметка с одним подсвеченным куском."""
+    marked = tmp_path / "glava1-ai.txt"
+    marked.write_text(AI_VAK.read_text(encoding="utf-8").split("\n\n")[1], encoding="utf-8")
+    return report_doc, marked
+
+
+def test_calibrate_other_markup_needs_replace(cli: Cli, tmp_path: Path, heat_pair: tuple[Path, Path]):
+    """другая разметка той же версии документа: код 2 с подсказкой --replace, с --replace — замена"""
+    doc, marked = heat_pair
+    config = tmp_path / "cal.json"
+    assert cli("calibrate", "--doc", str(doc), "--marked", str(marked), "--config", str(config)).code == 0
+    before = config.read_bytes()
+    other = tmp_path / "other.txt"
+    other.write_text(AI_VAK.read_text(encoding="utf-8").split("\n\n")[2], encoding="utf-8")
+    refused = cli("calibrate", "--doc", str(doc), "--marked", str(other), "--config", str(config))
+    assert refused.code == 2
+    assert "--replace" in refused.err
+    assert config.read_bytes() == before
+    replaced = cli("calibrate", "--replace", "--doc", str(doc), "--marked", str(other), "--config", str(config))
+    assert replaced.code == 0
+    assert "заменён" in replaced.out
+    saved = json.loads(config.read_text(encoding="utf-8"))
+    assert len(saved["reports"]) == 1
+    assert len(saved["samples"]) == len(json.loads(before)["samples"])
+
+
+def test_calibrate_report_date_and_system_version(cli: Cli, tmp_path: Path, heat_pair: tuple[Path, Path]):
+    """--report-date и --system-version относятся к предыдущему --doc и сохраняются в записи об отчёте"""
+    doc, marked = heat_pair
+    config = tmp_path / "cal.json"
+    args = ["--doc", str(doc), "--marked", str(marked), "--report-date", "2026-11-05", "--system-version", " 5.0 "]
+    assert cli("calibrate", *args, "--config", str(config)).code == 0
+    (record,) = json.loads(config.read_text(encoding="utf-8"))["reports"]
+    assert (record["date"], record["systemVersion"], record["kind"]) == ("2026-11-05", "5.0", "marked")
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        pytest.param(["--report-date", "2026-11-05", "--doc", "x.md", "--share", "3"], id="дата до --doc"),
+        pytest.param(["--doc", "x.md", "--share", "3", "--report-date", "05.11.2026"], id="дата не ГГГГ-ММ-ДД"),
+        pytest.param(["--doc", "x.md", "--share", "3", "--report-date", "2026-02-30"], id="несуществующая дата"),
+        pytest.param(["--doc", "x.md", "--share", "3", "--system-version", " "], id="пустая версия"),
+    ],
+)
+def test_calibrate_bad_report_details_exit_2(cli: Cli, args: list[str]):
+    """неверные --report-date и --system-version — код 2"""
+    assert cli("calibrate", *args).code == 2
+
+
+def test_calibrate_retries_after_concurrent_write(
+    cli: Cli, tmp_path: Path, heat_pair: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+):
+    """другой процесс записал файл, пока шёл расчёт: calibrate перечитывает его, и обе записи сохраняются"""
+    from aiw_ru import calibration
+    from aiw_ru.antiplagiat import empty_calibration_file
+
+    doc, marked = heat_pair
+    config = tmp_path / "cal.json"
+    other_doc = tmp_path / "glava2.md"
+    other_doc.write_text(HUMAN_VAK.read_text(encoding="utf-8"), encoding="utf-8")
+    real_import = calibration.import_reports
+    calls: list[int] = []
+
+    def import_with_parallel_writer(*args: Any, **kwargs: Any) -> calibration.ImportResult:
+        calls.append(1)
+        if len(calls) == 1:
+            # Параллельный calibrate успевает записать свой отчёт по другому документу.
+            parallel = real_import(
+                None, [calibration.ReportInput("glava2.md", other_doc.read_text(), share=0)], today="x"
+            )
+            data = empty_calibration_file().put("antiplagiat", parallel.calibration)
+            config.write_bytes(calibration.serialize(data))
+        return real_import(*args, **kwargs)
+
+    monkeypatch.setattr(calibration, "import_reports", import_with_parallel_writer)
+    r = cli("calibrate", "--doc", str(doc), "--marked", str(marked), "--config", str(config))
+    assert r.code == 0, r.err
+    assert len(calls) == 2
+    saved = json.loads(config.read_text(encoding="utf-8"))
+    assert {record["kind"] for record in saved["reports"]} == {"marked", "share"}
+    assert len(saved["documents"]) == 1
+
+
+def test_calibrate_gives_up_on_constant_concurrent_writes(
+    cli: Cli, tmp_path: Path, heat_pair: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+):
+    """файл меняется на каждой попытке: код 2, а файл остаётся таким, каким его оставил другой процесс"""
+    from aiw_ru import DEFAULT_MODEL, calibration
+
+    doc, marked = heat_pair
+    config = tmp_path / "cal.json"
+    real_import = calibration.import_reports
+    writes: list[int] = []
+
+    def import_while_file_changes(*args: Any, **kwargs: Any) -> calibration.ImportResult:
+        writes.append(1)
+        other = {"version": 1, "model": DEFAULT_MODEL.to_dict(), "samples": [], "documents": [], "note": len(writes)}
+        config.write_text(json.dumps(other), encoding="utf-8")
+        return real_import(*args, **kwargs)
+
+    monkeypatch.setattr(calibration, "import_reports", import_while_file_changes)
+    r = cli("calibrate", "--doc", str(doc), "--marked", str(marked), "--config", str(config))
+    assert r.code == 2
+    assert "другой процесс" in r.err
+    assert json.loads(config.read_text(encoding="utf-8"))["note"] == len(writes) == 3
+
+
+def test_calibrate_unwritable_path_exit_2(cli: Cli, tmp_path: Path, heat_pair: tuple[Path, Path]):
+    """папки из --config нет: код 2 с понятной причиной, без трейсбека"""
+    doc, marked = heat_pair
+    config = tmp_path / "нет-папки" / "cal.json"
+    r = cli("calibrate", "--doc", str(doc), "--marked", str(marked), "--config", str(config))
+    assert r.code == 2
+    assert f"не удалось записать калибровку {config}" in r.err
+    assert "Traceback" not in r.err
+
+
+def test_calibrate_transfer_line(cli: Cli, tmp_path: Path, heat_pair: tuple[Path, Path]):
+    """строка «Перенос»: один документ — не проверен, отчёт по второму документу даёт проверку"""
+    doc, marked = heat_pair
+    config = tmp_path / "cal.json"
+    wide = {"COLUMNS": "200"}
+    first = cli("calibrate", "--doc", str(doc), "--marked", str(marked), "--config", str(config), env=wide)
+    assert re.search(r"Перенос\s+не проверен: нужна разметка отчётов хотя бы по двум документам", first.out)
+    second_doc = tmp_path / "glava2.md"
+    ai = AI_VAK.read_text(encoding="utf-8")
+    second_doc.write_text(f"{ai}\n\n{Path(HUMAN_BLOG).read_text(encoding='utf-8')}", encoding="utf-8")
+    second_marked = tmp_path / "glava2-ai.txt"
+    second_marked.write_text(ai.split("\n\n")[1], encoding="utf-8")
+    second = cli(
+        "calibrate", "--doc", str(second_doc), "--marked", str(second_marked), "--config", str(config), env=wide
+    )
+    assert second.code == 0
+    assert re.search(r"Перенос\s+.+ на документах, отложенных целиком \(документов: 2\)", second.out)
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        pytest.param({"bias": -1.0, "weights": [1.0] * 7, "threshold": 1.5}, id="порог больше 1"),
+        pytest.param({"bias": -1.0, "weights": [1.0] * 3, "threshold": 0.5}, id="три веса"),
+    ],
+)
+def test_antiplagiat_rejects_broken_model_numbers(cli: Cli, tmp_path: Path, model: dict[str, Any]):
+    """калибровка с порогом вне (0, 1) или чужим числом весов — код 2 с полем, а не расчёт"""
+    config = tmp_path / "cal.json"
+    config.write_text(json.dumps({"version": 1, "model": model, "samples": [{"f": [0] * 7, "y": 1}]}), encoding="utf-8")
+    r = cli("antiplagiat", "--config", str(config), str(AI_VAK))
+    assert r.code == 2
+    assert "model." in r.err
