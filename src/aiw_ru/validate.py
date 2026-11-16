@@ -767,6 +767,218 @@ def _check_claims(before_prepared: Prepared, after_prepared: Prepared, warnings:
         warnings.append(Violation(kind="утверждение", detail=detail))
 
 
+# ─── Смысл: отрицания, единицы, роли ────────────────────────────────────
+# Эти проверки неточны, поэтому дают только предупреждения: деление и слияние предложений,
+# перестановка частей и обороты вместо придаточных их не задевают, но законный пересказ
+# («не принял» → «отказался принять») может задеть.
+
+NEGATIONS = frozenset({"не", "ни"})
+# Столько имён должны сменить падеж, чтобы правка выглядела как подмена ролей.
+ROLE_MIN_NAMES = 2
+# Связка однородных слов в перечне: запятая, «и», «или», «либо», «да».
+COORDINATION = r"\s*(?:,\s*|\s(?:и|или|либо|да)\s+)"
+# Слова после «не», с которыми снятое отрицание — правка штампа («не просто X, а Y»), а не смысла.
+NEGATION_IDIOMS = frozenset(
+    {"просто", "только", "столько", "так", "менее", "более", "раз", "всегда", "совсем", "очень", "то", "же", "бы", "ли"}
+)
+NUMBER_UNIT_RE = regex.compile(r"(?<![\d.,])(\d+(?:[.,]\d+)?)\s?(%|₽|\$|€|\p{L}+)")
+# Сокращения единиц. Однобуквенных («м», «г», «с») нет: «2020 г.» и «с коллегами» не единицы.
+UNIT_ABBREVIATIONS = {
+    "мс": "миллисекунд",
+    "см": "сантиметр",
+    "мм": "миллиметр",
+    "км": "километр",
+    "мг": "миллиграмм",
+    "кг": "килограмм",
+    "мл": "миллилитр",
+    "кб": "килобайт",
+    "мб": "мегабайт",
+    "гб": "гигабайт",
+    "тб": "терабайт",
+    "квт": "киловатт",
+    "кгц": "килогерц",
+    "мгц": "мегагерц",
+    "ггц": "гигагерц",
+    "гц": "герц",
+    "мин": "минут",
+    "сек": "секунд",
+    "руб": "рубл",
+    "%": "процент",
+    "₽": "рубл",
+    "$": "доллар",
+    "€": "евро",
+}
+# Основы единиц, длинные раньше коротких: «сантиметр» не должен стать «метром».
+UNIT_STEMS = (
+    "миллисекунд",
+    "сантиметр",
+    "миллиметр",
+    "километр",
+    "миллиграмм",
+    "килограмм",
+    "миллилитр",
+    "килобайт",
+    "мегабайт",
+    "гигабайт",
+    "терабайт",
+    "киловатт",
+    "килогерц",
+    "мегагерц",
+    "гигагерц",
+    "процент",
+    "секунд",
+    "минут",
+    "грамм",
+    "литр",
+    "метр",
+    "тонн",
+    "байт",
+    "вольт",
+    "ампер",
+    "ватт",
+    "герц",
+    "градус",
+    "рубл",
+    "доллар",
+    "евро",
+    "недел",
+    "месяц",
+)
+# Короткие единицы только в этих формах: иначе «частей» стало бы «часом».
+UNIT_FORMS = {
+    "час": {"час", "часа", "часов", "часу", "часам"},
+    "день": {"день", "дня", "дней", "дням", "днях"},
+    "год": {"год", "года", "годов", "году", "лет"},
+    "сутки": {"сутки", "суток"},
+}
+
+
+def _negations(prepared: Prepared) -> tuple[list[tuple[str, str, int]], list[str]]:
+    """Слова после «не» и «ни» (частица, слово, смещение) и остальные слова прозы в нижнем регистре."""
+    matches = list(LETTERS_RE.finditer(prepared.prose))
+    negated: list[tuple[str, str, int]] = []
+    plain: list[str] = []
+    for index, match in enumerate(matches):
+        word = match.group().lower()
+        if word in NEGATIONS:
+            continue
+        previous = matches[index - 1].group().lower() if index else ""
+        if previous in NEGATIONS:
+            negated.append((previous, word, matches[index - 1].start()))
+        else:
+            plain.append(word)
+    return negated, plain
+
+
+def _covered(word: str, words: list[str]) -> bool:
+    return any(_same_stem(word, other) for other in words)
+
+
+def _check_negations(before_prepared: Prepared, after_prepared: Prepared, warnings: list[Violation]) -> None:
+    """Отрицание появилось у слова, которое было без него, или пропало у слова, которое осталось."""
+    before_negated, before_plain = _negations(before_prepared)
+    after_negated, after_plain = _negations(after_prepared)
+    before_words = [word for _, word, _ in before_negated]
+    after_words = [word for _, word, _ in after_negated]
+    details: list[str] = []
+    for particle, word, start in after_negated:
+        if word not in NEGATION_IDIOMS and not _covered(word, before_words) and _covered(word, before_plain):
+            details.append(f"появилось: «{_surface(after_prepared, start, start + len(particle) + 1 + len(word))}»")
+    for particle, word, start in before_negated:
+        if word not in NEGATION_IDIOMS and not _covered(word, after_words) and _covered(word, after_plain):
+            details.append(f"пропало: «{_surface(before_prepared, start, start + len(particle) + 1 + len(word))}»")
+    warnings.extend(Violation(kind="отрицание", detail=detail) for detail in list(dict.fromkeys(details))[:LIMIT])
+
+
+def _unit(word: str) -> str | None:
+    lowered = word.lower()
+    if lowered in UNIT_ABBREVIATIONS:
+        return UNIT_ABBREVIATIONS[lowered]
+    for unit, forms in UNIT_FORMS.items():
+        if lowered in forms:
+            return unit
+    return next((stem for stem in UNIT_STEMS if lowered.startswith(stem)), None)
+
+
+def _number_units(prepared: Prepared) -> dict[str, dict[str, str]]:
+    """Число → единицы после него (основа → слово, как в тексте)."""
+    units: dict[str, dict[str, str]] = {}
+    for match in NUMBER_UNIT_RE.finditer(prepared.prose):
+        unit = _unit(match.group(2))
+        if unit is not None:
+            number = match.group(1).replace(",", ".")
+            units.setdefault(number, {}).setdefault(unit, _surface(prepared, match.start(2), match.end(2)))
+    return units
+
+
+def _check_units(before_prepared: Prepared, after_prepared: Prepared, warnings: list[Violation]) -> None:
+    """Число осталось, а единица после него другая: «12 метров» → «12 сантиметров»."""
+    before_units, after_units = _number_units(before_prepared), _number_units(after_prepared)
+    details = [
+        f"у числа {number}: {next(iter(before_units[number].values()))} → {next(iter(units.values()))}"
+        for number, units in after_units.items()
+        if number in before_units and not set(units) & set(before_units[number])
+    ]
+    warnings.extend(Violation(kind="единица", detail=detail) for detail in details[:LIMIT])
+
+
+def _capitalized(prepared: Prepared) -> list[tuple[str, bool]]:
+    """Слова кириллицей с заглавной буквы (без аббревиатур): слово и стоит ли оно в начале предложения."""
+    starts = _starts(prepared)
+    found: list[tuple[str, bool]] = []
+    for match in LETTERS_RE.finditer(prepared.prose):
+        word = _surface(prepared, match.start(), match.end())
+        if len(word) >= 2 and word[0].isupper() and not UPPER_HEAD_RE.match(word) and not LATIN_WORD_RE.search(word):
+            found.append((word, match.start() in starts))
+    return found
+
+
+def _coordinated(text: str, first: str, second: str) -> bool:
+    """Два слова стоят одним перечнем: «Иванова и Петрова», «Казань, Самара», «Олег или Нина»."""
+    left, right = regex.escape(first.lower()), regex.escape(second.lower())
+    pattern = rf"(?<!\w)(?:{left}{COORDINATION}{right}|{right}{COORDINATION}{left})(?!\w)"
+    return regex.search(pattern, text.lower()) is not None
+
+
+def _check_roles(before_prepared: Prepared, after_prepared: Prepared, warnings: list[Violation]) -> None:
+    """Имя осталось, но в другом падеже: «Олег передал ключ Нине» → «Нина передала ключ Олегу»."""
+    before_words, after_words = _capitalized(before_prepared), _capitalized(after_prepared)
+    # Имя — слово с заглавной не в начале предложения хотя бы в одном из текстов.
+    names = [word.lower() for word, at_start in before_words + after_words if not at_start]
+    changed: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for name in names:
+        if any(_same_stem(name, done) for done in seen):
+            continue
+        seen.add(name)
+        before_forms = list(dict.fromkeys(word for word, _ in before_words if _same_stem(word.lower(), name)))
+        after_forms = list(dict.fromkeys(word for word, _ in after_words if _same_stem(word.lower(), name)))
+        lost = [form for form in before_forms if form not in after_forms]
+        new = [form for form in after_forms if form not in before_forms]
+        if lost and new:
+            changed.append((lost[0], new[0]))
+    # Имена одного перечня играют одну роль и меняют падеж вместе («по данным Иванова и Петрова» →
+    # «Иванов и Петров показали»): такие считаются одним именем.
+    groups: list[list[tuple[str, str]]] = []
+    for pair in changed:
+        joined = [
+            group
+            for group in groups
+            if any(
+                _coordinated(before_prepared.source, pair[0], other[0])
+                or _coordinated(after_prepared.source, pair[1], other[1])
+                for other in group
+            )
+        ]
+        merged = [pair] + [other for group in joined for other in group]
+        groups = [group for group in groups if group not in joined] + [merged]
+    # Одно имя в другом падеже — обычная правка («Москва» → «в Москве»); подмену ролей выдают
+    # хотя бы два имени в разных ролях, сменивших падеж в одной правке.
+    if len(groups) >= ROLE_MIN_NAMES:
+        details = [f"{lost} → {new}: имя в другом падеже, проверьте, кто что делает" for lost, new in changed]
+        warnings.extend(Violation(kind="роль", detail=detail) for detail in details[:LIMIT])
+
+
 def validate(
     before: str, after: str, context: ContextMode = "general", marked: list[str] | None = None
 ) -> ValidationResult:
@@ -820,6 +1032,9 @@ def validate(
     _check_names(before_prepared, after_prepared, violations)
     _check_numerals(before_prepared, after_prepared, before, violations, warnings)
     _check_claims(before_prepared, after_prepared, warnings)
+    _check_negations(before_prepared, after_prepared, warnings)
+    _check_units(before_prepared, after_prepared, warnings)
+    _check_roles(before_prepared, after_prepared, warnings)
 
     issues_before = len(analysis.issues)
     issues_after = len(analyze(after, context).issues)

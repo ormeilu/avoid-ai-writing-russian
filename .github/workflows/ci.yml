@@ -8,6 +8,8 @@ permissions:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    # Обычный прогон занимает минуты; зависший тест иначе держит job до шести часов.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -34,7 +36,7 @@ jobs:
         run: uv run --locked --group dev --group train prek run --all-files --show-diff-on-failure
       - name: Сборка пакета
         run: uv build
-      - name: Собранный пакет ставится и запускается
-        run: |
-          uvx --from "$(ls dist/*.whl)" aiw-ru --help
-          uvx --from "$(ls dist/*.whl)" aiw-ru skill antiplagiat > /dev/null
+      - name: Wheel из sdist
+        run: uv build --wheel --out-dir dist-sdist dist/*.tar.gz
+      - name: Пакет работает вне рабочей копии и без ML-пакетов
+        run: uv run --locked python scripts/check_package.py dist/*.whl dist-sdist/*.whl

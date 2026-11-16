@@ -2,6 +2,7 @@
 
 import json
 import math
+import re
 from collections.abc import Callable
 
 import pytest
@@ -10,12 +11,13 @@ from aiw_ru import DEFAULT_MODEL, antiplagiat
 from aiw_ru.antiplagiat import (
     Calibration,
     CalibrationFile,
+    HeatMapError,
     Sample,
     empty_calibration_file,
     marked_fragments,
     marked_from_heatmap,
 )
-from aiw_ru.judge import PROMPT, auc, judge_fragments, judge_prompt, judge_score, parse_answer
+from aiw_ru.judge import PROMPT, PROMPT_VERSION, auc, judge_fragments, judge_prompt, judge_score, parse_answer
 
 Read = Callable[[str], str]
 
@@ -46,14 +48,80 @@ def test_heatmap_list_and_object_red_only():
     "raw",
     [
         pytest.param("Обычный текст из отчёта.\n\nВторой кусок.", id="текст"),
-        pytest.param("[не json", id="битый JSON"),
-        pytest.param('{"share": 0.4}', id="объект без fragments"),
-        pytest.param('[{"text": "без уровня"}]', id="фрагмент без уровня"),
+        pytest.param("[не json", id="скобка и текст"),
+        pytest.param("[1] Кладовщик сверил остатки с накладной и нашёл две лишние коробки.", id="ссылка в начале"),
+        pytest.param("", id="пустой файл"),
+        pytest.param('[{"level": 3, "text": "обрыв', id="оборванный JSON"),
+        pytest.param('{"fragments": [}', id="лишняя скобка"),
     ],
 )
 def test_heatmap_not_recognized(raw: str):
-    """не тепловая карта — None, файл читается как текст"""
+    """не разбирается как JSON — None, файл читается как текст, как до проверки формата карты"""
     assert marked_from_heatmap(raw) is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param("[]", id="пустой список"),
+        pytest.param('{"share": 0, "fragments": []}', id="объект без фрагментов"),
+        pytest.param('  \n[{"level": 2, "text": "оранжевый", "pages": [1, 2]}]', id="только оранжевый"),
+    ],
+)
+def test_heatmap_without_red_is_empty(raw: str):
+    """карта без красных фрагментов — пустая разметка: отчёт без подсветки ИИ"""
+    assert marked_from_heatmap(raw) == []
+
+
+@pytest.mark.parametrize(
+    ("raw", "reason"),
+    [
+        pytest.param(
+            '[{"level": "bad", "text": "т"}]', 'фрагмент 1: level — 1, 2 или 3, а не "bad"', id="level словом"
+        ),
+        pytest.param('[{"level": 4, "text": "т"}]', "фрагмент 1: level — 1, 2 или 3, а не 4", id="level больше 3"),
+        pytest.param('[{"level": 0, "text": "т"}]', "фрагмент 1: level — 1, 2 или 3, а не 0", id="level 0"),
+        pytest.param('[{"level": 2.5, "text": "т"}]', "фрагмент 1: level — 1, 2 или 3, а не 2.5", id="level дробный"),
+        pytest.param('[{"level": 3, "text": "т"}, {"text": "т"}]', "фрагмент 2: нет поля level", id="без уровня"),
+        pytest.param('[{"level": 3}]', "фрагмент 1: нет поля text", id="без текста"),
+        pytest.param('[{"level": 3, "text": 5}]', "фрагмент 1: text — строка, а не 5", id="text число"),
+        pytest.param('[{"level": 3, "text": "т", "pages": "1"}]', "фрагмент 1: pages", id="pages строкой"),
+        pytest.param('["красный"]', 'фрагмент 1: не объект {"level", "text"}, а "красный"', id="строка"),
+        pytest.param("[1]", "фрагмент 1: не объект", id="число вместо объекта"),
+        pytest.param('{"share": 0.4}', "нет списка fragments", id="объект без fragments"),
+        pytest.param('{"fragments": "текст"}', "нет списка fragments", id="fragments не список"),
+    ],
+)
+def test_heatmap_broken_raises(raw: str, reason: str):
+    """разобранный JSON, который не проходит формат тепловой карты, — ошибка с причиной, а не текстовая разметка"""
+    with pytest.raises(HeatMapError, match=re.escape(reason)):
+        marked_from_heatmap(raw)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param('[{"level": "3", "text": "красный"}]', ["красный"], id="уровень строкой"),
+        pytest.param('[{"level": 3.0, "text": "красный"}]', ["красный"], id="уровень 3.0"),
+        pytest.param('[{"level": 3, "text": "красный", "pages": ["2"]}]', ["красный"], id="страница строкой"),
+        pytest.param(
+            '{"share": 0.38, "fragments": [{"level": 3, "pages": [1, 2], "text": "красный"}], "extra": 1}',
+            ["красный"],
+            id="лишнее поле",
+        ),
+    ],
+)
+def test_heatmap_lenient_types_still_read(raw: str, expected: list[str]):
+    """что читалось до проверки формата карты, читается и теперь: числа строкой, 3.0, лишние поля"""
+    assert marked_from_heatmap(raw) == expected
+
+
+def test_heatmap_error_shows_long_value_shortened():
+    """длинное неверное значение в сообщении обрезается"""
+    with pytest.raises(HeatMapError) as error:
+        marked_from_heatmap(json.dumps([{"level": "x" * 200, "text": "т"}]))
+    assert len(str(error.value)) < 120
+    assert str(error.value).endswith("…")
 
 
 # ─── сопоставление с документом ─────────────────────────────────────────
@@ -198,3 +266,54 @@ def test_score_without_marked_and_missing(doc: str):
     r = judge_score(doc, ["P1 none\nP2 low"])
     assert r.auc is None and r.detector_auc is None and r.agreement is None
     assert r.missing == [3, 4, 5]
+
+
+# ─── проверяемость судьи ────────────────────────────────────────────────
+
+
+def test_prompt_levels_are_ordinal():
+    """шкала судьи порядковая: без неизмеренных частот вроде «менее 1 % человеческих текстов»"""
+    assert "%" not in PROMPT
+    assert PROMPT_VERSION == 2
+
+
+def test_prompt_json_names_version_and_document(doc: str):
+    """задание в JSON несёт версию задания и отпечаток документа"""
+    from aiw_ru.calibration import doc_fingerprint
+
+    report = judge_score(doc, ["P1 none"])
+    assert (report.prompt_version, report.document_hash) == (PROMPT_VERSION, doc_fingerprint(doc))
+    assert judge_score(doc + "\n\nДописанный абзац.", ["P1 none"]).document_hash != report.document_hash
+
+
+def test_run_reports_coverage_extra_and_duplicates(doc: str):
+    """покрытие ответа, лишние номера, повторы и повторы с разными уровнями видны в сводке"""
+    count = len(fragments(doc))
+    answer = "# model: свежий агент\n# temperature: 0\nP1 high\nP1 low\nP2 none\nP2 none\nP99 medium\n"
+    report = judge_score(doc, [answer])
+    assert report.coverage == [round(2 / count, 3)]
+    assert report.extra == [[99]]
+    assert report.duplicates == [[1, 2]]
+    assert report.conflicts == [[1]]
+    assert report.run_meta == [{"model": "свежий агент", "temperature": "0"}]
+    assert report.fragments[0].levels == [3], "повтор номера берёт первый ответ, как раньше"
+
+
+def test_disagreements_between_runs(doc: str):
+    """фрагменты, где прогоны разошлись на два уровня и больше, перечислены отдельно"""
+    report = judge_score(doc, ["P1 none\nP2 low\nP3 high", "P1 high\nP2 medium\nP3 high"])
+    assert report.disagreements == [1]
+
+
+def test_clean_runs_have_no_problems(doc: str):
+    """полные ответы без повторов: всё покрыто, лишнего и разногласий нет"""
+    answer = "\n".join(f"P{n} none" for n in range(1, len(fragments(doc)) + 1))
+    report = judge_score(doc, [answer, answer])
+    assert report.coverage == [1.0, 1.0]
+    assert (report.extra, report.duplicates, report.conflicts, report.disagreements) == (
+        [[], []],
+        [[], []],
+        [[], []],
+        [],
+    )
+    assert report.run_meta == [{}, {}]

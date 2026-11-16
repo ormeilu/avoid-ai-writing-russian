@@ -39,7 +39,7 @@ import aiw_ru
 from aiw_ru.detect import analyze
 from aiw_ru.features import CONTEXT, FEATURE_NAMES, FEATURES_VERSION, describe, features
 from hub import REPO, card, push, write_report
-from llmtrace import REVISIONS, data_dir, detector_key, load, num, pct, run_parallel, table
+from llmtrace import REVISIONS, data_dir, data_key, detector_key, load, num, pct, run_parallel, table
 
 ROOT = Path(__file__).resolve().parent.parent
 LENGTHS = ((0, 50), (50, 150), (150, 400), (400, None))
@@ -66,8 +66,9 @@ def _features_chunk(texts: list[str]) -> list[tuple[list[float], int, int]]:
 
 
 def part(args: argparse.Namespace, split: str) -> Part:
-    """Признаки части корпуса; кэш сбрасывается при правке детектора или этого файла."""
-    key = hashlib.sha1((detector_key() + Path(__file__).read_text(encoding="utf-8")).encode()).hexdigest()[:12]
+    """Признаки части корпуса; кэш сбрасывается при правке детектора, этого файла или данных."""
+    source = detector_key() + Path(__file__).read_text(encoding="utf-8") + data_key(args.data, "classification", split)
+    key = hashlib.sha1(source.encode()).hexdigest()[:12]
     stem = f"features-{split}{f'-{args.limit}' if args.limit else ''}"
     cache = args.data / f"{stem}-{key}.npz"
     if cache.exists():

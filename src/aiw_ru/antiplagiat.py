@@ -13,16 +13,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
+import unicodedata
 from bisect import bisect_left, bisect_right
 from collections import Counter
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field, ValidationError
 
 from aiw_ru.compat import fixed, jsre, num_str, to_fixed, total, trim
 from aiw_ru.detect import WEIGHTS, Internals, analyze_internal
@@ -49,10 +51,20 @@ SYSTEMS: dict[System, tuple[str, str]] = {
 }
 
 
+# Конечное число: NaN и бесконечность в калибровке ломают логит и выбор порога.
+Finite = Annotated[float, Field(allow_inf_nan=False)]
+
+
 class Model(Record):
-    bias: float
-    weights: list[float]
-    threshold: float
+    """Логистическая модель фрагмента: свободный член, по весу на признак и порог вероятности.
+
+    Файл калибровки проверяется до расчёта: числа конечные, весов столько же, сколько признаков,
+    порог строго между 0 и 1.
+    """
+
+    bias: Finite
+    weights: list[Finite] = Field(min_length=len(FEATURE_NAMES), max_length=len(FEATURE_NAMES))
+    threshold: Finite = Field(gt=0, lt=1)
 
 
 DEFAULT_MODEL = Model(bias=-4.4, weights=[1.1, 2.6, 1.4, 0.35, 1.2, 1.3, 1.6], threshold=0.5)
@@ -154,6 +166,10 @@ class AntiplagiatReport(Record):
     # Светофор символов и следов чата, как у scan.
     light: Light
     model: Literal["default", "calibrated"]
+    # Что за число вероятность фрагмента: эвристика с весами, подобранными вручную, или логистическая
+    # модель, подогнанная под отчёты пользователя. Ни то ни другое не проверено как вероятность на
+    # независимых данных (Brier, надёжность по диапазонам).
+    score_kind: Literal["heuristic", "fitted-to-reports"] = "heuristic"
     threshold: float
     # Система, под которую калибровалась модель (`--system`).
     system: System = "antiplagiat"
@@ -171,7 +187,11 @@ SPACES_RE = jsre("\\s+", "g")
 
 
 def _sigmoid(z: float) -> float:
-    return 1 / (1 + math.exp(-z))
+    """Логистическая функция без переполнения: exp берётся только от неположительного числа."""
+    if z >= 0:
+        return 1 / (1 + math.exp(-z))
+    exp_z = math.exp(z)
+    return exp_z / (1 + exp_z)
 
 
 def predict(model: Model, f: list[float]) -> float:
@@ -518,6 +538,7 @@ def antiplagiat(
         suspicious_reasons=reasons,
         light=result.light,
         model="calibrated" if model else "default",
+        score_kind="fitted-to-reports" if model else "heuristic",
         threshold=active_model.threshold,
         system=system,
         typical_prose=fixed(predict(active_model, TYPICAL_PROSE), 3),
@@ -528,13 +549,19 @@ def antiplagiat(
 
 
 class Sample(Record):
-    f: list[float]
+    f: list[Finite]
     y: Literal[0, 1]
+    # Отпечаток текста документа, из отчёта по которому взят фрагмент (`calibration.doc_fingerprint`).
+    # У образцов из файлов до версии с отпечатками его нет: они считаются одной группой без документа.
+    doc: str | None = None
+    # Отпечаток текста самого фрагмента (`fragment_fingerprint`). Правленая версия документа делит
+    # с прежней неизменённые абзацы, и проверка переноса по ним считает обе версии одним документом.
+    part: str | None = None
 
 
 class DocFragment(Record):
-    f: list[float]
-    chars: int
+    f: list[Finite]
+    chars: int = Field(ge=0)
 
 
 class DocSample(Record):
@@ -545,7 +572,31 @@ class DocSample(Record):
 
     fragments: list[DocFragment]
     # Доля ИИ-текста по отчёту, 0–100.
-    share: float
+    share: Finite = Field(ge=0, le=100)
+    # Отпечаток текста документа, как у `Sample.doc`.
+    doc: str | None = None
+
+
+class ReportRecord(Record):
+    """Отчёт, по которому шла калибровка: какой документ, какая разметка, когда и какой версией системы.
+
+    По отпечаткам `calibrate` узнаёт повторный импорт того же отчёта и не дублирует образцы.
+    Сам текст документа и разметки в файл не попадает.
+    """
+
+    # Отпечаток текста документа.
+    doc: str
+    # Отпечаток разметки (кусков или доли) вместе с версией системы.
+    report: str
+    kind: Literal["marked", "share"]
+    # Сколько фрагментов документа дал отчёт.
+    fragments: int = Field(ge=0)
+    # Дата импорта и, если её назвали, дата самого отчёта (ГГГГ-ММ-ДД).
+    imported: str
+    date: str | None = None
+    # Версия модели системы проверки из отчёта, если её назвали (`--system-version`). В файле поле
+    # называется systemVersion; имя из Python тоже принимается.
+    system_version: str | None = Field(default=None, validation_alias=AliasChoices("systemVersion", "system_version"))
 
 
 class Calibration(Record):
@@ -555,6 +606,8 @@ class Calibration(Record):
     samples: list[Sample] = Field(default_factory=list)
     # Документы с одной итоговой долей (`calibrate --share`).
     documents: list[DocSample] = Field(default_factory=list)
+    # Импортированные отчёты; у файлов до версии с отпечатками список пуст.
+    reports: list[ReportRecord] = Field(default_factory=list)
 
 
 class CalibrationFile(Record):
@@ -562,13 +615,15 @@ class CalibrationFile(Record):
 
     Поля верхнего уровня — калибровка «Антиплагиата», как в файлах до появления `--system`;
     калибровки других систем лежат в `systems` под их именем. Старые версии aiw-ru поле
-    `systems` пропускают и читают файл как раньше.
+    `systems` пропускают и читают файл как раньше. Поля `reports` и `doc` у образцов тоже
+    только добавлены: старые версии их пропускают, а образцы без `doc` читаются как прежде.
     """
 
     version: Literal[1]
     model: Model
     samples: list[Sample] = Field(default_factory=list)
     documents: list[DocSample] = Field(default_factory=list)
+    reports: list[ReportRecord] = Field(default_factory=list)
     systems: dict[str, Calibration] = Field(default_factory=dict)
 
     def get(self, system: System) -> Calibration | None:
@@ -577,11 +632,12 @@ class CalibrationFile(Record):
             return self.systems.get(system)
         if not self.samples and not self.documents:
             return None
-        return Calibration(model=self.model, samples=self.samples, documents=self.documents)
+        return Calibration(model=self.model, samples=self.samples, documents=self.documents, reports=self.reports)
 
     def put(self, system: System, cal: Calibration) -> CalibrationFile:
         if system == "antiplagiat":
-            return self.model_copy(update={"model": cal.model, "samples": cal.samples, "documents": cal.documents})
+            update = {"model": cal.model, "samples": cal.samples, "documents": cal.documents, "reports": cal.reports}
+            return self.model_copy(update=update)
         return self.model_copy(update={"systems": {**self.systems, system: cal}})
 
 
@@ -798,37 +854,89 @@ def label_fragments(source: str, marked: list[str]) -> list[Sample]:
     samples: list[Sample] = []
     for raw, mark in zip(_fragments_of(internals), marked_fragments(source, marked), strict=True):
         inside = [issue for issue in result.issues if mark.start <= issue.index < mark.end]
-        samples.append(Sample(f=features_for(raw.text, inside), y=1 if mark.marked else 0))
+        samples.append(
+            Sample(f=features_for(raw.text, inside), y=1 if mark.marked else 0, part=fragment_fingerprint(raw.text))
+        )
     return samples
 
 
-class HeatFragment(Record):
-    """Фрагмент тепловой карты отчёта: уровень 3 — красный, 2 — оранжевый, 1 — жёлтый."""
+# Длина отпечатка фрагмента в шестнадцатеричных знаках, как у отпечатков документа и разметки.
+FRAGMENT_FINGERPRINT_CHARS = 16
 
-    level: int
+
+def fragment_fingerprint(text: str) -> str:
+    """Отпечаток фрагмента без различий в пробелах и переносах строк; сам текст в файл не попадает."""
+    normalized = " ".join(unicodedata.normalize("NFC", text).split())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:FRAGMENT_FINGERPRINT_CHARS]
+
+
+class HeatFragment(Record):
+    """Фрагмент тепловой карты отчёта: уровень 3 — красный, 2 — оранжевый, 1 — жёлтый.
+
+    Типы проверяются нестрого, как до проверки формата карты: уровень `"3"` или `3.0` читается как 3.
+    """
+
+    level: int = Field(ge=1, le=3)
     text: str
     pages: list[int] = Field(default_factory=list)
 
 
+# Что ждёт поле фрагмента: для сообщения об ошибке в карте.
+HEAT_FIELDS = {"level": "1, 2 или 3", "text": "строка", "pages": "список номеров страниц"}
+# Сколько знаков неверного значения показывать в сообщении.
+SHOWN_VALUE_CHARS = 60
+
+
+class HeatMapError(ValueError):
+    """JSON разобран, но это не тепловая карта: нет списка фрагментов, неверный уровень, текст или страницы."""
+
+
+def _shown(value: object) -> str:
+    shown = json.dumps(value, ensure_ascii=False)
+    return shown if len(shown) <= SHOWN_VALUE_CHARS else shown[: SHOWN_VALUE_CHARS - 1] + "…"
+
+
+def _heat_fragment(item: object, number: int) -> HeatFragment:
+    where = f"фрагмент {number}"
+    if not isinstance(item, dict):
+        raise HeatMapError(f'{where}: не объект {{"level", "text"}}, а {_shown(item)}')
+    try:
+        return HeatFragment.model_validate(item)
+    except ValidationError as error:
+        first = error.errors()[0]
+        field = str(first["loc"][0])
+        if first["type"] == "missing":
+            raise HeatMapError(f"{where}: нет поля {field}") from None
+        raise HeatMapError(f"{where}: {field} — {HEAT_FIELDS[field]}, а не {_shown(item.get(field))}") from None
+
+
 def marked_from_heatmap(raw: str, min_level: int = HEAT_RED) -> list[str] | None:
-    """Куски из тепловой карты в JSON; None, если это не она.
+    """Куски из тепловой карты в JSON; None, если файл не разбирается как JSON и читается как текст.
 
     Тепловая карта — список `{"level", "text"}` или объект с ним в поле `fragments` (так его
     отдаёт скрипт из `skills/antiplagiat/references/domate.md`). По умолчанию берутся только
-    красные фрагменты: в «Думейте» только они входят в процент ИИ-текста.
+    красные фрагменты: в «Думейте» только они входят в процент ИИ-текста. Пустой список —
+    отчёт без подсветки, все фрагменты документа человеческие.
+
+    Если JSON разобрался, но не проходит формат карты (нет `fragments`, уровень не 1–3, текста нет
+    или он не строка), поднимается HeatMapError: прочитанная как текст, такая карта дала бы калибровке
+    одни человеческие метки. Текстовый файл с фрагментами целиком JSON не бывает, поэтому в эту
+    ветку не попадает, даже если начинается со скобки («[1] Иванов…»).
     """
-    head = raw.lstrip()[:1]
-    if head not in ("[", "{"):
+    stripped = raw.strip()
+    if not stripped.startswith(("[", "{")):
         return None
     try:
-        data = json.loads(raw)
-        if isinstance(data, dict):
-            data = data.get("fragments")
-        if not isinstance(data, list):
-            return None
-        items = [HeatFragment.model_validate(item) for item in data]
-    except ValueError:
+        data = json.loads(stripped)
+    except json.JSONDecodeError:
         return None
+    if isinstance(data, dict):
+        data = data.get("fragments")
+        if not isinstance(data, list):
+            raise HeatMapError("в объекте нет списка fragments")
+    if not isinstance(data, list):
+        return None
+    items = [_heat_fragment(item, number) for number, item in enumerate(data, 1)]
     return [item.text for item in items if item.level >= min_level]
 
 

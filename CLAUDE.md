@@ -26,7 +26,7 @@ claude plugin install avoid-ai-writing-russian@avoid-ai-writing-russian
 
 ## Проверка скилла моделью
 
-`uv run python evals/run.py` гоняет сценарии из `evals/cases.json` через `claude -p` и оценивает ответы `evals/grade.py`. Нужна живая сессия `claude login`; вложенный запуск без неё падает с «OAuth session expired». Один сценарий: `--case vak-protected`, только собрать промпт: `--dry`. Результаты пишутся в `evals/results/` и в git не идут.
+`uv run python evals/run.py` гоняет сценарии из `evals/cases.json` через `claude -p` и оценивает ответы `evals/grade.py`. Нужна живая сессия `claude login`; вложенный запуск без неё падает с «OAuth session expired». Один сценарий: `--case vak-protected`, только собрать промпт: `--dry`, остальные параметры — `--help`. Результаты пишутся в `evals/results/` и в git не идут. `--mode workspace` проверяет скилл так, как его используют: агент получает скилл и детектор только командой `aiw-ru`, а сводка показывает, какие файлы каталога он прочитал и что запустил. Запуск агента проверяют тесты с фальшивыми агентами в `tests/test_evals.py`: правишь `evals/run.py` — расширяй их, живую модель для этого не зови.
 
 Правишь формат ответа в SKILL.md — обнови `evals/golden/` и прогони `uv run --group dev pytest tests/test_evals.py`: эталоны проверяются тем же `grade.py`.
 

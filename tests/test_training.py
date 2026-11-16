@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 from pathlib import Path
@@ -216,3 +217,37 @@ def test_report_is_reproducible(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert "незакоммиченными правками" not in text
     saved = json.loads((tmp_path / hub.REPORT_METRICS).read_text(encoding="utf-8"))
     assert saved["dataset"]["revision"] == "abc123"
+
+
+def replace_split(corpus: Path, split: str, rows: list[str]) -> None:
+    (corpus / f"ru-classification-{split}.jsonl").write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
+def test_data_key_follows_content(corpus: Path):
+    """отпечаток части корпуса меняется вместе с содержимым файла, а не с его путём"""
+    before = llmtrace.data_key(corpus, "classification", "test")
+    assert llmtrace.data_key(corpus, "classification", "test") == before
+    replace_split(corpus, "test", [row("human", "blog")])
+    assert llmtrace.data_key(corpus, "classification", "test") != before
+
+
+def test_detector_cache_follows_data(corpus: Path, capsys: pytest.CaptureFixture[str]):
+    """замена данных по тому же пути сбрасывает кэш ответов детектора"""
+    llmtrace.main(["eval", "--data", str(corpus), "--jobs", "1"])
+    (first,) = corpus.glob("detector-scan-general-classification-test-*.jsonl")
+    replace_split(corpus, "test", [row("human", "blog"), row("ai", "blog")])
+    llmtrace.main(["eval", "--data", str(corpus), "--jobs", "1"])
+    (second,) = corpus.glob("detector-scan-general-classification-test-*.jsonl")
+    assert second.name != first.name
+    assert len(second.read_text(encoding="utf-8").splitlines()) == 2
+    capsys.readouterr()
+
+
+def test_feature_cache_follows_data(corpus: Path, capsys: pytest.CaptureFixture[str]):
+    """замена данных по тому же пути сбрасывает кэш признаков LightGBM"""
+    args = argparse.Namespace(data=corpus, limit=0, jobs=1)
+    assert len(train.part(args, "valid").y) == 6
+    replace_split(corpus, "valid", [row("human", "blog"), row("ai", "vak")])
+    assert len(train.part(args, "valid").y) == 2
+    assert len(list(corpus.glob("features-valid-*.npz"))) == 1
+    capsys.readouterr()

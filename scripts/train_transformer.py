@@ -89,7 +89,7 @@ from hub import (
 )
 from hub import REPO as LIGHTGBM_REPO
 from hub import REPORT_METRICS as LIGHTGBM_METRICS
-from llmtrace import REVISIONS, data_dir, detect, load, table
+from llmtrace import REVISIONS, data_dir, data_key, detect, load, table
 from llmtrace import num as comma_num
 from llmtrace import pct as comma_pct
 from train import Part, auc, breakdowns, classes
@@ -288,7 +288,8 @@ def encode_split(
     data: Path, split: str, limit: int, tok: Any, max_length: int, raw: bool, cache_dir: Path, chunk: int = 4096
 ) -> Encoded:
     """Токенизирует часть корпуса; результат кэшируется в cache_dir."""
-    key = f"{tokenizer_key(tok)}-{max_length}-{'raw' if raw else normalize_key()}"
+    # Токенизатор, длина окна, нормализация и сами данные: другие данные по тому же пути дают другой кэш.
+    key = f"{tokenizer_key(tok)}-{max_length}-{'raw' if raw else normalize_key()}-{data_key(data, 'classification', split)}"
     cache = cache_dir / f"tokens-{split}{f'-{limit}' if limit else ''}-{key}.npz"
     if cache.exists():
         cached = np.load(cache)

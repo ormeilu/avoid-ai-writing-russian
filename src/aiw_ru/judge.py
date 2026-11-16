@@ -15,11 +15,19 @@ import math
 import re
 from itertools import combinations
 
+from pydantic import Field
+
 from aiw_ru.antiplagiat import antiplagiat, marked_fragments
+from aiw_ru.calibration import doc_fingerprint
 from aiw_ru.compat import fixed
 from aiw_ru.types import ContextMode, Record
 
 LEVELS: dict[str, int] = {"none": 0, "low": 1, "medium": 2, "high": 3}
+
+# Версия задания: растёт при каждой правке PROMPT, по ней видно, каким заданием получены ответы.
+# 1 — уровни через доли человеческих текстов (1, 5 и 10 %), эти доли никто не измерял;
+# 2 — порядковая шкала уверенности.
+PROMPT_VERSION = 2
 
 # Задание судье. Текст тот же, что в references/judge.md скилла (это проверяет тест).
 PROMPT = """Ты детектор ИИ-текста для академических работ на русском, как модуль ИИ-детекции в системах проверки вузов.
@@ -28,10 +36,12 @@ PROMPT = """Ты детектор ИИ-текста для академичес�
 
 Текст разбит на фрагменты [P1]…[P{count}]. Это части одного документа. Для каждого фрагмента оцени, похож ли он на текст, сгенерированный языковой моделью (в том числе сгенерированный и затем отредактированный человеком). Шкала уверенности:
 
-- high: такие признаки встречаются менее чем в 1 % текстов того же жанра, написанных людьми;
-- medium: менее чем в 5 %;
-- low: менее чем в 10 %;
+- high: признаков ИИ много, и они складываются вместе; у человека такое сочетание редкость;
+- medium: признаков несколько, но человек мог написать так же;
+- low: отдельные слабые признаки, скорее человеческий текст;
 - none: обычный человеческий текст.
+
+Уровни — порядок твоей уверенности, а не доля ошибок: сравнивай фрагменты между собой.
 
 Сведения об авторах, заголовки, формулы и подписи к ним ставь none.
 
@@ -48,6 +58,10 @@ P{count} ...
 """
 
 ANSWER_RE = re.compile(r"^\W*P\s*(\d+)\W+(high|medium|low|none)\b", re.IGNORECASE | re.MULTILINE)
+# Строка о прогоне в начале файла ответа: «# model: …», «# temperature: 0».
+RUN_META_RE = re.compile(r"^#\s*([\w-]+)\s*:\s*(.+?)\s*$", re.MULTILINE)
+# Разница уровней между прогонами, от которой фрагмент считается спорным: none против medium.
+DISAGREEMENT = 2
 
 
 class JudgeFragment(Record):
@@ -80,10 +94,35 @@ def judge_prompt(source: str, context: ContextMode = "academic") -> str:
 
 def parse_answer(text: str) -> dict[int, int]:
     """Уровни из ответа судьи: номер фрагмента → 0–3. Повтор номера берёт первый ответ."""
-    levels: dict[int, int] = {}
+    return parse_run(text, 0).levels
+
+
+class JudgeRun(Record):
+    """Один прогон судьи: уровни и всё, что в ответе не так."""
+
+    levels: dict[int, int]
+    # Номера, которых нет среди фрагментов документа.
+    extra: list[int]
+    # Номера, на которые судья ответил больше одного раза, и те из них, где ответы разные.
+    duplicates: list[int]
+    conflicts: list[int]
+    # Строки «# ключ: значение» в начале ответа: модель, температура и прочее, что записал пользователь.
+    meta: dict[str, str]
+
+
+def parse_run(text: str, count: int) -> JudgeRun:
+    """Прогон судьи для документа из `count` фрагментов (0 — номера не сверяются)."""
+    answers: dict[int, list[int]] = {}
     for match in ANSWER_RE.finditer(text):
-        levels.setdefault(int(match[1]), LEVELS[match[2].lower()])
-    return levels
+        answers.setdefault(int(match[1]), []).append(LEVELS[match[2].lower()])
+    known = {number: levels for number, levels in answers.items() if not count or 1 <= number <= count}
+    return JudgeRun(
+        levels={number: levels[0] for number, levels in known.items()},
+        extra=sorted(number for number in answers if number not in known),
+        duplicates=sorted(number for number, levels in known.items() if len(levels) > 1),
+        conflicts=sorted(number for number, levels in known.items() if len(set(levels)) > 1),
+        meta={match[1]: match[2] for match in RUN_META_RE.finditer(text)},
+    )
 
 
 def auc(scores: list[float], labels: list[bool]) -> float:
@@ -114,6 +153,9 @@ class JudgedFragment(Record):
 
 class JudgeReport(Record):
     runs: int
+    # Версия задания (PROMPT_VERSION) и отпечаток документа: по ним сводку можно повторить.
+    prompt_version: int
+    document_hash: str
     fragments: list[JudgedFragment]
     # Номера фрагментов без ответа ни в одном прогоне.
     missing: list[int]
@@ -125,13 +167,22 @@ class JudgeReport(Record):
     # ROC AUC среднего уровня судьи и вероятности детектора против разметки отчёта.
     auc: float | None = None
     detector_auc: float | None = None
+    # По прогону: доля фрагментов с ответом, лишние номера, повторы, повторы с разными уровнями, сведения о прогоне.
+    coverage: list[float] = Field(default_factory=list)
+    extra: list[list[int]] = Field(default_factory=list)
+    duplicates: list[list[int]] = Field(default_factory=list)
+    conflicts: list[list[int]] = Field(default_factory=list)
+    run_meta: list[dict[str, str]] = Field(default_factory=list)
+    # Фрагменты, где прогоны разошлись на DISAGREEMENT уровня и больше.
+    disagreements: list[int] = Field(default_factory=list)
 
 
 def judge_score(
     source: str, answers: list[str], marked: list[str] | None = None, context: ContextMode = "academic"
 ) -> JudgeReport:
     report = antiplagiat(source, context)
-    runs = [parse_answer(answer) for answer in answers]
+    parsed = [parse_run(answer, len(report.fragments)) for answer in answers]
+    runs = [run.levels for run in parsed]
     marks = marked_fragments(source, marked, context) if marked is not None else None
     fragments: list[JudgedFragment] = []
     for number, fragment in enumerate(report.fragments, 1):
@@ -181,8 +232,22 @@ def judge_score(
         detector_value = auc([fragment.detector for fragment in fragments], [mark.marked for mark in marks])
         judge_auc = None if math.isnan(judge_value) else fixed(judge_value, 3)
         detector_auc = None if math.isnan(detector_value) else fixed(detector_value, 3)
+    total = len(fragments) or 1
     return JudgeReport(
         runs=len(runs),
+        prompt_version=PROMPT_VERSION,
+        document_hash=doc_fingerprint(source),
+        coverage=[fixed(len(run.levels) / total, 3) for run in parsed],
+        extra=[run.extra for run in parsed],
+        duplicates=[run.duplicates for run in parsed],
+        conflicts=[run.conflicts for run in parsed],
+        run_meta=[run.meta for run in parsed],
+        disagreements=[
+            fragment.n
+            for fragment in fragments
+            if len(answered := [level for level in fragment.levels if level is not None]) > 1
+            and max(answered) - min(answered) >= DISAGREEMENT
+        ],
         fragments=fragments,
         missing=[fragment.n for fragment in fragments if fragment.mean is None],
         share_medium=share(1.5),

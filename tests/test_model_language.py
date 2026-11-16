@@ -273,6 +273,33 @@ def test_english_text_output(transformer: Path, tmp_path: Path, capsys: pytest.C
     assert "Вероятность ИИ" not in out and "фрагмент" not in out
 
 
+UKRAINIAN = "Цей текст написано українською мовою. Дослідження показало, що результати залежать від обраного методу."
+
+
+def test_ukrainian_text_has_no_probability(transformer: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    """украинский текст — сплошная кириллица, но модель обучена на русском: вероятности нет"""
+    path = put(tmp_path, "text.md", UKRAINIAN)
+    data = classify(capsys, path)
+    assert (data["language"], data["skipped"], data["probability"]) == ("other", True, None)
+    out = flat(cli(capsys, "classify", path)[1])
+    assert "кириллица в нём не русская" in out and "Вероятность ИИ" not in out
+
+
+def test_uncertain_language_still_read(transformer: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    """короткий текст без опознавательных букв модель читает, как раньше, но пишет, что язык неясен"""
+    path = put(tmp_path, "text.md", HUMAN)
+    data = classify(capsys, path)
+    assert (data["language"], data["skipped"], data["languageUncertain"]) == ("ru", False, True)
+    assert isinstance(data["probability"], float)
+    assert "язык текста не определён уверенно" in flat(cli(capsys, "classify", "--no-fragments", path)[1])
+
+
+def test_russian_article_language_certain(transformer: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    """русская статья с английскими терминами — язык определён уверенно"""
+    data = classify(capsys, put(tmp_path, "article.md", ARTICLE))
+    assert data["languageUncertain"] is False
+
+
 def test_text_without_letters_says_so(transformer: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     out = flat(cli(capsys, "classify", put(tmp_path, "text.md", TEXTS["header only"]))[1])
     assert "в нём нет букв" in out and "шапка, код и служебные части" in out
