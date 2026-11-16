@@ -564,13 +564,55 @@ def test_staccato():
     )
 
 
+def test_split_not_x_with_countdown():
+    """разнесённое «не X» с отсчётом отрицаний, но без рамки в конце — не находка"""
+    assert "not-x-but-y" in types("Дело не в цене. Не в функциях. Не в сроках. Дело в доверии.")
+    assert "not-x-but-y" not in types("Дело не в цене. Не в сроках. Мы просто устали.")
+
+
+# ─── уровень 2, хэштеги и соцсети ───────────────────────────────────────
+
+
+@pytest.mark.parametrize("word", ["трансформер", "трансформеры", "трансформатор", "трансформатора"])
+def test_transformer_model_and_device_not_tier2(word: str):
+    """«трансформер» и «трансформатор» — термины, в скопление уровня 2 не идут"""
+    text = f"Мы заменили {word} в лаборатории. Это актуальная задача."
+    assert "tier2-cluster" not in types(text)
+    assert "tier2-cluster" not in types(text, "academic")
+
+
+@pytest.mark.parametrize("phrase", ["трансформация бизнеса", "трансформировать бизнес", "трансформационный проект"])
+def test_transformation_still_tier2(phrase: str):
+    """«трансформация» и «трансформировать» остаются словами уровня 2"""
+    assert "tier2-cluster" in types(f"Это актуальная задача: {phrase} идёт третий год.")
+
+
+def test_letter_only_colors_are_not_hashtags():
+    """цвета из одних букв не считаются хэштегами, настоящие теги считаются"""
+    assert "hashtag-stuffing" not in types("Палитра: #fff, #eee, #ddd, #ccc, #bbb и #aaa.")
+    assert "hashtag-stuffing" in types("Отпуск #море #лето #пляж #солнце #отдых #горы, фон поста #fff.")
+
+
+@pytest.mark.parametrize("closer", ["Сохраняйте, пригодится!", "Сохраняй, пригодится.", "Сохраняйте — пригодится."])
+def test_save_it_closer(closer: str):
+    """«Сохраняйте, пригодится» с запятой или тире"""
+    assert "social-closer" in types(f"Собрали десять горных маршрутов. {closer}")
+
+
+@pytest.mark.parametrize("sep", [":", ",", " —", " –", ""])
+def test_meet_launch_intro_separators(sep: str):
+    """«Знакомьтесь — Flowdesk, ваш новый…» с любым знаком после «Знакомьтесь»"""
+    assert "launch-intro" in types(f"Знакомьтесь{sep} Flowdesk, ваш новый любимый планировщик.")
+
+
 # ─── режимы ─────────────────────────────────────────────────────────────
 
 
 def test_academic_skips_required_formulas():
     """academic пропускает обязательные научные формулы"""
-    text = "Научная новизна заключается в новом методе. Практическая значимость работы подтверждена."
-    assert "tier2" not in types(text, "academic")
+    text = "Актуальность темы исследования высока. Практическая значимость работы подтверждена."
+    assert "tier2-cluster" in types(text)
+    assert "tier2-cluster" not in types(text, "academic")
 
 
 def test_chat_keeps_only_p0_and_calques():

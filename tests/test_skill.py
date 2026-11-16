@@ -409,6 +409,37 @@ def test_every_catalog_section_checked_or_judgment():
         assert h in HEADINGS, h
 
 
+def section_body(heading: str) -> str:
+    """Текст раздела каталога до следующего заголовка."""
+    m = re.search(rf"^#{{2,3}} {re.escape(heading)}\s*\n(.*?)(?=^#{{2,3}} |\Z)", CATALOG_TEXT, re.MULTILINE | re.DOTALL)
+    assert m, heading
+    return m[1]
+
+
+# Разделы на суждение, часть примеров которых ловит тип другого раздела.
+JUDGMENT_CAUGHT_ELSEWHERE: list[tuple[str, str, str]] = [
+    ("Уход от связки «быть»", "Метод является основой системы.", "tier1"),
+    (
+        "Безымянное независимое подтверждение",
+        "Независимые тесты подтверждают, что сервис быстрее.",
+        "vague-attribution",
+    ),
+    ("Шаблон «несмотря на трудности»", "Несмотря на ряд вызовов, отрасль продолжает развиваться.", "false-concession"),
+    ("Самооценка пункта", "Вот здесь начинается самое интересное.", "hook"),
+    ("Слоганы разработчиков", "Всё работает из коробки.", "jargon"),
+]
+
+
+@pytest.mark.parametrize(
+    ("heading", "text", "kind"), JUDGMENT_CAUGHT_ELSEWHERE, ids=[e[0] for e in JUDGMENT_CAUGHT_ELSEWHERE]
+)
+def test_judgment_section_names_section_that_catches_example(heading: str, text: str, kind: str):
+    """раздел на суждение называет раздел, тип которого ловит его пример"""
+    assert heading in JUDGMENT_ONLY
+    assert kind in [i.type for i in analyze(text).issues]
+    assert f"«{TYPE_TO_SECTION[kind]}»" in section_body(heading)
+
+
 def test_profile_table_matches_detector():
     """таблица соответствия профилей совпадает с детектором"""
     table = PROFILES_TEXT[PROFILES_TEXT.index("### Соответствие режимам детектора") :]
@@ -444,6 +475,10 @@ CATALOG_EXAMPLES: list[tuple[str, str, ContextMode]] = [
     ("Это знаменует новую эру в медицине.", "significance", "general"),
     ("Технология имеет все шансы стать одним из ключевых трендов.", "future-narrative", "general"),
     ("Будущее за инновационными решениями!", "future-narrative", "general"),
+    ("Время покажет.", "future-narrative", "general"),
+    ("В целом, можно сказать, что метод работает.", "generic-conclusion", "general"),
+    ("Дело не в цене. Не в функциях. Дело в доверии.", "not-x-but-y", "general"),
+    (f"Слово c{chr(0x43E)}p набрано в двух раскладках.", "homoglyph", "general"),
     ("Решение потенциально может ускорить работу.", "hedge-stack", "general"),
     ("Мы получили реальную пользу от внедрения.", "real-inflation", "general"),
     ("Это честная метрика качества.", "moral-adjective", "general"),
@@ -454,7 +489,9 @@ CATALOG_EXAMPLES: list[tuple[str, str, ContextMode]] = [
     ("Вот о чём почему-то молчат авторы учебников.", "novelty", "general"),
     ("И вот тут начинается самое интересное.", "hook", "general"),
     ("Сохраняйте себе, пригодится.", "social-closer", "general"),
+    ("Сохраняйте, пригодится!", "social-closer", "general"),
     ("Встречайте: Flowdesk!", "launch-intro", "general"),
+    ("Знакомьтесь — Flowdesk, ваш новый любимый планировщик.", "launch-intro", "general"),
     ("Горячее мнение: тесты не нужны.", "fake-casual", "general"),
     ("Представьте мир, где поезда ходят сами.", "speculative-opener", "general"),
     ("Давайте подумаем шаг за шагом.", "reasoning", "general"),
@@ -485,11 +522,20 @@ CATALOG_LEGIT: list[tuple[str, str, ContextMode]] = [
     ("Он назвал это «прорывом».", "straight-quotes", "general"),
     ("Точность составила 0,93.", "decimal-point", "general"),
     ("Мы ожидали рост задержки, и он действительно вырос на 12 %.", "hollow-intensifier", "general"),
-    ("Научная новизна заключается в новом методе.", "tier2", "academic"),
+    (
+        "Актуальность темы исследования высока. Практическая значимость работы подтверждена.",
+        "tier2-cluster",
+        "academic",
+    ),
+    ("Мы обучили трансформер на корпусе новостей. Это актуальная задача.", "tier2-cluster", "general"),
+    ("Мы обучили трансформер на корпусе новостей. Это актуальная задача.", "tier2-cluster", "academic"),
     ("Экосистема пакетов npm растёт.", "tier1", "technical"),
     ("Настроили Wi-Fi-роутер для IT-отдела.", "homoglyph", "general"),
     ("Задача #12 закрыта, цвет #1a2b3c.", "hashtag-stuffing", "general"),
+    ("Цвета темы: #ffffff, #eeeeee, #dddddd, #cccccc, #bbbbbb и #aaaaaa.", "hashtag-stuffing", "general"),
     ("Пресс-релиз опубликован, размер батча равен 32.", "jargon", "general"),
+    ("Туристический трекинг по Алтаю занял неделю.", "jargon", "general"),
+    ("Знакомьтесь, Света, наш новый бухгалтер.", "launch-intro", "chat"),
     ("Кропотливая работа: групповая супервизия психотерапевтов.", "jargon", "general"),
     ("Приложение написано на фреймворке Django.", "jargon", "technical"),
     ("Представим отсортированный массив из десяти чисел и найдём медиану.", "speculative-opener", "general"),

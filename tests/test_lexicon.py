@@ -7,6 +7,7 @@ import regex
 
 from aiw_ru import ALL_LEXICON, TYPE_LABELS, WEIGHTS, phrase
 from aiw_ru.compat import jsre
+from aiw_ru.lexicon import IDIOLECT, PHRASE3, TIER2, TIER3
 
 ROOT = Path(__file__).parent.parent
 
@@ -29,6 +30,19 @@ INVISIBLE_RE = regex.compile(
     + chr(0x2069)
     + "]"
 )
+
+
+def test_every_weighted_type_can_be_emitted():
+    """каждый тип с весом детектор может выдать: у мёртвого типа вес и подпись лишние"""
+    source = (ROOT / "src" / "aiw_ru" / "detect.py").read_text(encoding="utf-8")
+    # _add(ctx, "тип", …), Issue(type="тип", …) и таблицы вида ("тип", ВЫРАЖЕНИЕ_RE, подсказка).
+    emitted = set(regex.findall(r'_add\(\s*ctx,\s*"([\w-]+)"', source))
+    emitted |= set(regex.findall(r'\btype="([\w-]+)"', source))
+    emitted |= set(regex.findall(r'\(\s*"([\w-]+)",\s*[A-Z_]+_RE\b', source))
+    # Записи уровней 2 и 3, фразовых штампов и почерка модели находками сами не становятся.
+    cluster_only = {id(e) for e in (*TIER2, *TIER3, *PHRASE3, *IDIOLECT)}
+    emitted |= {e.type for e in ALL_LEXICON if id(e) not in cluster_only}
+    assert sorted(t for t in WEIGHTS if t not in emitted) == []
 
 
 def test_every_type_has_label_and_weight():
