@@ -179,6 +179,19 @@ def test_golden_changed_quote_fails() -> None:
     assert "пропало: «Данный подход" in "\n".join(g.failures)
 
 
+def test_golden_whole_doc_keeps_code() -> None:
+    """документ целиком: приложение с кодом на месте, сверка без детектора названа честно"""
+    assert grade(by_id("whole-doc-keeps-code"), golden("whole-doc-keeps-code.md")).failures == []
+
+
+def test_golden_whole_doc_dropped_code_fails() -> None:
+    """пропавшее приложение со скриптом и «проверил целостность» без сверки — провал"""
+    g = grade(by_id("whole-doc-keeps-code"), golden("whole-doc-keeps-code.bad.md"))
+    failures = "\n".join(g.failures)
+    assert "пропало: def shrinkage" in failures
+    assert "в ответе лишнее: роверил целостность" in failures
+
+
 def test_missing_final_fails_for_edit() -> None:
     """ответ без итогового текста — провал для правки"""
     assert "в ответе нет раздела «Итоговый текст»" in grade(by_id("vak-protected"), "Всё хорошо.").failures
