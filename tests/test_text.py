@@ -155,6 +155,63 @@ def test_bidi_next_to_rtl_and_mongolian_separator_inside_word_not_insertions():
     assert prepare(f"Слово {mongolian} по-монгольски.").invisible == []
 
 
+def test_tag_characters_are_insertions():
+    """символы-теги U+E0000–U+E007F прячут текст внутри слова: удаляются и считаются вставками"""
+    hidden = ch(0xE0001, 0xE0041, 0xE0042, 0xE007F)
+    p = prepare(f"Ра{hidden}бота готова.")
+    assert p.text == "Работа готова."
+    assert [i.index for i in p.invisible] == [2, 3, 4, 5]
+    assert p.to_source[:3] == [0, 1, 6]
+
+
+def test_flag_tag_sequence_not_insertion():
+    """флаг Шотландии — эмодзи из чёрного флага и тегов gbsct: законная последовательность"""
+    scotland = ch(0x1F3F4, 0xE0067, 0xE0062, 0xE0073, 0xE0063, 0xE0074, 0xE007F)
+    assert prepare(f"Поездка в Эдинбург {scotland} удалась.").invisible == []
+    # Теги без чёрного флага перед ними — вставка.
+    assert len(prepare(f"Поездка {ch(0xE0067, 0xE0062, 0xE007F)} удалась.").invisible) == 3
+
+
+def test_variation_selectors_hidden_vs_legit():
+    """селекторы вариантов: после эмодзи, цифры, знака и иероглифа законны, в слове и цепочкой — вставки"""
+    assert prepare(f"Спасибо {ch(0x2764, 0xFE0F)} и {ch(0x31, 0xFE0F, 0x20E3)}").invisible == []
+    assert prepare(f"Условие {ch(0x2264, 0xFE00)} выполнено.").invisible == []
+    assert prepare(f"Иероглиф {ch(0x845B, 0xE0100)} в цитате.").invisible == []
+    # Повтор U+FE0F после эмодзи и одинокий селектор после пробела оставляет копирование из мессенджеров.
+    assert prepare(f"Важно {ch(0x2757, 0xFE0F, 0xFE0F)} и нам {chr(0xFE0F)} на GitHub.").invisible == []
+    p = prepare(f"Ра{chr(0xFE0F)}бота и сло{chr(0xE0100)}во.")
+    assert p.text == "Работа и слово."
+    assert [i.index for i in p.invisible] == [2, 13]
+    # Цепочка селекторов после эмодзи прячет байты: первый законен, остальные — вставки.
+    smuggled = ch(0x1F600, 0xFE0F, 0xFE01, 0xE0110, 0xE0120)
+    p = prepare(f"Смайлик {smuggled} тут.")
+    assert [i.index for i in p.invisible] == [10, 11, 12]
+    assert p.text == f"Смайлик {ch(0x1F600, 0xFE0F)} тут."
+
+
+def test_ignore_markers_mask_region_and_keep_offsets():
+    """пометки «не проверять»: область вместе с пометками замаскирована, длина и строки те же"""
+    s = "Начало.\n<!-- aiw-ru:ignore-start -->\nДавайте разберёмся.\n<!-- aiw-ru:ignore-end -->\nКонец."
+    p = prepare(s)
+    assert len(p.no_code) == len(s)
+    assert p.no_code.count("\n") == s.count("\n")
+    assert "разберемся" not in p.no_code
+    assert "разберемся" not in p.prose
+    assert "Начало." in p.prose and "Конец." in p.prose
+    assert p.ignored == [(8, s.index("Конец.") - 1)]
+    m = model_text(s)
+    assert len(m) == len(s)
+    assert "разберёмся" not in m
+    assert "Конец." in m
+
+
+def test_ignore_markers_strip_invisible_inside():
+    """невидимые символы в пропущенной области не считаются, после неё — со смещением по исходнику"""
+    s = f"<!-- aiw-ru:ignore-start -->\r\nРа{ZW}бота\r\n<!-- aiw-ru:ignore-end -->\r\nСло{ZW}во."
+    p = prepare(s)
+    assert [i.index for i in p.invisible] == [s.rindex(ZW)]
+
+
 def test_narrow_nbsp_is_not_insertion():
     """узкий неразрывный пробел U+202F — законная типографика чисел, а не вставка"""
     p = prepare(f"Итого 10{chr(0x202F)}000 рублей.")

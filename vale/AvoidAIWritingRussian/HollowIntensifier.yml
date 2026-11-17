@@ -1,0 +1,10 @@
+# Собрано scripts/build_vale.py из таблиц детектора (тип hollow-intensifier). Не правьте руками.
+extends: substitution
+message: 'Пустой усилитель: «%[2]s» — %[1]s'
+link: https://github.com/ormeilu/avoid-ai-writing-russian/tree/master/skills/avoid-ai-writing-russian/references
+level: suggestion
+ignorecase: true
+nonword: true
+swap:
+  ? '(?<![\p{L}\p{N}_])(?:д[её]йствит[её]льно[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:важн\p{L}*|значим\p{L}*|инт[её]р[её]сн\p{L}*|пол[её]зн\p{L}*|сложн\p{L}*|хорош\p{L}*))(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:крайн[её][\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:важн\p{L}*|значим\p{L}*|пол[её]зн\p{L}*|эфф[её]ктивн\p{L}*))(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:чр[её]звычайно[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:важн\p{L}*|значим\p{L}*|пол[её]зн\p{L}*|эфф[её]ктивн\p{L}*))(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:откров[её]нно[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+говоря)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:ч[её]стно[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+говоря)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:[её]сли[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+быть[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+ч[её]стн\p{L}*)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:[её]сли[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+ч[её]стно,)(?![\p{L}\p{N}_])'
+  : 'убрать, сказать факт'

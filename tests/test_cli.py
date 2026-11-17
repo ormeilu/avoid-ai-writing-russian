@@ -443,6 +443,7 @@ def test_validate_json(cli: Cli):
     assert data["ok"] is True
     assert data["violations"] == []
     assert data["warnings"] == []
+    assert data["swappedNumbers"] == []
     assert data["issuesBefore"] == data["issuesAfter"]
 
 
@@ -474,6 +475,19 @@ def test_validate_warnings_keep_exit_0(cli: Cli, tmp_path: Path):
     data = json.loads(cli("validate", "--json", *files).out)
     assert data["ok"] is True
     assert data["warnings"] == [{"kind": "утверждение", "detail": "появилось: впервые"}]
+
+
+def test_validate_swapped_numbers_warning(cli: Cli, tmp_path: Path):
+    """validate: числа, поменявшиеся местами, — предупреждение в таблице и поле swappedNumbers"""
+    files = pair(tmp_path, "Кира собрала 12 400 подписей, Лев 8 900.", "Кира собрала 8 900 подписей, Лев 12 400.")
+    r = cli("validate", *files)
+    assert r.code == 0
+    assert "перестановка" in r.out
+    assert "поменялись местами" in " ".join(r.out.split())
+    data = json.loads(cli("validate", "--json", *files).out)
+    assert data["ok"] is True
+    assert data["swappedNumbers"][0]["numbers"] == ["12 400", "8 900"]
+    assert [warning["kind"] for warning in data["warnings"]] == ["перестановка"]
 
 
 def test_calibrate_creates_file_antiplagiat_uses_it(cli: Cli, tmp_path: Path):

@@ -41,6 +41,18 @@
   «половина», «вдвое») — предупреждение: они идиоматичны («с одной стороны»,
   «оба варианта»). «Во-вторых», «в-третьих» числом не считаются.
 - `месяц` — появился месяц, которого в исходнике не было («в марте»).
+- `перестановка` — все числа на месте, но стоят при чужих словах: «Кира собрала
+  12 400 подписей, Лев 8 900» → «Кира собрала 8 900 подписей, Лев 12 400». Опора
+  числа — слова его части (предложения, части через запятую, точку с запятой,
+  «и», «а», «но», «или»); единицы и счётные слова опорой не считаются. Число
+  переехало, если в правке при нём нет ни одного своего слова и есть слово
+  другого числа. Сообщается только замкнутый обмен (пара или цикл): одно число
+  в новом окружении чаще даёт пересказ. Части, переставленные вместе с числами,
+  и пункты списка в другом порядке не задевают. Числа, которые встречаются
+  дважды или стоят в одной части с другим числом, не сверяются. Глагол без
+  морфологии от существительного не отличить, поэтому обмен, где число
+  переехало вместе с глаголом («выросла на 10 %»), не виден. Всегда
+  предупреждение.
 - `утверждение` — слов-претензий стало больше: «впервые», «первый»,
   «единственный», «уникальный», «лучший», «всегда», «никогда», «все», «никто»,
   «гарантирует», «доказали», «самый», «крупнейший», «рекордный». Всегда
@@ -75,11 +87,21 @@ class Violation(Record):
     detail: str
 
 
+class NumberSwap(Record):
+    # Числа, обменявшиеся словами при них, в порядке исходника и как написаны.
+    numbers: list[str]
+    # Часть исходника с первым из чисел и часть правки, где оно оказалось.
+    before: str
+    after: str
+
+
 class ValidationResult(Record):
     ok: bool
     violations: list[Violation]
     # Возможные подмены фактов, которые код выхода не меняют: проверить глазами.
     warnings: list[Violation] = Field(default_factory=list)
+    # Перестановки чисел подробно; каждая есть и в `warnings` с видом «перестановка».
+    swapped_numbers: list[NumberSwap] = Field(default_factory=list)
     issues_before: int
     issues_after: int
 
@@ -90,6 +112,10 @@ INLINE_CODE_RE = jsre("`[^`\\n]+`", "g")
 FORMULA_RE = jsre("\\$\\$[\\s\\S]*?\\$\\$|\\$[^$\\n]+\\$", "g")
 URL_RE = jsre('https?:\\/\\/[^\\s)>\\]»"]+', "g")
 URL_TAIL_RE = jsre("[?&]$")
+# Точка или запятая после адреса в конце фразы — знак препинания, а не часть адреса.
+URL_END_RE = jsre("[.,;:!?…]+$")
+# Адрес ссылки в Markdown: [текст](адрес), в том числе относительный.
+LINK_TARGET_RE = jsre("\\]\\([^)\\n]*\\)", "g")
 LOOSE_URL_RE = jsre("https?:\\/\\/\\S+", "g")
 NUMBER_RE = jsre("\\d+(?:[.,]\\d+)*", "g")
 # Скобки после pandoc -t gfm бывают экранированы: \[12\]; сравниваются без обратной косой.
@@ -127,7 +153,10 @@ def _strip_code(text: str) -> str:
 
 
 def _urls(text: str) -> list[str]:
-    return [URL_TAIL_RE.sub("", AI_URL_RE.sub("", url), count=1) for url in _all(URL_RE, _strip_code(text))]
+    return [
+        URL_TAIL_RE.sub("", URL_END_RE.sub("", AI_URL_RE.sub("", url), count=1), count=1)
+        for url in _all(URL_RE, _strip_code(text))
+    ]
 
 
 def _numbers(text: str) -> list[str]:
@@ -147,10 +176,30 @@ def _multiset_diff(before: list[str], after: list[str]) -> tuple[list[str], list
     return missing, added
 
 
-def _compare_exact(kind: str, before: list[str], after: list[str], violations: list[Violation]) -> None:
-    missing, added = _multiset_diff(before, after)
+def _link_numbers(text: str) -> set[str]:
+    """Числа в адресах: URL и цели ссылок Markdown."""
+    stripped = _strip_code(text)
+    targets = _all(LOOSE_URL_RE, stripped) + _all(LINK_TARGET_RE, stripped)
+    return {number.replace(",", ".") for target in targets for number in _all(NUMBER_RE, target)}
+
+
+def _report(kind: str, missing: list[str], added: list[str], violations: list[Violation]) -> None:
     violations.extend(Violation(kind=kind, detail=f"пропало или изменено: {item[:120]}") for item in missing[:LIMIT])
     violations.extend(Violation(kind=kind, detail=f"появилось: {item[:120]}") for item in added[:LIMIT])
+
+
+def _compare_exact(kind: str, before: list[str], after: list[str], violations: list[Violation]) -> None:
+    _report(kind, *_multiset_diff(before, after), violations)
+
+
+def _compare_numbers(before: str, after: str, violations: list[Violation]) -> None:
+    """Числа прозы. Число, перешедшее из адреса ссылки в её текст или обратно («[отчёт 2025](…/2025)»),
+    не пропало и не появилось: оно было в документе и осталось в нём."""
+    missing, added = _multiset_diff(_numbers(before), _numbers(after))
+    before_links, after_links = _link_numbers(before), _link_numbers(after)
+    missing = [number for number in missing if number not in after_links]
+    added = [number for number in added if number not in before_links]
+    _report("число", missing, added, violations)
 
 
 # ─── Словари фактов ──────────────────────────────────────────────────────
@@ -979,6 +1028,138 @@ def _check_roles(before_prepared: Prepared, after_prepared: Prepared, warnings: 
         warnings.extend(Violation(kind="роль", detail=detail) for detail in details[:LIMIT])
 
 
+# ─── Перестановка чисел ─────────────────────────────────────────────────
+# Числа на месте, но стоят при чужих словах. Текст режется на части, опора числа — слова его
+# части. Сверяются только числа, которые встречаются в тексте один раз и стоят в своей части
+# одни: иначе не понять, к какому числу относится слово.
+
+# Число с разрядами через пробел («12 400») или обычное, с дробной частью и датой («12.03.2026»).
+SWAP_NUMBER_RE = regex.compile(r"(?<![\p{L}\p{N}.,])(?:\d{1,3}(?:[ \u00A0\u202F]\d{3})+(?!\d)|\d+)(?:[.,]\d+)*")
+# Границы частей: конец предложения, перевод строки, точка с запятой, запятая не в числе, союзы.
+# Двоеточие не граница: в «Кира: 12 400» имя и число из одной части.
+SWAP_PART_RE = regex.compile(r"[.!?…]+(?=\s|$)|[;\n]|,(?!\d)|\s(?:и|а|но|или)\s", regex.IGNORECASE)
+# Служебные слова опорой не считаются: они есть почти в каждой части.
+SWAP_STOP_WORDS = frozenset(
+    (
+        "в во на по до от из за со ко об обо при для без под над про через после перед между около у "
+        "и а но или либо же ли бы не ни то это этот эта эти тот та те так как что чем тоже также "
+        "еще уже всего лишь только его ее их он она оно они мы вы ты"
+    ).split()
+)
+# Счётные слова и сокращения ходят вместе с числом, как единицы.
+SWAP_COUNT_WORDS = frozenset("тыс млн млрд трлн шт чел раз раза".split())
+SWAP_COUNT_STEMS = ("тысяч", "миллион", "миллиард", "триллион", "штук", "человек")
+
+
+@dataclass(slots=True)
+class _NumberPart:
+    # Число как написано и границы его части в `prepared.prose`.
+    number: str
+    start: int
+    end: int
+    words: list[str]
+
+
+def _anchor(word: str) -> bool:
+    return (
+        len(word) >= 2
+        and word not in SWAP_STOP_WORDS
+        and word not in SWAP_COUNT_WORDS
+        and not word.startswith(SWAP_COUNT_STEMS)
+        and _unit(word) is None
+    )
+
+
+def _keep_newlines(match: regex.Match[str]) -> str:
+    return "".join(char if char == "\n" else " " for char in match.group())
+
+
+def _number_parts(prepared: Prepared) -> dict[str, _NumberPart]:
+    """Число (ключ без пробелов, с точкой) → часть, где оно стоит одно; только числа, встреченные один раз."""
+    # Номера пунктов списка («1.», «2)») не числа текста: при перестановке пунктов они остаются на месте.
+    prose = LINE_LEAD_RE.sub(_keep_newlines, prepared.prose)
+    seen: Counter[str] = Counter()
+    alone: dict[str, _NumberPart] = {}
+    bounds = [0, *(position for match in SWAP_PART_RE.finditer(prose) for position in match.span()), len(prose)]
+    for start, end in zip(bounds[::2], bounds[1::2], strict=True):
+        numbers = list(SWAP_NUMBER_RE.finditer(prose, start, end))
+        keys = ["".join(match.group().split()).replace(",", ".") for match in numbers]
+        seen.update(keys)
+        if len(numbers) != 1:
+            continue
+        letters = list(LETTERS_RE.finditer(prose, start, end))
+        first = min(numbers[0].start(), letters[0].start()) if letters else numbers[0].start()
+        last = max(numbers[0].end(), letters[-1].end()) if letters else numbers[0].end()
+        number = " ".join(_surface(prepared, numbers[0].start(), numbers[0].end()).split())
+        words = [word for word in (match.group().lower() for match in letters) if _anchor(word)]
+        alone[keys[0]] = _NumberPart(number, first, last, words)
+    return {key: part for key, part in alone.items() if seen[key] == 1}
+
+
+def _without(words: list[str], others: list[str]) -> list[str]:
+    """Слова, которых нет среди `others` ни в какой форме."""
+    return [word for word in words if not _covered(word, others)]
+
+
+def _moved(before: dict[str, _NumberPart], after: dict[str, _NumberPart]) -> dict[str, str]:
+    """Число → число, на чьё место оно встало: в правке при нём нет ни одного своего слова, но есть
+    слова другого числа. Если подходят два места поровну, число пропускается."""
+    common = [key for key in before if key in after]
+    moved: dict[str, str] = {}
+    for key in common:
+        now = after[key].words
+        best: list[tuple[int, str]] = []
+        for other in common:
+            if other == key:
+                continue
+            own = _without(before[key].words, before[other].words)
+            if not own or any(_covered(word, now) for word in own):
+                continue
+            taken = [word for word in _without(before[other].words, before[key].words) if _covered(word, now)]
+            if taken:
+                best.append((len(taken), other))
+        best.sort(reverse=True)
+        if best and (len(best) == 1 or best[0][0] > best[1][0]):
+            moved[key] = best[0][1]
+    return moved
+
+
+def _check_swaps(before_prepared: Prepared, after_prepared: Prepared, warnings: list[Violation]) -> list[NumberSwap]:
+    """Замкнутые обмены чисел: пара («30 и 50») или цикл («40 → 70 → 90 → 40»).
+
+    Одно число, оказавшееся в новом окружении, чаще всего даёт пересказ, а не подмена, поэтому
+    сообщается только цепочка, которая вернулась к первому числу.
+    """
+    before, after = _number_parts(before_prepared), _number_parts(after_prepared)
+    moved = _moved(before, after)
+    order = {key: index for index, key in enumerate(before)}
+    reported: set[str] = set()
+    swaps: list[NumberSwap] = []
+    for key in before:
+        if key not in moved or key in reported:
+            continue
+        cycle = [key]
+        while moved.get(cycle[-1]) in moved and moved[cycle[-1]] not in cycle:
+            cycle.append(moved[cycle[-1]])
+        if moved.get(cycle[-1]) != key:
+            continue
+        reported.update(cycle)
+        cycle.sort(key=order.__getitem__)
+        first_before, first_after = before[cycle[0]], after[cycle[0]]
+        swaps.append(
+            NumberSwap(
+                numbers=[before[number].number for number in cycle],
+                before=" ".join(_surface(before_prepared, first_before.start, first_before.end).split()),
+                after=" ".join(_surface(after_prepared, first_after.start, first_after.end).split()),
+            )
+        )
+    for swap in swaps[:LIMIT]:
+        numbers = ", ".join(swap.numbers[:-1]) + " и " + swap.numbers[-1]
+        detail = f"{numbers} поменялись местами: было «{swap.before}», стало «{swap.after}»"
+        warnings.append(Violation(kind="перестановка", detail=detail))
+    return swaps
+
+
 def validate(
     before: str, after: str, context: ContextMode = "general", marked: list[str] | None = None
 ) -> ValidationResult:
@@ -1015,7 +1196,7 @@ def validate(
         [QUOTE_MARKS_RE.sub("", quote) for quote in _all(QUOTE_RE, after_no_code)],
         violations,
     )
-    _compare_exact("число", _numbers(before), _numbers(after), violations)
+    _compare_numbers(before, after, violations)
     before_headings = " ".join(_all(HEADING_SHAPE_RE, before_no_code))
     after_headings = " ".join(_all(HEADING_SHAPE_RE, after_no_code))
     if before_headings != after_headings:
@@ -1035,6 +1216,7 @@ def validate(
     _check_negations(before_prepared, after_prepared, warnings)
     _check_units(before_prepared, after_prepared, warnings)
     _check_roles(before_prepared, after_prepared, warnings)
+    swapped = _check_swaps(before_prepared, after_prepared, warnings)
 
     issues_before = len(analysis.issues)
     issues_after = len(analyze(after, context).issues)
@@ -1049,4 +1231,5 @@ def validate(
         warnings=warnings,
         issues_before=issues_before,
         issues_after=issues_after,
+        swapped_numbers=swapped,
     )

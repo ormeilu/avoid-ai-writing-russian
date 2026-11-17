@@ -1,0 +1,10 @@
+# Собрано scripts/build_vale.py из таблиц детектора (тип reasoning). Не правьте руками.
+extends: substitution
+message: 'След рассуждения модели: «%[2]s» — %[1]s'
+link: https://github.com/ormeilu/avoid-ai-writing-russian/tree/master/skills/avoid-ai-writing-russian/references
+level: warning
+ignorecase: true
+nonword: true
+swap:
+  ? '(?<![\p{L}\p{N}_])(?:(?:подума[её]м|рассуждать|разб[её]р[её]м|рассмотрим)[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+шаг[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+за[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+шагом)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:разобь[её]м[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:задачу|вопрос|пробл[её]му)[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+на[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:части|этапы|шаги))(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:подойд[её]м[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+к[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:вопросу|задач[её]|пробл[её]м[её])[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+сист[её]мно)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:вот[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+ход[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+моих[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+рассужд[её]ний)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:для[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+начала[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+рассмотрим)(?![\p{L}\p{N}_])'
+  : 'сначала вывод, потом доводы'

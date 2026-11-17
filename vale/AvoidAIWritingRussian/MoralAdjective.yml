@@ -1,0 +1,10 @@
+# Собрано scripts/build_vale.py из таблиц детектора (тип moral-adjective). Не правьте руками.
+extends: substitution
+message: 'Моральный эпитет у неодушевлённого: «%[2]s» — %[1]s'
+link: https://github.com/ormeilu/avoid-ai-writing-russian/tree/master/skills/avoid-ai-writing-russian/references
+level: suggestion
+ignorecase: true
+nonword: true
+swap:
+  ? '(?<![\p{L}\p{N}_])(?:(?:ч[её]стн\p{L}*|добросов[её]стн\p{L}*|порядочн\p{L}*|правдив\p{L}*)[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:м[её]трик\p{L}*|оц[её]нк\p{L}*|график\p{L}*|кривая|кривой|числ\p{L}*|цифр\p{L}*|показат[её]л\p{L}*|р[её]зультат\p{L}*|сравн[её]ни\p{L}*|б[её]нчмарк\p{L}*))(?![\p{L}\p{N}_])'
+  : 'назвать конкретное свойство или убрать'

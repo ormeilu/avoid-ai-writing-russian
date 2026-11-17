@@ -392,16 +392,31 @@ def _detect_lexicon(ctx: _Ctx, text_blocks: list[Block]) -> None:
 
 
 # ─── Технические отпечатки ──────────────────────────────────────────────
+# Маркер ссылки ChatGPT: turn0search3, turn0image1. Голый маркер не должен продолжать слово
+# («return0image0»); цепочка маркеров подряд («iturn0image0turn0image1», галерея картинок)
+# ловится и слитой со словом.
+_TURN = "turn\\d+(?:search|news|file|image|view|fetch|video|product|academia)\\d+"
 CHAT_MARKUP_RE = jsre(
     "\\uE200[^\\uE201\\n]{0,200}\\uE201|[\\uE200-\\uE204]|citeturn\\d+\\w*"
-    "|(?<![\\p{L}\\d])turn\\d+(?:search|news|file|image|view|fetch|video|product|academia)\\d+"
+    f"|(?<![\\p{{L}}\\d])i?(?:{_TURN})+|(?:{_TURN}){{2,}}"
     "|【\\d+(?::\\d+)?†[^】\\n]{0,80}】|contentReference\\[oaicite:\\d+\\](?:\\{index=\\d+\\})?"
-    "|oai_citation|\\[attached_file:\\d+\\]|grok_render_citation_card_json|grok_card|attributableIndex"
+    "|oai_citation|\\[attached_file:\\d+\\]|grok_render_citation_card_json|grok_card|<grok-card(?![\\w-])"
+    "|attributableIndex|\\[web:\\d+\\]|ppl-ai-file-upload"
     "|\\]\\(sandbox:/mnt/data/|:::writing\\{variant=|\\[cite:\\s*\\d+(?:\\s*,\\s*\\d+)*\\]|\\[citation:\\s*\\d+\\]"
     "|\\[span_\\d+\\]\\((?:start|end)_span\\)|vertexaisearch\\.cloud\\.google\\.com/grounding-api-redirect"
-    "|</?think>",
+    "|</?think>"
+    # Обёртка документа ChatGPT на другом языке: «:::écriture{variante="document" id="28471"}».
+    # Директивы документации («:::note{title=…}») числового id не несут.
+    '|:::\\p{L}+\\{\\p{L}+=["“”„«]?[^"“”„«»}\\n]{1,40}["“”»]?[ \\t]+id=["“”„«]?\\d{3,}'
+    # Плашки источников ChatGPT, слипшиеся в цепочку: «IT Governance+3ISO+3», «Хабр+3РБК+2».
+    # Одиночная плашка «Wikipedia+1» не ловится: её не отличить от «N+1» и «C++».
+    "|\\p{L}\\+\\d{1,2}(?:\\p{Lu}[\\p{L}\\d .&-]{0,40}?\\+\\d{1,2})+(?![\\p{L}\\d])",
     "gu",
 )
+# Gemini оборачивает фрагмент ответа в <mark>…</mark> (остаток проверки ответа по источникам).
+# Тег без атрибутов, закрыт в той же строке и обнимает слова. В режиме technical не ищется:
+# в документации HTML внутри Markdown законен.
+MARK_TAG_RE = jsre("<mark>[^<>\\n]{0,400}\\p{L}[^<>\\n]{0,400}</mark>", "gu")
 AI_URL_RE = jsre(
     "[?&](?:utm_source=(?:chatgpt\\.com|openai|copilot\\.com|claude\\.ai|perplexity\\.ai|perplexity"
     "|gemini\\.google\\.com|deepseek\\.com)|referrer=grok\\.com)",
@@ -490,6 +505,11 @@ def _detect_fingerprints(ctx: _Ctx) -> None:
     ):
         for match in pattern.finditer(prepared.no_code):
             _add(ctx, type_, type_, "P0", match.start(), match.group(), hint)
+    if ctx.mode != "technical":
+        for match in MARK_TAG_RE.finditer(prepared.no_code):
+            _add(
+                ctx, "chat-markup", "mark-tag", "P0", match.start(), match.group(), "убрать теги <mark>, текст оставить"
+            )
 
 
 # ─── Обвязка ответа чата и обрыв генерации ──────────────────────────────
@@ -1130,6 +1150,7 @@ def analyze_internal(source: str, context: ContextMode = "general") -> tuple[Ana
             paragraph_length_cv=fixed(stylometry.para_cv, 3),
             mattr=fixed(stylometry.mattr, 3),
             context_mode=context,
+            ignored_regions=len(prepared.ignored),
         ),
     )
     return result, Internals(prepared, text_blocks, prose_sentences)

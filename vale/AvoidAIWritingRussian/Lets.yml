@@ -1,0 +1,10 @@
+# Собрано scripts/build_vale.py из таблиц детектора (тип lets). Не правьте руками.
+extends: substitution
+message: '«Давайте…»: «%[2]s» — %[1]s'
+link: https://github.com/ormeilu/avoid-ai-writing-russian/tree/master/skills/avoid-ai-writing-russian/references
+level: warning
+ignorecase: true
+nonword: true
+swap:
+  ? '(?<![\p{L}\p{N}_])(?:давайт[её][\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:рассмотрим|разб[её]р[её]мся|разб[её]р[её]м|посмотрим|погрузимся|углубимся|начн[её]м|поговорим|обсудим|пр[её]дставим|вспомним|узна[её]м|изучим|подума[её]м|попробу[её]м[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+разобраться))(?![\p{L}\p{N}_])'
+  : 'начать с сути'

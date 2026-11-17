@@ -75,17 +75,68 @@ references:
     collection-title: "Findings of the Association for Computational Linguistics: ACL 2026"
     url: "https://arxiv.org/abs/2410.23728"
     year: 2026
+  - type: conference-paper
+    title: "LLMTrace: A Corpus for Classification and Fine-Grained Localization of AI-Written Text"
+    authors:
+      - family-names: Tolstykh
+        given-names: Irina
+      - family-names: Tsybina
+        given-names: Aleksandra
+      - family-names: Yakubson
+        given-names: Sergey
+      - family-names: Kuprashevich
+        given-names: Maksim
+    collection-title: "Findings of the Association for Computational Linguistics: EMNLP 2026"
+    start: 41585
+    end: 41622
+    url: "https://aclanthology.org/2026.findings-emnlp.1951/"
+    year: 2026
   - type: report
     title: Pangram 4 Technical Report
     authors:
-      - name: Pangram Labs
-    url: "https://pangram-public.s3.us-east-1.amazonaws.com/pdf/pangram_4_technical_report.pdf"
+      - family-names: Glickenhaus
+        given-names: Ben
+      - family-names: Thai
+        given-names: Katherine
+      - family-names: Russell
+        given-names: Jenna
+      - family-names: Masrour
+        given-names: Elyas
+      - family-names: Han
+        given-names: Yue
+      - family-names: Spero
+        given-names: Max
+      - family-names: Emi
+        given-names: Bradley
+    institution:
+      name: Pangram Labs
+    url: "https://arxiv.org/abs/2607.27183"
     year: 2026
   - type: website
     title: "Wikipedia: Signs of AI writing"
     authors:
       - name: Wikipedia contributors
     url: "https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing"
+    license: CC-BY-SA-4.0
+  - type: website
+    title: "Википедия: Признаки текстов, сгенерированных искусственным интеллектом"
+    authors:
+      - name: Участники Википедии
+    url: "https://ru.wikipedia.org/wiki/Википедия:Признаки_сгенерированности_текста"
+    license: CC-BY-SA-4.0
+  - type: report
+    title: AI Tells
+    authors:
+      - family-names: Druck
+        given-names: Gregory
+      - family-names: Paredes
+        given-names: Jose Luis
+      - family-names: Smith
+        given-names: Ethan
+    institution:
+      name: Graphite
+    url: "https://graphite.io/research/ai-tells"
+    year: 2026
   - type: software
     title: openai-conversations
     authors:
@@ -97,6 +148,24 @@ references:
       - family-names: Utov
         given-names: Ilya
     repository-code: "https://github.com/ilyautov/humanizer-ru"
+    license: MIT
+  - type: software
+    title: humanizer-skill
+    authors:
+      - alias: Aboudjem
+    repository-code: "https://github.com/Aboudjem/humanizer-skill"
+    license: MIT
+  - type: software
+    title: stop-slop-refined
+    authors:
+      - alias: welttowelt
+    repository-code: "https://github.com/welttowelt/stop-slop-refined"
+    license: MIT
+  - type: software
+    title: humanizer
+    authors:
+      - alias: blader
+    repository-code: "https://github.com/blader/humanizer"
     license: MIT
   - type: software
     title: rubert-tiny2

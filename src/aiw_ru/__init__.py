@@ -25,7 +25,7 @@ from aiw_ru.categories import JUDGMENT_ONLY, TYPE_TO_SECTION
 from aiw_ru.detect import TYPE_LABELS, WEIGHTS, analyze, label_for, score_issues
 from aiw_ru.lexicon import ALL_LEXICON, LexEntry, phrase
 from aiw_ru.types import CONTEXT_MODES, PROFILE_TO_MODE, AnalysisResult, ContextMode, Issue, Record, Severity, Stats
-from aiw_ru.validate import ValidationResult, Violation, validate
+from aiw_ru.validate import NumberSwap, ValidationResult, Violation, validate
 
 try:
     __version__ = version("aiw-ru")
@@ -51,6 +51,7 @@ __all__ = [
     "Issue",
     "LexEntry",
     "Model",
+    "NumberSwap",
     "Record",
     "Sample",
     "Severity",

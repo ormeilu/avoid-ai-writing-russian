@@ -1,0 +1,10 @@
+# Собрано scripts/build_vale.py из таблиц детектора (тип transition). Не правьте руками.
+extends: substitution
+message: 'Шаблонный переход: «%[2]s» — %[1]s'
+link: https://github.com/ormeilu/avoid-ai-writing-russian/tree/master/skills/avoid-ai-writing-russian/references
+level: warning
+ignorecase: true
+nonword: true
+swap:
+  ? '(?<![\p{L}\p{N}_])(?:подводя[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:итог|итоги|ч[её]рту))(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:р[её]зюмируя[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:выш[её]сказанно[её]|сказанно[её])?)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:исходя[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+из[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+выш[её]излож[её]нного)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:из[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+вс[её]го[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+выш[её]сказанного[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+сл[её]ду[её]т)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:в[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+заключ[её]ни[её][\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:стоит|хоч[её]тся|можно|сл[её]ду[её]т|отм[её]тим|скаж[её]м))(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:в[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+заключ[её]ни[её],)(?![\p{L}\p{N}_])'
+  : 'вывод должен быть виден сам'

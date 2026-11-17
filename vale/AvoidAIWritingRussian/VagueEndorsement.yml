@@ -1,0 +1,10 @@
+# Собрано scripts/build_vale.py из таблиц детектора (тип vague-endorsement). Не правьте руками.
+extends: substitution
+message: 'Пустое одобрение: «%[2]s» — %[1]s'
+link: https://github.com/ormeilu/avoid-ai-writing-russian/tree/master/skills/avoid-ai-writing-russian/references
+level: suggestion
+ignorecase: true
+nonword: true
+swap:
+  ? '(?<![\p{L}\p{N}_])(?:стоит[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:прочитать|изучить|внимания|посмотр[её]ть|обратить[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+внимани[её]))(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:заслужива\p{L}*[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:внимани\p{L}*|изуч[её]ни\p{L}*))(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:достойн\p{L}*[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:внимани\p{L}*|изуч[её]ни\p{L}*))(?![\p{L}\p{N}_])'
+  : 'сказать почему'

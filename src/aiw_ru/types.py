@@ -63,6 +63,9 @@ class Stats(Record):
     paragraph_length_cv: float = Field(serialization_alias="paragraphLengthCV")
     mattr: float
     context_mode: ContextMode
+    # Области между пометками «не проверять» (`<!-- aiw-ru:ignore-start -->` … `-end -->`);
+    # в JSON поле есть, только если такие области нашлись.
+    ignored_regions: int = Field(default=0, exclude_if=lambda value: not value)
 
 
 class Light(Record):

@@ -98,6 +98,17 @@ hooks = [
     priority = 30,
   },
   {
+    # Стиль Vale собирается из словарей: после их правки его пересобирают, иначе коммит не пройдёт.
+    # После yamlfmt (приоритет 10): генератор пишет YAML в той же форме, что и форматтер.
+    id = "vale-style",
+    name = "стиль Vale совпадает со словарями детектора",
+    entry = "uv run python scripts/build_vale.py --check",
+    language = "system",
+    files = '^(src/aiw_ru/(lexicon|detect|types)\.py|scripts/build_vale\.py|vale/.+)$',
+    pass_filenames = false,
+    priority = 30,
+  },
+  {
     id = "selfscan",
     name = "документация проходит собственный детектор",
     entry = "uv run aiw-ru scan --context docs --min P1 --fail-above 30",
