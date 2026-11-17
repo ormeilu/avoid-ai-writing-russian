@@ -6,7 +6,7 @@ from collections.abc import Callable
 import pytest
 
 from aiw_ru import analyze
-from aiw_ru.types import ContextMode
+from aiw_ru.types import CONTEXT_MODES, ContextMode
 
 ZW = chr(0x200B)
 SHY = chr(0x00AD)
@@ -354,6 +354,117 @@ def test_chat_markup_in_code_not_flagged():
     """в коде разметка чатов законна: так её описывает документация"""
     assert "chat-markup" not in types("Модель пишет рассуждение в `<think>` и закрывает `[cite: 3]`.")
     assert "chat-markup" not in types("Сноска [3] и цитата [12, с. 45] остаются.")
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "<mark>основной инструмент отдела продаж</mark>",
+        "[web:1]",
+        "[web:12][web:3]",
+        "https://ppl-ai-file-upload.s3.amazonaws.com/web/direct-files/12/report.pdf",
+        '<grok-card data-id="e8ff4f" data-type="citation_card"></grok-card>',
+        "iturn0image0turn0image1turn0image4",
+        "картинкиturn0image2turn0image5",
+        ':::écriture{variante="document" id="28471"}',
+        ":::writing{variant=“document” id=“51724”}",
+        ':::письмо{вариант="документ" id="40213"}',
+        "Хабр+3РБК+2",
+        "IT Governance+3ISO+3ISO+3",
+    ],
+)
+def test_chat_markup_from_interfaces(marker: str):
+    """остатки интерфейсов Gemini, Perplexity, Grok и ChatGPT из каталога Википедии"""
+    assert "chat-markup" in types(f"Выручка выросла на 12 %. {marker} Прогноз сохранён.")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Пишем на C++ и C#, на улице +3 °C, а 2+2=4.",
+        "Запрос N+1 тормозит, вариант A+1 лучше, оценка 4+ и 5+.",
+        "Счёт матча Спартак+1, потом Зенит+2 в таблице.",
+        "Тег `<mark>выделенный текст</mark>` подсвечивает фрагмент.",
+        '<mark class="note">выделенный текст</mark> в шаблоне письма.',
+        "Ссылка [web: страница проекта] и [web] без номера.",
+        "Карточка grok-card в документации без угловой скобки.",
+        "Функция return0image0 вернула картинку, turnover растёт.",
+        ':::note{title="Внимание"}',
+        ":::tip",
+    ],
+)
+def test_chat_markup_interfaces_must_not_fire(text: str):
+    """похожие, но законные записи: языки, температура, теги с атрибутами, директивы документации"""
+    assert "chat-markup" not in types(text)
+
+
+def test_mark_tag_skipped_in_technical_mode():
+    """в документации HTML внутри Markdown законен, поэтому <mark> там не находка"""
+    text = "Поле <mark>обязательно для заполнения</mark> в форме."
+    assert "chat-markup" in types(text)
+    assert "chat-markup" not in types(text, "technical")
+
+
+# ─── пометки «не проверять» ─────────────────────────────────────────────
+
+IGNORED = "Давайте разберёмся: это играет ключевую роль в современном мире."
+
+
+@pytest.mark.parametrize("mode", CONTEXT_MODES)
+@pytest.mark.parametrize("name", ["aiw-ru", "avoid-ai-writing"])
+def test_ignore_markers_exclude_region(mode: ContextMode, name: str):
+    """текст между пометками не проверяется ни в одном режиме, обе формы пометок"""
+    text = f"Обычный текст.\n\n<!-- {name}:ignore-start -->\n{IGNORED}\n<!-- {name}:ignore-end -->\n\nКонец."
+    r = analyze(text, mode)
+    assert [i.text for i in r.issues] == []
+    assert r.stats.ignored_regions == 1
+    assert r.to_dict()["stats"]["ignoredRegions"] == 1
+
+
+def test_ignore_markers_counter_absent_without_markers():
+    """без пометок счётчика в JSON нет: прежние отчёты не меняются"""
+    r = analyze("Обычный текст.")
+    assert r.stats.ignored_regions == 0
+    assert "ignoredRegions" not in r.to_dict()["stats"]
+
+
+def test_ignore_markers_only_on_own_line():
+    """пометка внутри строки не действует"""
+    text = f"Пример: <!-- aiw-ru:ignore-start --> {IGNORED} <!-- aiw-ru:ignore-end -->"
+    r = analyze(text)
+    assert "играет ключевую роль" in [i.text for i in r.issues]
+    assert r.stats.ignored_regions == 0
+
+
+def test_ignore_markers_keep_offsets_after_region():
+    """находки после пропущенной области указывают на исходный текст"""
+    text = (
+        f"<!-- aiw-ru:ignore-start -->\nРа{ZW}бота {IGNORED}\n<!-- aiw-ru:ignore-end -->\n\nДан{ZW}ный метод работает."
+    )
+    r = analyze(text)
+    found = {i.type: i for i in r.issues}
+    assert found["invisible-chars"].text == "1 невидимый символ"
+    assert found["invisible-chars"].index == text.rindex(ZW)
+    assert found["invisible-chars"].line == 5
+    fragments = [i for i in r.issues if i.type != "invisible-chars"]
+    assert f"Дан{ZW}ный метод" in [i.text for i in fragments]
+    for issue in fragments:
+        assert text[issue.index : issue.index + len(issue.text)] == issue.text, issue.type
+
+
+def test_ignore_markers_nest_and_unclosed_runs_to_end():
+    """вложенные пометки закрываются парами, незакрытая действует до конца текста"""
+    start, end = "<!-- aiw-ru:ignore-start -->", "<!-- aiw-ru:ignore-end -->"
+    nested = f"{start}\n{start}\n{IGNORED}\n{end}\n{IGNORED}\n{end}\n\nОбычный текст."
+    r = analyze(nested)
+    assert r.issues == []
+    assert r.stats.ignored_regions == 1
+    unclosed = f"Обычный текст.\n\n{start}\n{IGNORED}\n\n{IGNORED}"
+    r = analyze(unclosed)
+    assert r.issues == []
+    assert r.stats.ignored_regions == 1
+    stray = f"{end}\n{IGNORED}"
+    assert "играет ключевую роль" in [i.text for i in analyze(stray).issues]
 
 
 # ─── обвязка ответа чата, почерк модели, обрыв ──────────────────────────

@@ -1,0 +1,10 @@
+# Собрано scripts/build_vale.py из таблиц детектора (тип speculative-opener). Не правьте руками.
+extends: substitution
+message: '«Представьте…»: «%[2]s» — %[1]s'
+link: https://github.com/ormeilu/avoid-ai-writing-russian/tree/master/skills/avoid-ai-writing-russian/references
+level: warning
+ignorecase: true
+nonword: true
+swap:
+  ? '(?<![\p{L}\p{N}_])(?:пр[её]дставьт[её][\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:с[её]б[её][\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+)?(?:мир|будущ[её][её]|ситуацию|д[её]нь),?[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:в[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+котором|гд[её]|когда))(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:вообразит[её][\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:с[её]б[её][\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+)?(?:мир|будущ[её][её]))(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:только[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+пр[её]дставьт[её])(?![\p{L}\p{N}_])'
+  : 'удалить сценарий, сказать утверждение'

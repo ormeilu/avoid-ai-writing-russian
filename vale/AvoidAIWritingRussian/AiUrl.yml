@@ -1,0 +1,10 @@
+# Собрано scripts/build_vale.py из таблиц детектора (тип ai-url). Не правьте руками.
+extends: substitution
+message: 'Параметр ИИ-инструмента в ссылке: «%[2]s» — %[1]s'
+link: https://github.com/ormeilu/avoid-ai-writing-russian/tree/master/skills/avoid-ai-writing-russian/references
+level: error
+ignorecase: true
+nonword: true
+swap:
+  ? '[?&](?:utm_source=(?:chatgpt\.com|openai|copilot\.com|claude\.ai|perplexity\.ai|perplexity|gemini\.google\.com|deepseek\.com)|referrer=grok\.com)'
+  : 'удалить только этот параметр'

@@ -1,0 +1,10 @@
+# Собрано scripts/build_vale.py из таблиц детектора (тип filler). Не правьте руками.
+extends: substitution
+message: 'Подушка: «%[2]s» — %[1]s'
+link: https://github.com/ormeilu/avoid-ai-writing-russian/tree/master/skills/avoid-ai-writing-russian/references
+level: warning
+ignorecase: true
+nonword: true
+swap:
+  ? '(?<![\p{L}\p{N}_])(?:(?:стоит|важно|н[её]обходимо|сл[её]ду[её]т|нужно|хоч[её]тся|хот[её]лось[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+бы)[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:отм[её]тить|подч[её]ркнуть|упомянуть|зам[её]тить|понимать|учитывать|сказать),?[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+что)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:н[её]льзя[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+н[её][\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:отм[её]тить|упомянуть|сказать))(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:прим[её]чат[её]льно,?[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+что)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:инт[её]р[её]сно,?[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+что)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:д[её]ло[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+в[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+том,?[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+что)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:р[её]альность[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+такова,?[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+что)(?![\p{L}\p{N}_])'
+  : 'убрать обёртку, оставить факт'

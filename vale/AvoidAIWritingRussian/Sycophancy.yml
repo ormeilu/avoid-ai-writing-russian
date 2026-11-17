@@ -1,0 +1,10 @@
+# Собрано scripts/build_vale.py из таблиц детектора (тип sycophancy). Не правьте руками.
+extends: substitution
+message: 'Угодливость: «%[2]s» — %[1]s'
+link: https://github.com/ormeilu/avoid-ai-writing-russian/tree/master/skills/avoid-ai-writing-russian/references
+level: error
+ignorecase: true
+nonword: true
+swap:
+  ? '(?<![\p{L}\p{N}_])(?:(?:отличный|пр[её]красный|зам[её]чат[её]льный|хороший|инт[её]р[её]сный|правильный)[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+вопрос!?)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:вы[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:абсолютно|сов[её]рш[её]нно|полностью)[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+правы)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:(?:оч[её]нь|в[её]сьма)[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:точно[её]|в[её]рно[её]|м[её]тко[её]|глубоко[её])[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:зам[её]чани[её]|наблюд[её]ни[её]))(?![\p{L}\p{N}_])'
+  : 'удалить'

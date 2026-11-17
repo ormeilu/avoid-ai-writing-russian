@@ -1,0 +1,10 @@
+# Собрано scripts/build_vale.py из таблиц детектора (тип narrated-candor). Не правьте руками.
+extends: substitution
+message: 'Показная откровенность: «%[2]s» — %[1]s'
+link: https://github.com/ormeilu/avoid-ai-writing-russian/tree/master/skills/avoid-ai-writing-russian/references
+level: warning
+ignorecase: true
+nonword: true
+swap:
+  ? '(?<![\p{L}\p{N}_])(?:буду[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:ч[её]ст[её]н|ч[её]стна|откров[её]н[её]н|откров[её]нна))(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:хочу[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+сразу[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+оговориться)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:н[её][\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+буду[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+скрывать)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:скажу[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:прямо|ч[её]стно|откров[её]нно),)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:давайт[её][\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:ч[её]стно|начистоту|буд[её]м[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+откров[её]нны))(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:буд[её]м[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:ч[её]стны|откров[её]нны))(?![\p{L}\p{N}_])'
+  : 'удалить рамку, оставить сказанное'

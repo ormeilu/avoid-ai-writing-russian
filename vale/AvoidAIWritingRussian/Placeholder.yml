@@ -1,0 +1,10 @@
+# Собрано scripts/build_vale.py из таблиц детектора (тип placeholder). Не правьте руками.
+extends: substitution
+message: 'Незаполненная заглушка: «%[2]s» — %[1]s'
+link: https://github.com/ormeilu/avoid-ai-writing-russian/tree/master/skills/avoid-ai-writing-russian/references
+level: error
+ignorecase: false
+nonword: true
+swap:
+  ? '\[(?:Ваш[аеиё]?|Вставьт[её]|Укажит[её]|Добавьт[её]|Вв[её]дит[её]|Опишит[её]|Названи[её]|Имя|Фамилия|Дата(?![ \t]+(?:обращ[её]ния|доступа)[:\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*[0-9])|ДАТА|Источник|Ссылка|Your|Insert|Add|Enter)[^\]\n]{0,60}\]|(?:(?<=[A-Za-z0-9_])(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])(?=[A-Za-z0-9_]))(?:19|20)XX(?:(?<=[A-Za-z0-9_])(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])(?=[A-Za-z0-9_]))|(?:(?<=[A-Za-z0-9_])(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])(?=[A-Za-z0-9_]))[0-9]{4}-XX-XX(?:(?<=[A-Za-z0-9_])(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])(?=[A-Za-z0-9_]))|<!--[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*(?:добавь|добавьт[её]|вставь|вставьт[её]|todo|TODO|заполни|укажит[её]|add|insert)[^>]*-->'
+  : 'заполнить реальным содержимым или удалить предложение'

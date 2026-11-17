@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import math
+from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -131,8 +132,22 @@ def _spoofed(part: str) -> bool:
 BIDI = frozenset(map(chr, [0x200E, 0x200F, 0x061C, *range(0x202A, 0x202F), *range(0x2066, 0x206A)]))
 # Монгольский разделитель гласных: законен только внутри монгольского слова.
 MVS = chr(0x180E)
-# Символы, которые удаляются из текста перед поиском.
-STRIPPED = frozenset(map(chr, [0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF, 0x00AD])) | BIDI | {MVS}
+# Символы-теги U+E0000–U+E007F: невидимая копия ASCII, ими прячут текст внутри слова.
+# Законны только в эмодзи флага региона: чёрный флаг, теги и завершающий тег U+E007F.
+TAGS = frozenset(map(chr, range(0xE0000, 0xE0080)))
+FLAG_TAGS_RE = jsre("\\U0001F3F4[\\U000E0020-\\U000E007E]+\\U000E007F", "gu")
+# Селекторы вариантов. U+FE00–U+FE0F выбирают вид знака (эмодзи или текст, начертание
+# математического знака), U+E0100–U+E01EF — вариант иероглифа. Один селектор после своей
+# основы законен; цепочкой разных селекторов и селектором внутри слова прячут данные.
+VARIATION = frozenset(map(chr, range(0xFE00, 0xFE10)))
+IDEOGRAPHIC_VARIATION = frozenset(map(chr, range(0xE0100, 0xE01F0)))
+SELECTORS = VARIATION | IDEOGRAPHIC_VARIATION
+IDEOGRAPHIC_RE = jsre("\\p{Ideographic}", "u")
+# Символы, которые удаляются из текста перед поиском. Селекторы U+FE00–U+FE0F удаляются,
+# только когда спрятаны (_hidden_selector): селектор эмодзи остаётся в тексте.
+STRIPPED = (
+    frozenset(map(chr, [0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF, 0x00AD])) | BIDI | {MVS} | TAGS | IDEOGRAPHIC_VARIATION
+)
 SOFT_HYPHEN = chr(0x00AD)
 BOM = chr(0xFEFF)
 ZWJ = chr(0x200D)
@@ -175,9 +190,32 @@ def _joins_emoji(text: str, i: int) -> bool:
     return bool(EMOJI_BEFORE_ZWJ.search(text[max(0, i - 2) : i])) and bool(EMOJI_AFTER_ZWJ.search(text[i + 1 : i + 3]))
 
 
+def _hidden_selector(text: str, i: int) -> bool:
+    """Селектор вариантов не на своём месте: после буквы русского или латинского алфавита
+    или в цепочке разных селекторов. Повтор U+FE0F после эмодзи («❗️️») оставляет копирование
+    из мессенджеров, а одинокий селектор после пробела — эмодзи, потерянное при копировании:
+    данных они не прячут."""
+    if i == 0:
+        return False
+    char, base = text[i], text[i - 1]
+    if base in SELECTORS:
+        return char != base
+    return bool(CYRILLIC_RE.match(base)) or bool(LATIN_RE.match(base))
+
+
+def _flag_tags(text: str) -> set[int]:
+    """Позиции тегов внутри эмодзи флагов региона (🏴 и теги gbsct — флаг Шотландии)."""
+    if chr(0x1F3F4) not in text:
+        return set()
+    return {i for match in FLAG_TAGS_RE.finditer(text) for i in range(match.start() + 1, match.end())}
+
+
 def _legit_control(text: str, i: int) -> bool:
-    """Знак направления рядом с ивритом или арабским и разделитель внутри монгольского слова — не вставка."""
+    """Знак направления рядом с ивритом или арабским, разделитель внутри монгольского слова
+    и селектор варианта сразу после иероглифа — не вставка."""
     char = text[i]
+    if char in IDEOGRAPHIC_VARIATION:
+        return bool(IDEOGRAPHIC_RE.match(text[i - 1 : i]))
     if char in BIDI:
         # Сам знак ALM (U+061C) относится к арабскому письму, поэтому смотрим только на соседей.
         return bool(RTL_RE.search(text[max(0, i - 3) : i] + " " + text[i + 1 : i + 4]))
@@ -233,6 +271,9 @@ class Prepared:
     line_starts: list[int]
     # Служебные части статьи в `text` (service_ranges): в `prose` замаскированы.
     service: list[tuple[int, int]]
+    # Области между пометками «не проверять» в исходнике (ignored_ranges): в `no_code` и `prose`
+    # замаскированы, невидимые символы и подмена букв в них не считаются.
+    ignored: list[tuple[int, int]]
 
 
 def _mask(chars: list[str], start: int, end: int) -> None:
@@ -248,6 +289,45 @@ def _mask_all(chars: list[str], text: str, pattern: str, flags: str = "g") -> No
 
 FRONTMATTER_RE = jsre("^---\\n[\\s\\S]*?\\n---(?:\\n|$)")
 FENCED_RE = jsre("^(```|~~~)[^\\n]*\\n[\\s\\S]*?^\\1[^\\n]*$", "gm")
+
+# Пометки «не проверять»: `<!-- aiw-ru:ignore-start -->` и `<!-- aiw-ru:ignore-end -->`, а для
+# совместимости с английским скиллом и `avoid-ai-writing:ignore-…`. Пометка действует, только
+# если занимает строку целиком и стоит вне блока кода: в документации её показывают примером.
+IGNORE_MARKER_RE = jsre("^[ \\t]*<!--[ \\t]*(?:aiw-ru|avoid-ai-writing):ignore-(start|end)[ \\t]*-->[ \\t]*$", "gm")
+
+
+def ignored_ranges(s: str) -> list[tuple[int, int]]:
+    """Отрезки [начало, конец) между пометками «не проверять», вместе с самими пометками.
+
+    Пометки вкладываются: область кончается на пометке конца, которая закрывает первую пометку
+    начала. Незакрытая пометка начала действует до конца текста, лишняя пометка конца ничего не значит.
+    """
+    if "ignore-" not in s:
+        return []
+    fences = [match.span() for match in FENCED_RE.finditer(s)]
+    ranges: list[tuple[int, int]] = []
+    depth = 0
+    start = 0
+    for match in IGNORE_MARKER_RE.finditer(s):
+        if _inside(fences, match.start()):
+            continue
+        if match.group(1) == "start":
+            if depth == 0:
+                start = match.start()
+            depth += 1
+        elif depth:
+            depth -= 1
+            if depth == 0:
+                ranges.append((start, match.end()))
+    if depth:
+        ranges.append((start, len(s)))
+    return ranges
+
+
+def _inside(ranges: Sequence[tuple[int, int]], index: int) -> bool:
+    """Попадает ли смещение в один из отсортированных непересекающихся отрезков [начало, конец)."""
+    k = bisect_right(ranges, index, key=lambda found: found[0]) - 1
+    return k >= 0 and ranges[k][0] <= index < ranges[k][1]
 
 
 def _mask_code(text: str) -> str:
@@ -551,12 +631,13 @@ def blank(s: str, ranges: Sequence[tuple[int, int]]) -> str:
 
 
 def model_text(source: str) -> str:
-    """Текст для моделей: YAML-шапка, блоки кода и служебные части статьи заменены пробелами.
+    """Текст для моделей: YAML-шапка, блоки кода, служебные части статьи и области между
+    пометками «не проверять» заменены пробелами.
 
     Длина и переводы строк сохраняются, поэтому номера строк фрагментов совпадают с исходным файлом.
     Инлайн-код и цитаты остаются: без них предложение рвётся посередине.
     """
-    ranges = list(service_ranges(source))
+    ranges = list(service_ranges(source)) + ignored_ranges(source)
     frontmatter = FRONTMATTER_RE.search(source)
     if frontmatter:
         ranges.append((0, frontmatter.end()))
@@ -612,6 +693,8 @@ PART_RE = jsre("[\\p{L}\\p{N}]+", "gu")
 
 
 def prepare(source: str) -> Prepared:
+    ignored = ignored_ranges(source)
+    flag_tags = _flag_tags(source)
     invisible: list[Invisible] = []
     soft_hyphens: list[int] = []
     # Найденные символы: позиция в исходнике, символ, позиция в нормализованном тексте.
@@ -619,12 +702,15 @@ def prepare(source: str) -> Prepared:
     to_source: list[int] = []
     kept: list[str] = []
     for index, char in enumerate(source):
-        if char in STRIPPED:
-            if char == SOFT_HYPHEN:
+        if char in STRIPPED or (char in VARIATION and _hidden_selector(source, index)):
+            if ignored and _inside(ignored, index):
+                pass
+            elif char == SOFT_HYPHEN:
                 soft_hyphens.append(index)
             elif (
                 not (char == BOM and index == 0)
                 and not (char == ZWJ and _joins_emoji(source, index))
+                and index not in flag_tags
                 and not _legit_control(source, index)
             ):
                 invisible.append(Invisible(index, char))
@@ -660,10 +746,12 @@ def prepare(source: str) -> Prepared:
                 char = kept[at + k]
                 if char in table:
                     kept[at + k] = table[char]
-        if found:
+        if found and not (ignored and _inside(ignored, to_source[start])):
             homoglyphs.append(Homoglyph(to_source[start], word))
     text = "".join(kept).replace("ё", "е").replace("Ё", "Е")
-    no_code = _mask_code(text)
+    # Отрезки исходника переводятся в смещения `text`: карта `to_source` возрастает.
+    ignored_text = [(bisect_left(to_source, start), bisect_left(to_source, end)) for start, end in ignored]
+    no_code = blank(_mask_code(text), ignored_text)
     service = _service_in(no_code)
     prose = blank(_mask_protected(no_code), service)
     # Маскировка заменяет знаки пробелами, поэтому символ на месте значит, что он в прозе.
@@ -684,6 +772,7 @@ def prepare(source: str) -> Prepared:
         homoglyphs=homoglyphs,
         line_starts=_line_starts(source),
         service=service,
+        ignored=ignored,
     )
 
 

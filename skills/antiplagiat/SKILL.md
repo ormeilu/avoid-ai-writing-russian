@@ -21,7 +21,7 @@ metadata:
   issues: https://github.com/ormeilu/avoid-ai-writing-russian/issues
   changelog: https://github.com/ormeilu/avoid-ai-writing-russian/blob/master/CHANGELOG.md
   upstream: https://github.com/conorbronsdon/avoid-ai-writing
-  upstream_version: 3.36.0
+  upstream_version: 3.39.0
   upstream_author: Conor Bronsdon
   language: ru
   tags: russian antiplagiat domate academic ai-detection dissertation vak calibration

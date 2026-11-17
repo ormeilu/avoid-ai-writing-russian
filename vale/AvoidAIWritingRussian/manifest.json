@@ -1,0 +1,579 @@
+{
+  "schemaVersion": "1",
+  "style": "AvoidAIWritingRussian",
+  "context": "general",
+  "testedWithVale": "3.27.0",
+  "counts": {
+    "verified": 32,
+    "approximation": 10,
+    "unsupported": 25,
+    "unassessed": 0
+  },
+  "types": [
+    {
+      "type": "invisible-chars",
+      "label": "Невидимые символы",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "находку даёт нормализация текста (одна сводка на документ), а не таблица выражений"
+    },
+    {
+      "type": "homoglyph",
+      "label": "Подмена букв",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "нужна проверка смешанных алфавитов внутри слова с исключениями для формул и кодов"
+    },
+    {
+      "type": "soft-hyphen",
+      "label": "Мягкие переносы",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "находку даёт нормализация текста (одна сводка на документ), а не таблица выражений"
+    },
+    {
+      "type": "typography-chars",
+      "label": "Редкие типографские символы",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "одна сводка на каждый редкий знак с числом вхождений"
+    },
+    {
+      "type": "chat-markup",
+      "label": "Разметка цитирования из чата",
+      "status": "approximation",
+      "rules": [
+        "AvoidAIWritingRussian.ChatMarkup"
+      ],
+      "reason": "в Markdown Vale не видит HTML-теги и адреса ссылок, поэтому `<think>`, `<mark>`, `<grok-card` и `](sandbox:…)` ловятся только в обычном тексте (.txt)"
+    },
+    {
+      "type": "ai-url",
+      "label": "Параметр ИИ-инструмента в ссылке",
+      "status": "approximation",
+      "rules": [
+        "AvoidAIWritingRussian.AiUrl"
+      ],
+      "reason": "в Markdown Vale пропускает адреса, и голые, и в ссылках; параметр ловится только в обычном тексте (.txt)"
+    },
+    {
+      "type": "placeholder",
+      "label": "Незаполненная заглушка",
+      "status": "approximation",
+      "rules": [
+        "AvoidAIWritingRussian.Placeholder"
+      ],
+      "reason": "в Markdown Vale не видит HTML-комментарии, заглушка `<!-- вставьте … -->` ловится только в .txt"
+    },
+    {
+      "type": "cutoff",
+      "label": "Оговорка об отсечке знаний",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.Cutoff"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "chatbot",
+      "label": "След чат-бота",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.Chatbot"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "chat-wrapper",
+      "label": "Обвязка ответа чата",
+      "status": "approximation",
+      "rules": [
+        "AvoidAIWritingRussian.ChatWrapper"
+      ],
+      "reason": "подводку отдельной строкой («Вот вариант поста:») детектор ловит выражением с якорями строки, в стиль она не перенесена"
+    },
+    {
+      "type": "truncated",
+      "label": "Текст оборван на полуслове",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "смотрит только последнюю строку последнего абзаца документа"
+    },
+    {
+      "type": "sycophancy",
+      "label": "Угодливость",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.Sycophancy"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "vague-attribution",
+      "label": "Размытая ссылка на авторитет",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.VagueAttribution"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "significance",
+      "label": "Раздувание значимости",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.Significance"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "tier1",
+      "label": "Слово-маркер ИИ",
+      "status": "approximation",
+      "rules": [
+        "AvoidAIWritingRussian.Tier1"
+      ],
+      "reason": "без записи «является»: детектор считает её находкой только выше порога плотности на 1000 слов",
+      "excluded": [
+        "является"
+      ]
+    },
+    {
+      "type": "tier1-clarity",
+      "label": "Канцелярит",
+      "status": "approximation",
+      "rules": [
+        "AvoidAIWritingRussian.Tier1Clarity"
+      ],
+      "reason": "без записей «позволяет», «обеспечивает», «способствует»: детектор считает их находкой только выше порога плотности на 1000 слов",
+      "excluded": [
+        "позволяет",
+        "обеспечивает",
+        "способствует"
+      ]
+    },
+    {
+      "type": "tier2-cluster",
+      "label": "Скопление слов уровня 2",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "нужны два разных слова уровня 2 в одном абзаце"
+    },
+    {
+      "type": "tier3",
+      "label": "Перегруженное слово",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "нужна суммарная плотность от 3 % слов в тексте от 150 слов"
+    },
+    {
+      "type": "phrase3",
+      "label": "Фразовый штамп",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "нужен повтор одного штампа или три разных в тексте"
+    },
+    {
+      "type": "phrase3-cluster",
+      "label": "Скопление фразовых штампов",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "нужны три разных фразовых штампа в тексте"
+    },
+    {
+      "type": "model-idiolect",
+      "label": "Почерк модели",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "нужны два разных оборота почерка модели в одном тексте"
+    },
+    {
+      "type": "calque",
+      "label": "Калька с английского",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.Calque"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "jargon",
+      "label": "Жаргон и транслитерация с английского",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.Jargon"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "template",
+      "label": "Шаблонная конструкция",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.Template"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "transition",
+      "label": "Шаблонный переход",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.TransitionWarning",
+        "AvoidAIWritingRussian.TransitionSuggestion"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "transition-run",
+      "label": "Переходы в начале абзацев подряд",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "нужны три абзаца подряд, начатые переходом"
+    },
+    {
+      "type": "filler",
+      "label": "Подушка",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.Filler"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "hollow-intensifier",
+      "label": "Пустой усилитель",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.HollowIntensifier"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "confidence",
+      "label": "Нагнетание уверенности",
+      "status": "approximation",
+      "rules": [
+        "AvoidAIWritingRussian.Confidence"
+      ],
+      "reason": "без записи «безусловно»: детектор считает её находкой только выше порога плотности на 1000 слов",
+      "excluded": [
+        "безусловно"
+      ]
+    },
+    {
+      "type": "hedge-stack",
+      "label": "Нагромождённая оговорка",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.HedgeStack"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "vague-endorsement",
+      "label": "Пустое одобрение",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.VagueEndorsement"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "future-narrative",
+      "label": "Туманный прогноз",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.FutureNarrative"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "generic-conclusion",
+      "label": "Пустой вывод",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.GenericConclusion"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "novelty",
+      "label": "Раздувание новизны",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.Novelty"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "unmeasured-claim",
+      "label": "Оценка без числа",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.UnmeasuredClaim"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "lets",
+      "label": "«Давайте…»",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.Lets"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "reasoning",
+      "label": "След рассуждения модели",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.Reasoning"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "acknowledgment",
+      "label": "Пересказ вопроса",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.Acknowledgment"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "narrated-candor",
+      "label": "Показная откровенность",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.NarratedCandor"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "hook",
+      "label": "Хук из соцсетей",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.Hook"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "social-closer",
+      "label": "Рекомендательная концовка",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.SocialCloser"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "launch-intro",
+      "label": "Презентация как выход на сцену",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.LaunchIntro"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "fake-casual",
+      "label": "Фальшиво-разговорный регистр",
+      "status": "approximation",
+      "rules": [
+        "AvoidAIWritingRussian.FakeCasual"
+      ],
+      "reason": "Vale убирает разметку Markdown до поиска, поэтому запись «ремарки» со звёздочками и другими знаками разметки срабатывает только в .txt"
+    },
+    {
+      "type": "speculative-opener",
+      "label": "«Представьте…»",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.SpeculativeOpener"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "false-concession",
+      "label": "Ложная уступка",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.FalseConcession"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "moral-adjective",
+      "label": "Моральный эпитет у неодушевлённого",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.MoralAdjective"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "real-inflation",
+      "label": "«Настоящий/реальный» как усилитель",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.RealInflation"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "not-x-but-y",
+      "label": "«Не X, а Y»",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.NotXButY"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "em-dash-splice",
+      "label": "Тире-связка ради эффекта",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "нужен порог: больше одной связки или больше одной на 500 слов"
+    },
+    {
+      "type": "hyphen-dash",
+      "label": "Дефис вместо тире",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.HyphenDash"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "straight-quotes",
+      "label": "Прямые кавычки в русском тексте",
+      "status": "approximation",
+      "rules": [
+        "AvoidAIWritingRussian.StraightQuotes"
+      ],
+      "reason": "детектор пропускает кавычки в записях литературы и отбрасывает пару без кириллицы целиком, а Vale в строке `\"abc\" и \"текст\"` может взять в пару кавычки между ними"
+    },
+    {
+      "type": "english-quotes",
+      "label": "Английские кавычки в русском тексте",
+      "status": "approximation",
+      "rules": [
+        "AvoidAIWritingRussian.EnglishQuotes"
+      ],
+      "reason": "детектор пропускает кавычки в записях литературы"
+    },
+    {
+      "type": "decimal-point",
+      "label": "Десятичная точка",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.DecimalPoint"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "title-case",
+      "label": "Title Case в заголовке",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "нужен разбор заголовка на слова и проверка каждого"
+    },
+    {
+      "type": "bold-overuse",
+      "label": "Избыток жирного",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "нужен подсчёт выделений в разделе с исключениями для терминов"
+    },
+    {
+      "type": "emoji-header",
+      "label": "Эмодзи в заголовке",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "нужен класс \\p{Extended_Pictographic}, которого нет в движке Vale"
+    },
+    {
+      "type": "bullet-np-list",
+      "label": "Список из голых именных групп",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "нужен разбор пунктов списка на слова и глагольные формы"
+    },
+    {
+      "type": "hashtag-stuffing",
+      "label": "Хэштеги",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "нужно шесть и больше хэштегов в тексте"
+    },
+    {
+      "type": "genitive-chain",
+      "label": "Цепочка отглагольных существительных",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "нужна цепочка из четырёх и больше отглагольных существительных"
+    },
+    {
+      "type": "passive-run",
+      "label": "Пассив без деятеля подряд",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "нужны четыре предложения подряд с пассивом без деятеля"
+    },
+    {
+      "type": "same-opener",
+      "label": "Одинаковые начала предложений",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "нужны три предложения подряд с одним первым словом"
+    },
+    {
+      "type": "staccato",
+      "label": "Рубленые фрагменты",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "нужны три коротких предложения подряд"
+    },
+    {
+      "type": "negation-chain",
+      "label": "Цепочка отрицаний",
+      "status": "verified",
+      "rules": [
+        "AvoidAIWritingRussian.NegationChain"
+      ],
+      "reason": ""
+    },
+    {
+      "type": "stacked-questions",
+      "label": "Стопка риторических вопросов",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "нужны три вопросительных предложения подряд"
+    },
+    {
+      "type": "uniform-sentences",
+      "label": "Одинаковая длина предложений",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "стилометрия: разброс длин предложений по тексту"
+    },
+    {
+      "type": "uniform-paragraphs",
+      "label": "Одинаковые абзацы",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "стилометрия: разброс длин абзацев по тексту"
+    },
+    {
+      "type": "low-diversity",
+      "label": "Бедный словарь",
+      "status": "unsupported",
+      "rules": [],
+      "reason": "стилометрия: доля разных слов в тексте"
+    }
+  ]
+}

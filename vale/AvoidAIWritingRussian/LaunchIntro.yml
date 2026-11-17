@@ -1,0 +1,10 @@
+# Собрано scripts/build_vale.py из таблиц детектора (тип launch-intro). Не правьте руками.
+extends: substitution
+message: 'Презентация как выход на сцену: «%[2]s» — %[1]s'
+link: https://github.com/ormeilu/avoid-ai-writing-russian/tree/master/skills/avoid-ai-writing-russian/references
+level: warning
+ignorecase: true
+nonword: true
+swap:
+  ? '(?<![\p{L}\p{N}_])(?:встр[её]чайт[её](?::|,|!|[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+—))(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:знакомьт[её]сь(?::|,|[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+—|[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+–)?[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+\p{Lu}\p{L}+,?[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:ваш|ваша|ваш[её]|новый|новая)[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:новый|новая|любим\p{L}*|лучш\p{L}*))(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:пр[её]дставля[её]м[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:вам|ваш[её]му[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+вниманию))(?![\p{L}\p{N}_])'
+  : 'сказать, что это такое'

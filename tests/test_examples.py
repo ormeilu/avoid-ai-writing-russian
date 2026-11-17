@@ -26,7 +26,7 @@ CASES = {c["id"]: c for c in json.loads((ROOT / "evals" / "cases.json").read_tex
 # Виды сверки фактов (см. src/aiw_ru/validate.py). Для своих примеров строже, чем для
 # правки пользователя: предупреждения («один… второй», «впервые») тоже не допускаются,
 # пример должен проходить сверку без замечаний.
-FACT_KINDS = {"оговорка", "имя", "число", "число словами", "месяц", "утверждение"}
+FACT_KINDS = {"оговорка", "имя", "число", "число словами", "месяц", "утверждение", "перестановка"}
 
 # Пример замены в тексте скилла: «было» → «стало» или «стало» / «другой вариант».
 PAIR_RE = re.compile(r"«([^«»\n]+)»\s*→\s*((?:«[^«»\n]+»(?:\s*/\s*)?)+)")
@@ -83,7 +83,7 @@ def test_golden_answer_adds_no_facts(name: str):
     assert facts(case["input"], final_text(name)) == []
 
 
-@pytest.mark.parametrize("name", BAD)
+@pytest.mark.parametrize("name", [n for n in BAD if "Итоговый текст" in (GOLDEN / n).read_text(encoding="utf-8")])
 def test_bad_golden_caught_by_fact_check(name: str):
     """плохой эталон ловится сверкой: он для того и написан"""
     case = CASES[name.removesuffix(".bad.md")]

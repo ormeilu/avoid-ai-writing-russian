@@ -1,0 +1,11 @@
+# Собрано scripts/build_vale.py из таблиц детектора (тип chat-markup). Не правьте руками.
+extends: substitution
+message: 'Разметка цитирования из чата: «%[2]s» — %[1]s'
+link: https://github.com/ormeilu/avoid-ai-writing-russian/tree/master/skills/avoid-ai-writing-russian/references
+level: error
+ignorecase: false
+nonword: true
+swap:
+  ? '\uE200[^\uE201\n]{0,200}\uE201|[\uE200-\uE204]|citeturn[0-9]+[A-Za-z0-9_]*|(?<![\p{L}0-9])i?(?:turn[0-9]+(?:search|news|file|image|view|fetch|video|product|academia)[0-9]+)+|(?:turn[0-9]+(?:search|news|file|image|view|fetch|video|product|academia)[0-9]+){2,}|【[0-9]+(?::[0-9]+)?†[^】\n]{0,80}】|contentReference\[oaicite:[0-9]+\](?:\{index=[0-9]+\})?|oai_citation|\[attached_file:[0-9]+\]|grok_render_citation_card_json|grok_card|<grok-card(?![A-Za-z0-9_-])|attributableIndex|\[web:[0-9]+\]|ppl-ai-file-upload|\]\(sandbox:/mnt/data/|:::writing\{variant=|\[cite:[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*[0-9]+(?:[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*,[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*[0-9]+)*\]|\[citation:[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*[0-9]+\]|\[span_[0-9]+\]\((?:start|end)_span\)|vertexaisearch\.cloud\.google\.com/grounding-api-redirect|</?think>|:::\p{L}+\{\p{L}+=["“”„«]?[^"“”„«»}\n]{1,40}["“”»]?[ \t]+id=["“”„«]?[0-9]{3,}|\p{L}\+[0-9]{1,2}(?:\p{Lu}[\p{L}0-9 .&-]{0,40}?\+[0-9]{1,2})+(?![\p{L}0-9])'
+  : 'удалить; если ссылка нужна — заменить настоящей'
+  '<mark>[^<>\n]{0,400}\p{L}[^<>\n]{0,400}</mark>': 'убрать теги <mark>, текст оставить'

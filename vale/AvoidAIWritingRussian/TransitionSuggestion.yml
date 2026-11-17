@@ -1,0 +1,14 @@
+# Собрано scripts/build_vale.py из таблиц детектора (тип transition). Не правьте руками.
+extends: substitution
+message: 'Шаблонный переход: «%[2]s» — %[1]s'
+link: https://github.com/ormeilu/avoid-ai-writing-russian/tree/master/skills/avoid-ai-writing-russian/references
+level: suggestion
+ignorecase: true
+nonword: true
+swap:
+  ? '(?<![\p{L}\p{N}_])(?:кром[её][\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+того)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:помимо[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+этого)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:бол[её][её][\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+того)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:к[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+тому[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+ж[её])(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:такж[её][\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+стоит[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+(?:упомянуть|отм[её]тить))(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:н[её]маловажно(?:,|[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+и))(?![\p{L}\p{N}_])'
+  : 'перестроить, чтобы связь была видна из содержания'
+  ? '(?<![\p{L}\p{N}_])(?:в[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+свою[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+оч[её]р[её]дь)(?![\p{L}\p{N}_])'
+  : 'убрать, если нет противопоставления'
+  ? '(?<![\p{L}\p{N}_])(?:что[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+каса[её]тся)(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])(?:[её]сли[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+говорить[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\u00A0]+о)(?![\p{L}\p{N}_])'
+  : 'сразу говорить о предмете'

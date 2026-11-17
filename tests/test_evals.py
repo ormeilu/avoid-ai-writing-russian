@@ -172,6 +172,17 @@ def test_golden_detect_passes() -> None:
     assert grade(by_id("detect-only"), golden("detect-only.md")).failures == []
 
 
+def test_golden_text_only_passes() -> None:
+    """просили только текст: чистовик без заголовка и блоков после него проходит"""
+    assert grade(by_id("text-only"), golden("text-only.md")).failures == []
+
+
+def test_golden_text_only_with_tail_fails() -> None:
+    """служебный хвост после чистовика, когда просили только текст, — провал"""
+    g = grade(by_id("text-only"), golden("text-only.bad.md"))
+    assert "в ответе лишнее: Изменения" in "\n".join(g.failures)
+
+
 def test_golden_changed_quote_fails() -> None:
     """изменённая цитата — провал"""
     g = grade(by_id("protected-quote"), golden("protected-quote.bad.md"))

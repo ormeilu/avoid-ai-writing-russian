@@ -1,0 +1,9 @@
+# Собрано scripts/build_vale.py из таблиц детектора (тип english-quotes). Не правьте руками.
+extends: substitution
+message: 'Английские кавычки в русском тексте: «%[2]s» — %[1]s'
+link: https://github.com/ormeilu/avoid-ai-writing-russian/tree/master/skills/avoid-ai-writing-russian/references
+level: warning
+ignorecase: false
+nonword: true
+swap:
+  '“(?=[^”\n]{0,199}\p{Cyrillic})[^”\n]{1,200}”': '«ёлочки»; английские кавычки в русском тексте — след машинного перевода'
