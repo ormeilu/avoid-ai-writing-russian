@@ -579,7 +579,7 @@ ENGLISH_QUOTES_RE = jsre("“([^”\\n]{1,200})”", "g")
 HYPHEN_DASH_RE = jsre("(?<=\\p{L}) - (?=\\p{L})| -- ", "gu")
 DECIMAL_RE = jsre(
     "(?:(?:равн\\p{L}*|составля\\p{L}*|составил\\p{L}*|достига\\p{L}*|достиг\\p{L}*|точност\\p{L}*|значени\\p{L}*"
-    "|около|до|от|≈|=)\\s*)(\\d+\\.\\d+)(?!\\.\\d)|(?<![\\d.])(\\d+\\.\\d+)(?=\\s*(?:%|мс|с\\b|кг|м\\b|км|Гц|ГБ|МБ|раз))",
+    "|около|до|от|≈|=)\\s*)(\\d+\\.\\d+)(?!\\.?\\d)|(?<![\\d.])(\\d+\\.\\d+)(?=\\s*(?:%|мс|с\\b|кг|м\\b|км|Гц|ГБ|МБ|раз))",
     "gu",
 )
 SPLICE_RE = jsre(
@@ -623,7 +623,8 @@ def _detect_typography(ctx: _Ctx, text_blocks: list[Block]) -> None:
     for match in HYPHEN_DASH_RE.finditer(prepared.prose):
         _add(ctx, "hyphen-dash", "hyphen", "P2", match.start(), match.group(), "длинное тире с пробелами: « — »", True)
     for match in DECIMAL_RE.finditer(prepared.prose):
-        _add(ctx, "decimal-point", "decimal", "P2", match.start(), match.group(), "десятичная запятая: 0,93")
+        number = (match.group(1) or match.group(2)).replace(".", ",")
+        _add(ctx, "decimal-point", "decimal", "P2", match.start(), match.group(), f"десятичная запятая: {number}")
     # Тире-связка: тире перед союзом или частицей, подающими «эффект».
     splice_hits = [(match.start() + 1, match.group()) for match in SPLICE_RE.finditer(prepared.prose)]
     splices = len(splice_hits)
