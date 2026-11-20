@@ -153,7 +153,7 @@ DETECT_TABLES: list[DetectTable] = [
     DetectTable(
         "decimal-point",
         "P2",
-        [Pattern(DECIMAL_RE.pattern, "десятичная запятая: 0,93", ignorecase=False)],
+        [Pattern(DECIMAL_RE.pattern, "запятая вместо точки", ignorecase=False)],
         VERIFIED,
     ),
     DetectTable(

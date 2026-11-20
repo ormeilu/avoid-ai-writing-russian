@@ -23,6 +23,17 @@ from aiw_ru.features import CONTEXT, FEATURE_NAMES, FEATURES_VERSION
 TEXT = "В современном мире искусственный интеллект играет ключевую роль. Данная технология является важной."
 
 
+@pytest.fixture(autouse=True)
+def no_user_calibration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`antiplagiat` из CLI не подхватывает ~/.config/aiw-ru.json разработчика и отвечает моделью default.
+
+    На Windows `Path.home()` читает USERPROFILE, а не HOME.
+    """
+    monkeypatch.setenv("AIW_RU_CONFIG", "")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+
+
 @pytest.fixture
 def model_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """Крошечная модель на случайных признаках в папке из AIW_RU_MODEL_DIR."""

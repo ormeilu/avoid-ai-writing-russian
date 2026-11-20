@@ -635,6 +635,35 @@ def test_decimal_point():
     assert "decimal-point" not in types("См. раздел 2.1 и версию 1.2.3.")
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Трассировка из шлюза до 10.233.222.218 идёт через внутреннюю сеть.",
+        "Обновили линтер до 1.19.0 и пакет до 2.10.0.",
+        "Откатились от 3.14.2 к прошлой сборке.",
+    ],
+)
+def test_decimal_point_skips_ip_and_versions(text: str):
+    """IP-адрес и версия после «до»/«от»: откат к «10.23» или «1.1» не считается дробью"""
+    assert "decimal-point" not in types(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "number"),
+    [
+        ("Задержка выросла до 77.23 мс.", "77,23"),
+        ("Обновили пакет до 2.10.", "2,10"),
+        ("Точность составила 0.93 на тесте.", "0,93"),
+        ("Прирост составил 12.5% за квартал.", "12,5"),
+    ],
+)
+def test_decimal_point_hint_shows_number(text: str, number: str):
+    """подсказка показывает найденное число с запятой, а не всегда «0,93»"""
+    hits = [i for i in analyze(text).issues if i.type == "decimal-point"]
+    assert len(hits) == 1
+    assert hits[0].hint == f"десятичная запятая: {number}"
+
+
 def test_title_case_heading():
     """Title Case в заголовке"""
     assert "title-case" in types("# Анализ Существующих Методов Распознавания\n\nТекст.")
