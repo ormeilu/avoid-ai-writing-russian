@@ -63,7 +63,9 @@ HEAD = jsre(r"(?:^|\n)\s*(?:#{1,4}\s*|\*\*)Итоговый текст:?(?:\*\*)
 # Следующий раздел ответа: заголовком (`## Проверка`) или жирной подписью, в том числе с текстом
 # на той же строке (`**Проверка:** один проход`).
 NEXT = jsre(r"\n\s*(?:#{1,4}\s*|\*\*)(?:Изменения|Проверка|Найдено|Оценка)(?=[:*\s]|$)")
-FENCE = jsre(r"^```[^\n]*\n([\s\S]*?)\n```$")
+# Ограждение вокруг всего итога. Документ с блоком кода внутри агенты оборачивают в четыре обратные
+# кавычки и больше: закрывающее ограждение той же длины, внутренние блоки остаются.
+FENCE = jsre(r"^(`{3,}|~{3,})[^\n]*\n([\s\S]*?)\n\1$")
 QUOTE_MARK = jsre(r"^>\s?", "gm")
 SPACES = jsre(r"\s+", "g")
 NUMBER = jsre(r"\d+(?:[.,]\d+)?", "g")
@@ -82,7 +84,7 @@ def extract_final(response: str) -> str | None:
     rest = trim(rest)
     fence = FENCE.search(rest)
     if fence:
-        rest = fence[1] or ""
+        rest = fence[2] or ""
     if all(line.startswith(">") or trim(line) == "" for line in rest.split("\n")):
         rest = QUOTE_MARK.sub("", rest)
     return trim(rest)
