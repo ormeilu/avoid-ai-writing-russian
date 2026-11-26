@@ -19,14 +19,18 @@ from aiw_ru.cli import USAGE, main, parse
 ROOT = Path(__file__).parent.parent
 SKILLS = ROOT / "skills"
 REFERENCES = SKILLS / "avoid-ai-writing-russian" / "references"
-# Тематические файлы каталога примет; профили, задания проверяющему и судье, руководство по моделям лежат отдельно.
+# Тематические файлы каталога примет; профили, задания проверяющему и судье, руководство по моделям и средам запуска лежат отдельно.
 CATALOG_FILES = sorted(
-    p for p in REFERENCES.glob("*.md") if p.name not in ("profiles.md", "review.md", "models.md", "judge.md")
+    p
+    for p in REFERENCES.glob("*.md")
+    if p.name not in ("profiles.md", "review.md", "models.md", "judge.md", "environments.md")
 )
 PROFILES = REFERENCES / "profiles.md"
 REVIEW = REFERENCES / "review.md"
 # Руководство по моделям: его печатает и `aiw-ru models guide`.
 MODELS_GUIDE = REFERENCES / "models.md"
+# Где запустить детектор, если у агента нет командной строки.
+ENVIRONMENTS = REFERENCES / "environments.md"
 PYPROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 AI_VAK = ROOT / "tests" / "fixtures" / "corpus" / "ai" / "vak.md"
 
@@ -248,6 +252,42 @@ def test_main_answer_format_four_checks():
         assert item in MAIN
 
 
+def test_main_without_command_line():
+    """без командной строки: детектор ставится в песочницу, а пользователь узнаёт, где проверить точнее"""
+    section = MAIN[MAIN.index("### Если детектора нет") : MAIN.index("### Документ Word")]
+    assert "`pip install aiw-ru`" in section
+    assert "только с его согласия" in section
+    assert "проверка была только модельной" in section
+    # Заметка одна на разговор и называет все три пути: свой компьютер, вывод детектора, песочницу.
+    assert "один раз за разговор" in section
+    for way in ("на своём компьютере", "пришлите мне вывод", "Remote Desktop Commander"):
+        assert way in section
+    assert "](references/environments.md)" in section
+    # Просили только текст: заметок после него нет.
+    assert "без «Изменений», «Проверки» и заметок" in MAIN
+
+
+def test_environments_cover_each_way():
+    """справка о средах: свой компьютер, песочница чата, облачный агент, терминал через MCP"""
+    text = read(ENVIRONMENTS)
+    for heading in (
+        "## Свой компьютер",
+        "## Выполнение кода в самом чате",
+        "## Облачный агент",
+        "## Терминал через MCP",
+    ):
+        assert heading in text
+    assert "Settings > Capabilities" in text and "Python 3.12" in text
+
+
+def test_main_offers_checker_for_academic_work():
+    """учебная работа без упоминания проверки: предложить подготовку к «Антиплагиату» или «Думейту»"""
+    section = MAIN[MAIN.index("**Работа для вуза или журнала.**") : MAIN.index("<!-- patterns:catalog -->")]
+    assert "спроси один раз" in section
+    assert "один раз за разговор предложи подготовку к проверке" in section
+    assert "текст в системы проверки не пойдёт" in section
+
+
 def test_skills_insert_only_ordinary_spaces():
     """скилл не велит ставить неразрывные пробелы, и в его примерах их нет: агент копирует примеры как есть"""
     assert "неразрывный пробел между числом" not in MAIN
@@ -367,7 +407,7 @@ def test_catalog_split_into_topic_files():
         "typography.md",
         "vocabulary.md",
     ]
-    for p in [*CATALOG_FILES, PROFILES, REVIEW, MODELS_GUIDE]:
+    for p in [*CATALOG_FILES, PROFILES, REVIEW, MODELS_GUIDE, ENVIRONMENTS]:
         text = read(p)
         assert text.startswith("# "), p.name
         assert "`../SKILL.md`" in text, p.name

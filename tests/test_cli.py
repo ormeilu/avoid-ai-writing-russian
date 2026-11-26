@@ -997,6 +997,7 @@ def test_skill_lists_skills(cli: Cli):
         f"references/{n}.md"
         for n in (
             "chat",
+            "environments",
             "judge",
             "models",
             "profiles",
@@ -1031,6 +1032,7 @@ def test_skill_files_in_hidden_directory(tmp_path: Path, monkeypatch: pytest.Mon
         ("avoid-ai-writing-russian", "references/vocabulary.md"),
         ("avoid-ai-writing-russian", "references/review.md"),
         ("avoid-ai-writing-russian", "references/judge.md"),
+        ("avoid-ai-writing-russian", "references/environments.md"),
         ("antiplagiat", "references/domate.md"),
         ("antiplagiat", "references/antiplagiat.md"),
     ],
