@@ -141,6 +141,13 @@ def test_extract_final_code_block() -> None:
     assert extract_final("**Итоговый текст:**\n```\nТекст.\n```\n**Проверка**") == "Текст."
 
 
+def test_extract_final_long_fence_keeps_inner_code() -> None:
+    """документ с блоком кода в ограждении из четырёх обратных кавычек: снимается только внешнее"""
+    inner = "## Приложение\n\n```python\nx = 1\n```"
+    response = f"**Итоговый текст**\n\n````markdown\n{inner}\n````\n\n**Изменения**\n\nх"
+    assert extract_final(response) == inner
+
+
 def test_extract_final_missing() -> None:
     """нет раздела"""
     assert extract_final("Просто ответ") is None

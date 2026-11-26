@@ -259,7 +259,11 @@ def test_main_without_command_line():
     assert "только с его согласия" in section
     assert "проверка была только модельной" in section
     # Заметка одна на разговор и называет все три пути: свой компьютер, вывод детектора, песочницу.
-    assert "один раз за разговор" in section
+    # Песочницу Kimi без этого требования выкидывал: не знал, в каком он чате.
+    assert "Один раз за разговор" in section
+    assert "Начни с причины" in section and "назови все три пути" in section and "перечисли все три вида" in section
+    # Терминал есть, а детектор не встал (например, нет сети): совет про установку, а не про песочницу.
+    assert "**Терминал есть, а детектор не встал**" in section and "Песочница тут ничего не добавит" in section
     for way in ("на своём компьютере", "пришлите мне вывод", "Remote Desktop Commander"):
         assert way in section
     assert "](references/environments.md)" in section
@@ -268,15 +272,17 @@ def test_main_without_command_line():
 
 
 def test_environments_cover_each_way():
-    """справка о средах: свой компьютер, песочница чата, облачный агент, терминал через MCP"""
+    """справка о средах: свой компьютер, песочница чата, облачный агент, терминал через MCP, установка без сети"""
     text = read(ENVIRONMENTS)
     for heading in (
         "## Свой компьютер",
         "## Выполнение кода в самом чате",
         "## Облачный агент",
         "## Терминал через MCP",
+        "## Терминал есть, сети нет",
     ):
         assert heading in text
+    assert "pip install --no-index --find-links" in text
     assert "Settings > Capabilities" in text and "Python 3.12" in text
 
 
