@@ -203,6 +203,28 @@ def test_golden_whole_doc_dropped_code_fails() -> None:
     assert "в ответе лишнее: роверил целостность" in failures
 
 
+def test_golden_no_cli_points_to_detector() -> None:
+    """без командной строки ответ называет, где запустить детектор: свой компьютер, песочница, MCP"""
+    assert grade(by_id("no-cli-points-to-detector"), golden("no-cli-points-to-detector.md")).failures == []
+
+
+def test_golden_no_cli_silent_fails() -> None:
+    """ответ без подсказки о детекторе, с «проверил целостность» и выдуманным числом — провал"""
+    failures = "\n".join(grade(by_id("no-cli-points-to-detector"), golden("no-cli-points-to-detector.bad.md")).failures)
+    assert "ответ не соответствует /командн/" in failures
+    assert "в ответе лишнее: роверил целостность" in failures
+    assert "выдуманные числа: 12" in failures
+
+
+def test_golden_coursework_offers_checker() -> None:
+    """правка абзаца из курсовой предлагает подготовку к «Антиплагиату» или «Думейту»"""
+    answer = golden("coursework-offers-checker.md")
+    assert grade(by_id("coursework-offers-checker"), answer).failures == []
+    # Без предложения проверки тот же ответ не проходит.
+    silent = "\n\n".join(part for part in answer.split("\n\n") if "Антиплагиат" not in part)
+    assert "ответ не соответствует /(Антиплагиат|Думейт)/" in grade(by_id("coursework-offers-checker"), silent).failures
+
+
 def test_missing_final_fails_for_edit() -> None:
     """ответ без итогового текста — провал для правки"""
     assert "в ответе нет раздела «Итоговый текст»" in grade(by_id("vak-protected"), "Всё хорошо.").failures
