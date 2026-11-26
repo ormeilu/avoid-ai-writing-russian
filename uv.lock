@@ -9,7 +9,7 @@ resolution-markers = [
 
 [[package]]
 name = "aiw-ru"
-version = "2.10.1"
+version = "2.11.0"
 source = { editable = "." }
 default-groups = []
 dependencies = [
@@ -57,7 +57,7 @@ requires-dist = [
     { name = "huggingface-hub", marker = "extra == 'ml'", specifier = ">=1.33.0" },
     { name = "lightgbm", marker = "extra == 'ml'", specifier = ">=4.7.0" },
     { name = "numpy", marker = "extra == 'ml'", specifier = ">=2.5.3" },
-    { name = "onnxruntime", marker = "(platform_machine != 'x86_64' and extra == 'ml') or (sys_platform != 'darwin' and extra == 'ml')", specifier = ">=1.30.0" },
+    { name = "onnxruntime", marker = "(platform_machine != 'x86_64' or sys_platform != 'darwin') and extra == 'ml'", specifier = ">=1.30.0" },
     { name = "pydantic", specifier = ">=2.13.5" },
     { name = "regex", specifier = ">=2026.9.10" },
     { name = "rich", specifier = ">=14.3" },
