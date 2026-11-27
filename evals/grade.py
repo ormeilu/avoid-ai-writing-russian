@@ -9,7 +9,7 @@ evals/run.py применяет к живым ответам.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 from aiw_ru import analyze, validate
 from aiw_ru.compat import jsre, to_fixed, trim
@@ -48,6 +48,8 @@ class EvalCase(TypedDict):
     request: str
     input: str
     checks: Checks
+    # Среда агента в режиме inline (строки в evals/run.py, ENVIRONMENTS). Без поля — командной строки нет.
+    environment: NotRequired[Literal["no-shell", "offline-shell"]]
 
 
 @dataclass(slots=True)

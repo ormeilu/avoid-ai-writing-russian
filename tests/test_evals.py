@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 from grade import Checks, EvalCase, extract_final, grade
-from run import build_prompt, load_cases, split_command
+from run import ENVIRONMENTS, build_prompt, load_cases, split_command
 
 from aiw_ru.compat import jsre
 
@@ -86,6 +86,15 @@ def test_prompt_contains_skill_request_and_text() -> None:
     assert "перефразируй синонимами" in p
 
 
+def test_environment_line_in_inline_prompt() -> None:
+    """строка о среде: по умолчанию командной строки нет, offline-shell — терминал есть, сети нет"""
+    assert ENVIRONMENTS["no-shell"] in build_prompt(by_id("no-cli-points-to-detector"))
+    offline = build_prompt(by_id("offline-shell-suggests-install"))
+    assert ENVIRONMENTS["offline-shell"] in offline
+    assert ENVIRONMENTS["no-shell"] not in offline
+    assert all(c.get("environment", "no-shell") in ENVIRONMENTS for c in CASES)
+
+
 # ── run.py ──
 
 
@@ -107,6 +116,17 @@ def test_run_dry_single_case() -> None:
     r = run_evals("--dry", "--case", "vak-protected")
     assert r.returncode == 0, r.stderr
     assert r.stdout == f"── vak-protected ──\n{build_prompt(c)[-600:]}\n\n"
+
+
+def test_workspace_skips_inline_only_environments() -> None:
+    """в рабочем режиме aiw-ru есть: случаи со своей средой пропускаются, а названный явно — код 2"""
+    r = run_evals("--dry", "--mode", "workspace")
+    assert r.returncode == 0, r.stderr
+    assert "── offline-shell-suggests-install ──" not in r.stdout
+    assert "offline-shell-suggests-install" in r.stderr
+    single = run_evals("--dry", "--case", "offline-shell-suggests-install", "--mode", "workspace")
+    assert single.returncode == 2
+    assert "только в режиме inline" in single.stderr
 
 
 def test_run_unknown_case() -> None:
@@ -230,6 +250,20 @@ def test_golden_coursework_offers_checker() -> None:
     # Без предложения проверки тот же ответ не проходит.
     silent = "\n\n".join(part for part in answer.split("\n\n") if "Антиплагиат" not in part)
     assert "ответ не соответствует /(Антиплагиат|Думейт)/" in grade(by_id("coursework-offers-checker"), silent).failures
+
+
+def test_golden_offline_shell_suggests_install() -> None:
+    """терминал есть, сети нет: ответ советует установку без сети, а не песочницу"""
+    assert grade(by_id("offline-shell-suggests-install"), golden("offline-shell-suggests-install.md")).failures == []
+
+
+def test_golden_offline_shell_sandbox_fails() -> None:
+    """совет про песочницу вместо установки без сети — провал"""
+    failures = "\n".join(
+        grade(by_id("offline-shell-suggests-install"), golden("offline-shell-suggests-install.bad.md")).failures
+    )
+    assert "в ответе лишнее: Remote Desktop Commander" in failures
+    assert "ответ не соответствует /(без сети|заранее скачанн|pip download|--no-index)/" in failures
 
 
 def test_missing_final_fails_for_edit() -> None:
