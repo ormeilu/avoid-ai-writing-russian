@@ -10,7 +10,9 @@
   uv run python evals/run.py --dry                    показать промпты, агента не вызывать
 
 Режимы. `inline` (по умолчанию): SKILL.md и все файлы references/ вклеены в промпт, а командной
-строки и детектора нет, как в веб-чате; так проверяется сам текст скилла. `workspace`: агент работает в пустой папке с текстом
+строки и детектора нет, как в веб-чате; так проверяется сам текст скилла. Поле `environment` случая
+меняет строку о среде (`ENVIRONMENTS`): `offline-shell` — терминал есть, но aiw-ru не ставится без
+сети. Такие случаи проверяют только режим inline, в workspace они пропускаются. `workspace`: агент работает в пустой папке с текстом
 пользователя в text.md, а скилл и детектор получает только командой `aiw-ru` (`aiw-ru skill …`,
 `aiw-ru scan …`). Обёртка `aiw-ru` записывает каждый вызов в журнал, и сводка показывает, какие
 файлы скилла агент прочитал и какие команды запустил: так проверяется выборочное чтение каталога.
@@ -95,8 +97,18 @@ def skill_text(name: str) -> str:
     return "\n\n".join(parts)
 
 
+# Строка о среде агента в режиме inline; ключ — поле `environment` случая, по умолчанию no-shell.
+ENVIRONMENTS = {
+    "no-shell": "Командной строки нет, как в веб-версии чата: детектор недоступен, проверки только модельные.",
+    "offline-shell": (
+        "Командная строка у тебя есть, но сети нет: `pip install aiw-ru` уже запускался и не смог скачать пакет. "
+        "Детектор недоступен, проверки только модельные; других команд для этой задачи не запускай."
+    ),
+}
+
+
 def build_prompt(c: EvalCase) -> str:
-    """Промпт режима inline: скилл целиком в промпте, командной строки и детектора нет."""
+    """Промпт режима inline: скилл целиком в промпте, среда — из ENVIRONMENTS, детектора нет."""
     skills = (
         f"{skill_text('antiplagiat')}\n\n{skill_text('avoid-ai-writing-russian')}"
         if c["skill"] == "antiplagiat"
@@ -104,7 +116,8 @@ def build_prompt(c: EvalCase) -> str:
     )
     return "\n".join(
         [
-            "Ниже инструкции скилла и его файлы в тегах <file>. Следуй им строго. Командной строки нет, как в веб-версии чата: детектор недоступен, проверки только модельные.",
+            "Ниже инструкции скилла и его файлы в тегах <file>. Следуй им строго. "
+            + ENVIRONMENTS[c.get("environment", "no-shell")],
             "<skill>",
             skills,
             "</skill>",
@@ -355,6 +368,15 @@ def main(argv: list[str]) -> int:
     if not selected:
         print(f"нет случая {args.case}", file=sys.stderr)
         return 2
+    if args.mode == "workspace":
+        # В рабочем режиме aiw-ru есть, а случаи со своей средой проверяют, как скилл обходится без него.
+        inline_only = [c["id"] for c in selected if "environment" in c]
+        if args.case and inline_only:
+            print(f"случай {args.case} задаёт свою среду и запускается только в режиме inline", file=sys.stderr)
+            return 2
+        if inline_only:
+            print(f"пропущены, среда только для inline: {', '.join(inline_only)}", file=sys.stderr)
+        selected = [c for c in selected if "environment" not in c]
     prompt_of = workspace_prompt if args.mode == "workspace" else build_prompt
 
     if args.dry:

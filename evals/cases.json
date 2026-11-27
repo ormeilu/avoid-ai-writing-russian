@@ -217,6 +217,19 @@
         "noNewNumbers": true,
         "responseMatches": ["(Антиплагиат|Думейт)"]
       }
+    },
+    {
+      "id": "offline-shell-suggests-install",
+      "skill": "avoid-ai-writing-russian",
+      "environment": "offline-shell",
+      "request": "Убери канцелярит из абзаца.",
+      "input": "В целях повышения удобства посетителей библиотеки осуществляется продление часов работы читального зала. Данное решение было принято по многочисленным обращениям читателей.",
+      "checks": {
+        "forbid": ["В целях", "осуществляется", "Данное решение"],
+        "noNewNumbers": true,
+        "responseMatches": ["pip install", "(без сети|заранее скачанн|pip download|--no-index)"],
+        "responseLacks": ["Remote Desktop Commander", "Claude Code on the web", "роверил целостность"]
+      }
     }
   ]
 }
