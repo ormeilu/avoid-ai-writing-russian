@@ -690,6 +690,40 @@ def test_number_moved_between_link_and_text_passes(before: str, after: str):
     assert number_kinds(before, after) == []
 
 
+# ─── повтор числа из исходника ──────────────────────────────────────────
+
+FERRY = (
+    "Паром перевозит за сезон 120 машин в сутки.\n\n"
+    "Очередь у причала растёт к вечеру: переправа загружена сильнее, чем рассчитывали в 2024 году."
+)
+
+
+def repeats(before: str, after: str) -> list[str]:
+    return [warning.detail for warning in validate(before, after).warnings if warning.kind == "повтор числа"]
+
+
+def test_repeated_source_number_is_warning():
+    """число из исходника, повторённое в другом абзаце ради конкретики, не повреждение, а предупреждение"""
+    after = FERRY.replace("загружена сильнее", "при 120 машинах в сутки загружена сильнее")
+    result = validate(FERRY, after)
+    assert number_kinds(FERRY, after) == []
+    assert result.ok
+    assert repeats(FERRY, after) == ["120 встречается чаще, чем в исходнике: сверь, что оно стоит при тех же словах"]
+
+
+def test_new_number_still_violation_next_to_repeat():
+    """новое число по-прежнему повреждение, даже если рядом повторено число из исходника"""
+    after = FERRY.replace("загружена сильнее", "при 120 машинах в сутки и 15 рейсах загружена сильнее")
+    assert number_kinds(FERRY, after) == [("число", "появилось: 15")]
+    assert repeats(FERRY, after) == ["120 встречается чаще, чем в исходнике: сверь, что оно стоит при тех же словах"]
+
+
+def test_number_replaced_by_other_source_number_still_caught():
+    """число, заменённое другим числом из исходника, пропало: повтор второго не прячет потерю первого"""
+    after = FERRY.replace("120 машин", "2024 машин")
+    assert ("число", "пропало или изменено: 120") in number_kinds(FERRY, after)
+
+
 def test_changed_number_near_link_still_caught():
     """изменённое число в тексте ссылки и в относительном адресе по-прежнему ловится"""
     before = "Смотрите [расписание на 2026](https://example.org/timetable/2026) и [архив](timetable/2025.pdf)."

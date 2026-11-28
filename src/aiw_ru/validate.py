@@ -41,6 +41,10 @@
   «половина», «вдвое») — предупреждение: они идиоматичны («с одной стороны»,
   «оба варианта»). «Во-вторых», «в-третьих» числом не считаются.
 - `месяц` — появился месяц, которого в исходнике не было («в марте»).
+- `повтор числа` — число цифрами из исходника встречается в правке чаще: скилл
+  советует ставить в абзац конкретику из той же работы, поэтому это не
+  повреждение. Всегда предупреждение: повтор мог встать при чужих словах. Число,
+  которого в исходнике нет, и пропавшее число остаются нарушениями `число`.
 - `перестановка` — все числа на месте, но стоят при чужих словах: «Кира собрала
   12 400 подписей, Лев 8 900» → «Кира собрала 8 900 подписей, Лев 12 400». Опора
   числа — слова его части (предложения, части через запятую, точку с запятой,
@@ -129,6 +133,8 @@ HEADING_SHAPE_RE = jsre("^#{1,6}(?=\\s)", "gm")
 
 # Сколько сообщений одного вида показывать.
 LIMIT = 5
+# Что делать с числом из исходника, которое в правке повторено: проверить, к тому ли оно относится.
+REPEAT_HINT = "сверь, что оно стоит при тех же словах"
 
 
 def _all(pattern, text: str) -> list[str]:
@@ -192,14 +198,25 @@ def _compare_exact(kind: str, before: list[str], after: list[str], violations: l
     _report(kind, *_multiset_diff(before, after), violations)
 
 
-def _compare_numbers(before: str, after: str, violations: list[Violation]) -> None:
+def _compare_numbers(before: str, after: str, violations: list[Violation], warnings: list[Violation]) -> None:
     """Числа прозы. Число, перешедшее из адреса ссылки в её текст или обратно («[отчёт 2025](…/2025)»),
-    не пропало и не появилось: оно было в документе и осталось в нём."""
-    missing, added = _multiset_diff(_numbers(before), _numbers(after))
+    не пропало и не появилось: оно было в документе и осталось в нём.
+
+    Число из исходника, которое в правке встречается чаще, тоже не повреждение: так абзац получает
+    конкретику из той же работы. Оно идёт предупреждением, потому что могло встать при чужих словах.
+    Пропавшие числа считаются по счёту: число, заменённое другим числом из исходника, пропало."""
+    before_numbers = _numbers(before)
+    missing, added = _multiset_diff(before_numbers, _numbers(after))
     before_links, after_links = _link_numbers(before), _link_numbers(after)
     missing = [number for number in missing if number not in after_links]
     added = [number for number in added if number not in before_links]
-    _report("число", missing, added, violations)
+    known = set(before_numbers)
+    _report("число", missing, [number for number in added if number not in known], violations)
+    repeated = list(dict.fromkeys(number for number in added if number in known))
+    warnings.extend(
+        Violation(kind="повтор числа", detail=f"{number} встречается чаще, чем в исходнике: {REPEAT_HINT}")
+        for number in repeated[:LIMIT]
+    )
 
 
 # ─── Словари фактов ──────────────────────────────────────────────────────
@@ -1196,7 +1213,7 @@ def validate(
         [QUOTE_MARKS_RE.sub("", quote) for quote in _all(QUOTE_RE, after_no_code)],
         violations,
     )
-    _compare_numbers(before, after, violations)
+    _compare_numbers(before, after, violations, warnings)
     before_headings = " ".join(_all(HEADING_SHAPE_RE, before_no_code))
     after_headings = " ".join(_all(HEADING_SHAPE_RE, after_no_code))
     if before_headings != after_headings:
