@@ -22,7 +22,7 @@ from aiw_ru import (
     predict_share,
     share_error,
 )
-from aiw_ru.antiplagiat import features_for, green_below, typical_window, zone_of
+from aiw_ru.antiplagiat import Contribution, features_for, green_below, typical_window, zone_of
 
 # ─── antiplagiat ────────────────────────────────────────────────────────
 
@@ -119,6 +119,44 @@ OPENERS_TEXT = (
 )
 
 
+# Абзац из двух длинных предложений: пока предложений меньше трёх, однообразие и пунктуация стоят на
+# постоянных 0,3, а средняя длина (33 слова) далеко от пика «типичной длины».
+TWO_LONG = (
+    "Паромная переправа через реку работает с апреля по ноябрь, пока лёд не встанет у причала, и за сезон "
+    "перевозит около девяти тысяч машин из соседних сёл, где моста нет и не будет в ближайшие годы. "
+    "Расписание зависит от уровня воды: в половодье паром ходит реже, потому что течение сносит его ниже "
+    "причала, а осенью капитан добавляет вечерние рейсы для тех, кто возвращается с работы из города."
+)
+# Тот же абзац тремя предложениями: средняя длина падает к 22 словам, к пику «типичной длины».
+THREE_SPLIT = (
+    "Паромная переправа через реку работает с апреля по ноябрь. Пока лёд не встанет у причала, она за сезон "
+    "перевозит около девяти тысяч машин из соседних сёл, где моста нет и не будет в ближайшие годы. "
+    "Расписание зависит от уровня воды: в половодье паром ходит реже, потому что течение сносит его ниже "
+    "причала, а осенью капитан добавляет вечерние рейсы для тех, кто возвращается с работы из города."
+)
+# Тот же абзац шестью предложениями разной длины, в среднем 10 слов.
+SIX_SPLIT = (
+    "Паромная переправа через реку работает с апреля по ноябрь. Зимой стоит лёд. За сезон паром перевозит "
+    "около девяти тысяч машин из соседних сёл, где моста нет и не будет в ближайшие годы. Расписание "
+    "зависит от воды. В половодье паром ходит реже: течение сносит его ниже причала. Осенью капитан "
+    "добавляет вечерние рейсы для тех, кто возвращается с работы из города."
+)
+# Абзац из двух коротких предложений (12 и 11 слов): делить его на три значит дробить до 7–8 слов в
+# предложении, а слияние в одно подняло бы среднюю длину к пику «типичной длины».
+TWO_SHORT = (
+    "Паром ходит через реку с апреля по ноябрь, пока не встанет лёд. "
+    "Расписание рейсов висит на причале рядом с кассой и у магазина."
+)
+# Абзац из двух предложений по 20 слов, у пика «типичной длины»: поднять среднюю длину можно только
+# слиянием в одно предложение, а опустить — только делением абзаца.
+TWO_MEDIUM = (
+    "Мост через реку закрыли на ремонт в марте, и с тех пор паром возит по сорок машин за рейс до самой "
+    "ночи. Очередь у причала растёт к вечеру: люди едут с работы из города и ждут по часу, а иногда и дольше."
+)
+# Калибровка, где «типичная длина» весит больше однообразия.
+TYPICAL_HEAVY = Model(bias=-2.0, weights=[0.3, 0.5, 2.0, 0.16, 0.15, 1.05, 1.0], threshold=0.44)
+
+
 def test_zones_around_threshold():
     """красный — от порога, жёлтый — в 0,1 под ним, ниже — зелёный"""
     assert zone_of(0.44, 0.44) == "red"
@@ -161,18 +199,20 @@ def test_explain_contributions_add_up(model: Model, read_fixture: Callable[[str]
 
 def test_explain_single_goal_reaches_green(read_fixture: Callable[[str], str]):
     """цель признака, которого хватает одного, уводит фрагмент в зелёную зону"""
-    report = antiplagiat(read_fixture("corpus/human/vak.md"), model=BORDER, explain=True)
     checked = 0
-    for fragment in report.fragments:
-        assert fragment.explain is not None
-        for item in fragment.explain.contributions:
-            if fragment.zone == "green" or not item.enough:
-                continue
-            features = list(fragment.features)
-            features[FEATURE_NAMES.index(item.feature)] = item.goal
-            assert predict(BORDER, features) <= fragment.explain.target_probability + 0.005
-            assert item.target
-            checked += 1
+    for name in ("corpus/human/vak.md", "corpus/human/blog.md", "corpus/human/docs.md"):
+        for fragment in antiplagiat(read_fixture(name), model=BORDER, explain=True).fragments:
+            assert fragment.explain is not None
+            for item in fragment.explain.contributions:
+                # Цель с делением абзаца сдвигает и другие признаки: её проверяет
+                # test_explain_split_counts_typical_length вместе с test_split_into_three_raises_two_sentence_paragraph.
+                if fragment.zone == "green" or not item.enough or item.split_into:
+                    continue
+                features = list(fragment.features)
+                features[FEATURE_NAMES.index(item.feature)] = item.goal
+                assert predict(BORDER, features) <= fragment.explain.target_probability + 0.005
+                assert item.target
+                checked += 1
     assert checked > 0
 
 
@@ -196,6 +236,75 @@ def test_explain_names_repeated_openers():
     assert fragment.explain.measures.repeated_openers == {"это": 3}
     openers = next(item for item in fragment.explain.contributions if item.feature == "однообразные начала предложений")
     assert "«это» ×3" in openers.now
+
+
+def test_split_into_three_raises_two_sentence_paragraph():
+    """посылка: деление двух длинных предложений на три поднимает вероятность, на шесть разной длины — в зелёную зону"""
+    two = antiplagiat(TWO_LONG, model=BORDER).fragments[0]
+    three = antiplagiat(THREE_SPLIT, model=BORDER).fragments[0]
+    six = antiplagiat(SIX_SPLIT, model=BORDER).fragments[0]
+    assert two.zone == "yellow"
+    assert three.probability > two.probability
+    assert six.zone == "green"
+
+
+def contribution(fragment_text: str, feature: str, model: Model = BORDER) -> Contribution:
+    explanation = antiplagiat(fragment_text, model=model, explain=True).fragments[0].explain
+    assert explanation is not None
+    return next(item for item in explanation.contributions if item.feature == feature)
+
+
+def test_explain_split_counts_typical_length():
+    """совет делить абзац из двух предложений просчитан с новой средней длиной: шесть предложений, а не три"""
+    explanation = antiplagiat(TWO_LONG, model=BORDER, explain=True).fragments[0].explain
+    assert explanation is not None
+    uniformity = contribution(TWO_LONG, "однообразие длины предложений")
+    assert uniformity.enough
+    assert uniformity.split_into == 6
+    assert uniformity.target.startswith("раздели на 6 предложений разной длины, в среднем 11 слов")
+    assert explanation.plan[0].startswith("раздели на 6 предложений")
+    assert explanation.reachable
+    assert not any("три предложения" in step for step in explanation.plan)
+
+
+def test_explain_no_split_below_floor_length():
+    """абзац из двух коротких предложений не делится: на трёх средняя длина ушла бы ниже 8 слов"""
+    explanation = antiplagiat(TWO_SHORT, model=BORDER, explain=True).fragments[0].explain
+    assert explanation is not None
+    uniformity = contribution(TWO_SHORT, "однообразие длины предложений")
+    assert not uniformity.enough
+    assert uniformity.split_into is None
+    assert uniformity.target == ""
+    assert not any("раздели" in step or "три предложения" in step for step in explanation.plan)
+
+
+def test_explain_typical_length_of_two_sentences_by_merge():
+    """у абзаца из двух предложений «типичную длину» одну двигает только слияние: опустить длину — это деление"""
+    explanation = antiplagiat(TWO_MEDIUM, model=TYPICAL_HEAVY, explain=True).fragments[0].explain
+    assert explanation is not None
+    typical = contribution(TWO_MEDIUM, "типичная длина предложения", TYPICAL_HEAVY)
+    assert typical.enough
+    assert typical.target == "слей предложения в одно: средняя длина станет 42 слова"
+    assert explanation.plan == ["слей предложения в одно: средняя длина станет 42 слова"]
+
+
+def test_explain_typical_length_no_merge_when_it_raises():
+    """слияние двух коротких предложений поднимает «типичную длину», поэтому цели у неё нет"""
+    explanation = antiplagiat(TWO_SHORT, model=BORDER, explain=True).fragments[0].explain
+    assert explanation is not None
+    assert contribution(TWO_SHORT, "типичная длина предложения").target == ""
+    assert not explanation.reachable
+    assert not any("средняя длина" in step or "слей" in step for step in explanation.plan)
+
+
+def test_explain_punctuation_alone_needs_three_sentences():
+    """пунктуацию абзаца из одного-двух предложений одну не сдвинуть: деление меняет и длину, поэтому «нет»"""
+    # Калибровка с большим весом пунктуации: без деления её вклада хватило бы, чтобы уйти в зелёную зону.
+    heavy = Model(bias=-1.0, weights=[0.3, 0.5, 0.75, 0.16, 1.5, 1.05, 1.0], threshold=0.44)
+    assert antiplagiat(TWO_LONG, model=heavy).fragments[0].zone == "yellow"
+    punctuation = contribution(TWO_LONG, "бедная пунктуация", heavy)
+    assert not punctuation.enough
+    assert punctuation.target == ""
 
 
 @pytest.mark.parametrize("goal", [0.9, 0.5, 0.3, 0.1])
