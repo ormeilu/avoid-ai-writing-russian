@@ -20,6 +20,7 @@ import re
 import unicodedata
 from bisect import bisect_left, bisect_right
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Annotated, Literal
@@ -125,6 +126,10 @@ class Contribution(Record):
     # Цель в замерах, если менять только этот признак: «средняя длина не больше 12 или не меньше
     # 26 слов». Пусто, если одного признака мало, и у зелёного фрагмента.
     target: str
+    # Сколько предложений должно стать в абзаце из одного-двух предложений, чтобы цель однообразия
+    # сработала: деление сдвигает и среднюю длину, и пунктуацию, goal — однообразие после деления.
+    # None, если делить не нужно или деление не помогает.
+    split_into: int | None = None
 
 
 class Explanation(Record):
@@ -138,7 +143,8 @@ class Explanation(Record):
     contributions: list[Contribution]
     # Цели нескольких признаков сразу, если одного мало; пусто у зелёного фрагмента.
     plan: list[str]
-    # План уводит фрагмент в зелёную зону; False, если не хватает даже всех признаков на нуле.
+    # План уводит фрагмент в зелёную зону; False, если не хватает даже всех признаков на нуле, а у
+    # абзаца из одного-двух предложений — и деления на три предложения и больше.
     reachable: bool
 
 
@@ -226,6 +232,8 @@ RARE_SHARE = 0.5
 # MATTR, начиная с которого словарь не считается бедным, и ширина перехода.
 RICH_MATTR = 0.85
 MATTR_SPAN = 0.2
+# Номера признаков в FEATURE_NAMES, которые меняет деление абзаца на предложения.
+UNIFORMITY, TYPICAL, PUNCTUATION = 1, 2, 4
 
 
 def _measure(text: str, fragment_issues: list[Issue]) -> _Measures:
@@ -247,13 +255,23 @@ def _measure(text: str, fragment_issues: list[Issue]) -> _Measures:
     )
 
 
+def _typical(mean_length: float) -> float:
+    """Признак «типичная длина»: 1 при средней длине TYPICAL_LENGTH слов, к краям спадает."""
+    return math.exp(-(((mean_length - TYPICAL_LENGTH) / TYPICAL_WIDTH) ** 2))
+
+
+def _poor_punctuation(rare: int, sentence_count: int) -> float:
+    """Признак «бедная пунктуация»: 0, когда редкие знаки стоят хотя бы в доле RARE_SHARE предложений."""
+    return max(0, 1 - rare / sentence_count / RARE_SHARE)
+
+
 def _features(measures: _Measures) -> list[float]:
     lengths = measures.lengths
     density = min(4, measures.signal * 100 / measures.word_count / 3)
     uniformity = max(0, 1 - cv(lengths) / VARIED_CV) if len(lengths) >= 3 else 0.3
-    typical = math.exp(-(((mean(lengths) - TYPICAL_LENGTH) / TYPICAL_WIDTH) ** 2)) if lengths else 0
+    typical = _typical(mean(lengths)) if lengths else 0
     clerical = min(3, len(measures.clerical) * 100 / measures.word_count / 2)
-    poor_punct = max(0, 1 - measures.rare / len(lengths) / RARE_SHARE) if len(lengths) >= 3 else 0.3
+    poor_punct = _poor_punctuation(measures.rare, len(lengths)) if len(lengths) >= 3 else 0.3
     first_words = measures.first_words
     opener_repeat = 1 - len(set(first_words)) / len(first_words) if len(first_words) >= 3 else 0
     diversity = 0.8 if measures.diversity is None else measures.diversity
@@ -323,24 +341,27 @@ def _now(k: int, measures: _Measures) -> str:
     return f"MATTR {_num(measures.diversity)}"
 
 
-def _target(k: int, measures: _Measures, goal: float) -> str:
-    """Цель в замерах: при ней признак k не больше goal."""
-    sentence_count = len(measures.lengths)
+def _target(k: int, measures: _Measures, goal: float, sentence_count: int | None = None) -> str:
+    """Цель в замерах: при ней признак k не больше goal.
+
+    sentence_count — число предложений, если абзац уже разделён по совету (`_splits`); у однообразия
+    и пунктуации абзаца из одного-двух предложений без деления цели нет, их ведёт `_splits`."""
+    sentence_count = sentence_count or len(measures.lengths)
     if k == 0:
         allowed = goal * 3 * measures.word_count / 100
         return "убери приметы" if allowed < 0.5 else f"вес примет не больше {_num(allowed, 1)}"
     if k == 1:
         need = math.ceil(VARIED_CV * (1 - goal) * 100) / 100
-        prefix = "три предложения и больше, " if sentence_count < 3 else ""
-        return f"{prefix}cv длин от {_num(need)}"
+        return f"cv длин от {_num(need)}"
     if k == 2:
+        if sentence_count < 3:
+            # Среднюю длину двух предложений поднимает только слияние, а опускает деление (`_splits`).
+            return f"слей предложения в одно: средняя длина станет {_words(sum(measures.lengths))}"
         return typical_window(goal)
     if k == 3:
         allowed_count = math.floor(goal * 2 * measures.word_count / 100)
         return "убери канцелярит" if allowed_count == 0 else f"канцелярита не больше {allowed_count}"
     if k == 4:
-        if sentence_count < 3:
-            return "три предложения и больше, половина с ; : ( ) или тире"
         need = math.ceil(RARE_SHARE * (1 - goal) * sentence_count)
         return f"предложений с ; : ( ) или тире не меньше {need} из {sentence_count}"
     if k == 5:
@@ -357,6 +378,11 @@ def _target(k: int, measures: _Measures, goal: float) -> str:
 TYPICAL_FLOOR = 0.1
 
 
+# Средняя длина предложения, короче которой деление абзаца не советуется: на ней «типичная длина»
+# опускается до TYPICAL_FLOOR (около 8 слов), дальше цели длину не ведут.
+SPLIT_FLOOR_LENGTH = TYPICAL_LENGTH - TYPICAL_WIDTH * math.sqrt(-math.log(TYPICAL_FLOOR))
+
+
 # Наименьшее снижение логита, ради которого признак попадает в план правки.
 PLAN_MIN_SHARE = 0.05
 
@@ -365,18 +391,113 @@ def _floor(k: int) -> float:
     return TYPICAL_FLOOR if k == 2 else 0
 
 
+def _floors(measures: _Measures, features: list[float]) -> list[float]:
+    """Докуда цели ведут каждый признак фрагмента.
+
+    «Типичная длина» не опускается ниже TYPICAL_FLOOR. В абзаце из одного предложения она без деления
+    не двигается, а в абзаце из двух снижается только слиянием в одно предложение: до признака на
+    длине всего абзаца, если слияние его снижает. Опустить среднюю длину значит разделить абзац, а
+    это цель однообразия (`_splits`)."""
+    floors = [_floor(k) for k in range(len(features))]
+    if len(measures.lengths) == 1:
+        floors[TYPICAL] = features[TYPICAL]
+    elif len(measures.lengths) == 2:
+        floors[TYPICAL] = max(TYPICAL_FLOOR, min(features[TYPICAL], _typical(sum(measures.lengths))))
+    return floors
+
+
+@dataclass(frozen=True, slots=True)
+class _Split:
+    """Абзац из одного-двух предложений после деления на sentences предложений разной длины."""
+
+    sentences: int
+    mean_length: float
+    # Признаки после деления: однообразие 0 (cv длин от VARIED_CV), «типичная длина» по новой средней,
+    # пунктуация по прежнему числу предложений с редкими знаками; остальные признаки прежние.
+    features: list[float]
+
+
+def _splits(measures: _Measures, features: list[float]) -> list[_Split]:
+    """Деления абзаца из одного-двух предложений на три предложения и больше, по возрастанию числа.
+
+    Пока предложений меньше трёх, однообразие и пунктуация стоят на постоянных 0,3. Деление включает
+    их и заодно сдвигает среднюю длину: у двух предложений по 30 слов она падает к пику «типичной
+    длины», и вероятность растёт. Поэтому совет делить считается по признакам после деления, а
+    средняя длина не короче SPLIT_FLOOR_LENGTH: дробить дальше значит ломать текст.
+    """
+    if len(measures.lengths) >= 3:
+        return []
+    word_total = sum(measures.lengths)
+    splits: list[_Split] = []
+    for count in range(3, math.floor(word_total / SPLIT_FLOOR_LENGTH) + 1):
+        after = list(features)
+        after[UNIFORMITY] = 0.0
+        after[TYPICAL] = _typical(word_total / count)
+        after[PUNCTUATION] = _poor_punctuation(measures.rare, count)
+        splits.append(_Split(count, word_total / count, after))
+    return splits
+
+
+def _split_text(split: _Split, allowed: float) -> str:
+    """Совет разделить абзац; allowed — однообразие, которое остаётся допустимым после деления."""
+    need = math.ceil(VARIED_CV * (1 - min(allowed, 1)) * 100) / 100
+    count = plural(split.sentences, "предложение", "предложения", "предложений")
+    if need <= 0:
+        return f"раздели на {count}, в среднем {_words(split.mean_length)}"
+    return f"раздели на {count} разной длины, в среднем {_words(split.mean_length)}: cv длин от {_num(need)}"
+
+
+def _shared_plan(
+    order: list[int],
+    values: list[float],
+    weights: list[float],
+    excess: float,
+    measures: _Measures,
+    floors: list[float],
+    sentence_count: int | None = None,
+) -> tuple[list[str], float]:
+    """Цели признаков из order, которые вместе снимают excess логита, и сколько они могут снять всего.
+
+    Каждому признаку достаётся доля снижения по тому, сколько он может снять до своего пола в floors.
+    Признаки, которые снимают меньше PLAN_MIN_SHARE логита, в план не идут, если хватает остальных."""
+    reducible = {k: max(0, (values[k] - floors[k]) * weights[k]) for k in order}
+    movers = [k for k in order if reducible[k] >= PLAN_MIN_SHARE]
+    if total(reducible[k] for k in movers) < excess:
+        movers = [k for k in order if reducible[k] > 0]
+    available = total(reducible[k] for k in movers)
+    if excess <= 0 or available <= 0:
+        return [], available
+    fraction = min(1, excess / available)
+    steps = [_target(k, measures, values[k] - fraction * (values[k] - floors[k]), sentence_count) for k in movers]
+    return steps, available
+
+
 def explain_fragment(model: Model, measures: _Measures, threshold: float) -> Explanation:
     """Вклад признаков в логит и цели, при которых фрагмент уходит в зелёную зону.
 
     У каждого признака своя цель на случай, если менять только его. План делит снижение логита
     между признаками пропорционально тому, сколько каждый может снять: так ни один признак не
     уходит в крайность (средняя длина в 8 слов), пока остальные стоят на месте.
+
+    У абзаца из одного-двух предложений однообразие и пунктуация без деления не двигаются, а деление
+    двигает и среднюю длину. Их цель — деление на столько предложений (`_splits`), после которого
+    фрагмент уходит в зелёную зону; если такого нет, цели нет. В план деление идёт, только когда без
+    него зелёной зоны не достать.
     """
     features = _features(measures)
     weights = [model.weights[k] if k < len(model.weights) else 0 for k in range(len(features))]
-    logit = model.bias + total(weight * value for weight, value in zip(weights, features, strict=True))
+
+    def logit_of(values: list[float]) -> float:
+        return model.bias + total(weight * value for weight, value in zip(weights, values, strict=True))
+
+    logit = logit_of(features)
     target_probability = green_below(threshold)
-    excess = logit - _logit(target_probability)
+    target_logit = _logit(target_probability)
+    excess = logit - target_logit
+    floors = _floors(measures, features)
+    splits = _splits(measures, features)
+    # Признаки, которые у абзаца из одного-двух предложений сдвигает только деление.
+    split_only = (UNIFORMITY, PUNCTUATION) if len(measures.lengths) < 3 else ()
     pulling = sorted(
         (k for k, value in enumerate(features) if weights[k] > 0 and value > 0),
         key=lambda k: -weights[k] * features[k],
@@ -385,7 +506,17 @@ def explain_fragment(model: Model, measures: _Measures, threshold: float) -> Exp
     for k in pulling:
         value, weight = features[k], weights[k]
         goal = value - excess / weight
-        enough = excess <= 0 or goal > _floor(k)
+        enough = excess <= 0 or goal > floors[k]
+        target = _target(k, measures, goal) if enough and excess > 0 else ""
+        split_into = None
+        if excess > 0 and k in split_only:
+            # Пунктуацию одну не сдвинуть: деление меняет и длину, и её разброс.
+            fitting = next((split for split in splits if logit_of(split.features) <= target_logit), None)
+            enough = k == UNIFORMITY and fitting is not None
+            goal, target = floors[k], ""
+            if enough and fitting is not None:
+                goal = min((target_logit - logit_of(fitting.features)) / weight, 1)
+                target, split_into = _split_text(fitting, goal), fitting.sentences
         contributions.append(
             Contribution(
                 feature=FEATURE_NAMES[k],
@@ -393,22 +524,19 @@ def explain_fragment(model: Model, measures: _Measures, threshold: float) -> Exp
                 weight=fixed(weight, 4),
                 contribution=fixed(value * weight, 3),
                 now=_now(k, measures),
-                goal=fixed(min(goal, value) if enough else _floor(k), 3),
+                goal=fixed(goal if split_into else min(goal, value) if enough else floors[k], 3),
                 enough=enough,
-                target=_target(k, measures, goal) if enough and excess > 0 else "",
+                target=target,
+                split_into=split_into,
             )
         )
-    reducible = {k: max(0, (features[k] - _floor(k)) * weights[k]) for k in pulling}
-    # Признаки, которые снимают меньше PLAN_MIN_SHARE логита, в план не идут, если хватает остальных.
-    movers = [k for k in pulling if reducible[k] >= PLAN_MIN_SHARE]
-    if total(reducible[k] for k in movers) < excess:
-        movers = [k for k in pulling if reducible[k] > 0]
-    available = total(reducible[k] for k in movers)
-    plan: list[str] = []
-    if excess > 0 and available > 0:
-        fraction = min(1, excess / available)
-        for k in movers:
-            plan.append(_target(k, measures, features[k] - fraction * (features[k] - _floor(k))))
+    base = [k for k in pulling if k not in split_only]
+    plan, available = _shared_plan(base, features, weights, excess, measures, floors)
+    reachable = excess <= available
+    if not reachable:
+        split_plan = _split_plan(splits, logit_of, target_logit, weights, measures)
+        if split_plan:
+            plan, reachable = split_plan, True
     lengths = measures.lengths
     repeated = Counter(measures.first_words)
     return Explanation(
@@ -428,8 +556,39 @@ def explain_fragment(model: Model, measures: _Measures, threshold: float) -> Exp
         ),
         contributions=contributions,
         plan=plan,
-        reachable=excess <= available,
+        reachable=reachable,
     )
+
+
+def _split_plan(
+    splits: list[_Split],
+    logit_of: Callable[[list[float]], float],
+    target_logit: float,
+    weights: list[float],
+    measures: _Measures,
+) -> list[str]:
+    """План с делением абзаца из одного-двух предложений: самое короткое деление, после которого
+    зелёной зоны можно достать. После деления среднюю длину задаёт оно само, однообразие уже на нуле,
+    а остальное снижение делят приметы, канцелярит, пунктуация и словарь. Пусто, если не помогает и
+    деление."""
+    for split in splits:
+        rest = logit_of(split.features) - target_logit
+        if rest <= 0:
+            allowed = -rest / weights[UNIFORMITY] if weights[UNIFORMITY] > 0 else 1
+            return [_split_text(split, allowed)]
+        after = sorted(
+            (
+                k
+                for k, value in enumerate(split.features)
+                if k not in (UNIFORMITY, TYPICAL) and weights[k] > 0 and value > 0
+            ),
+            key=lambda k: -weights[k] * split.features[k],
+        )
+        floors = [_floor(k) for k in range(len(split.features))]
+        steps, available = _shared_plan(after, split.features, weights, rest, measures, floors, split.sentences)
+        if rest <= available:
+            return [_split_text(split, 0), *steps]
+    return []
 
 
 def _reasons_for(model: Model, features: list[float]) -> list[str]:
